@@ -1,0 +1,120 @@
+:root {
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  color: #20242b;
+  background: #f3f3f0;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  color-scheme: light dark;
+
+  --bg: #f3f3f0;
+  --surface: #fafaf8;
+  --surface-raised: #ffffff;
+  --surface-muted: #eeeeea;
+  --text: #20242b;
+  --text-secondary: #626a75;
+  --text-tertiary: #858c96;
+  --border: #d7d9d7;
+  --border-strong: #c3c6c5;
+  --accent: #4b65d5;
+  --accent-hover: #3f57c1;
+  --accent-soft: #e8ebfb;
+  --success: #267a55;
+  --success-soft: #e4f2e9;
+  --danger: #b64343;
+  --danger-soft: #f8e8e7;
+  --focus: #637be6;
+
+  /* Shared Windows desktop size system. */
+  --font-caption: 12px;
+  --line-caption: 16px;
+  --font-body: 14px;
+  --line-body: 20px;
+  --font-subtitle: 16px;
+  --line-subtitle: 22px;
+  --font-title: 20px;
+  --line-title: 28px;
+  --font-display: 28px;
+  --line-display: 36px;
+  --font-badge: 10px;
+  --control-compact: 32px;
+  --control-default: 36px;
+  --row-single: 44px;
+  --row-double: 52px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--font-body);
+  line-height: var(--line-body);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e7e8ea;
+    background: #17191d;
+    --bg: #17191d;
+    --surface: #1d2025;
+    --surface-raised: #22262c;
+    --surface-muted: #292d33;
+    --text: #e7e8ea;
+    --text-secondary: #a8afb9;
+    --text-tertiary: #7f8792;
+    --border: #343941;
+    --border-strong: #484e58;
+    --accent: #8c9df0;
+    --accent-hover: #a0aff8;
+    --accent-soft: #2b345e;
+    --success: #72c69c;
+    --success-soft: #1d3a2d;
+    --danger: #ec8e8e;
+    --danger-soft: #462728;
+    --focus: #9cacfa;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

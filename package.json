@@ -1,0 +1,35 @@
+{
+  "name": "p4fnv",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:web": "vite --port 1420",
+    "build": "npm run build:agent && npm run build:app",
+    "build:agent": "tsc -p tools/p4fnv-agent/tsconfig.json",
+    "build:app": "tauri build --no-bundle && node scripts/copy-locales.mjs",
+    "build:web": "tsc --noEmit && vite build",
+    "mcp:agent": ".toolchain/node/node.exe tools/p4fnv-agent/start.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10",
+    "zod": "4.4.3"
+  }
+}

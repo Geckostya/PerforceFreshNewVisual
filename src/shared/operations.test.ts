@@ -1,0 +1,81 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OperationEvent } from "./models";
+import { isOperationActive, isOperationTerminal, operationProgress, reduceOperationSnapshots, startObservedOperation } from "./operations";
+
+const eventApi = vi.hoisted(() => ({ listen: vi.fn(), unlisten: vi.fn() }));
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventApi.listen }));
+
+const event = (operationId: string, kind: OperationEvent["kind"], processed = 0): OperationEvent => ({
+  operationId,
+  operationKind: "sync",
+  kind,
+  processed,
+  processedBytes: 0,
+  retryable: true,
+});
+
+describe("operation snapshots", () => {
+  beforeEach(() => {
+    eventApi.listen.mockReset();
+    eventApi.unlisten.mockReset();
+  });
+
+  it("calculates progress and ETA from bytes without a preview pass", () => {
+    const startedAt = 1_000;
+    const snapshot = { ...reduceOperationSnapshots([], { ...event("op-sync", "progress", 2), totalFiles: 10, processedBytes: 200, totalBytes: 1_000 })[0], startedAt };
+    expect(operationProgress(snapshot, 3_000)).toEqual({ ratio: 0.2, remaining: 8, etaSeconds: 8 });
+  });
+
+  it("upserts progress and terminal state for one operation", () => {
+    let state = reduceOperationSnapshots([], event("op-1", "started"));
+    state = reduceOperationSnapshots(state, { ...event("op-1", "progress", 4), currentPath: "//main/a" });
+    state = reduceOperationSnapshots(state, { ...event("op-1", "completed", 4), message: "done" });
+    expect(state).toHaveLength(1);
+    expect(state[0]).toMatchObject({ operationId: "op-1", status: "completed", processed: 4, message: "done" });
+    expect(isOperationActive(state[0].status)).toBe(false);
+  });
+
+  it("keeps separate operation ids", () => {
+    const state = reduceOperationSnapshots(reduceOperationSnapshots([], event("op-1", "started")), event("op-2", "started"));
+    expect(state.map((item) => item.operationId)).toEqual(["op-1", "op-2"]);
+    expect(isOperationActive("progress")).toBe(true);
+    expect(isOperationActive("failed")).toBe(false);
+    expect(isOperationTerminal("completed")).toBe(true);
+    expect(isOperationTerminal("progress")).toBe(false);
+  });
+
+  it("preserves bounded retry metadata", () => {
+    const snapshot = reduceOperationSnapshots([], { ...event("op-sync", "failed"), scope: "2 paths", scopes: ["//main/a", "//main/b"] })[0];
+    expect(snapshot.scope).toBe("2 paths");
+    expect(snapshot.scopes).toEqual(["//main/a", "//main/b"]);
+    expect(snapshot.retryable).toBe(true);
+  });
+
+  it("captures events emitted before the start command returns", async () => {
+    let emit: ((event: { payload: OperationEvent }) => void) | undefined;
+    eventApi.listen.mockImplementation(async (_name, callback) => {
+      emit = callback;
+      return eventApi.unlisten;
+    });
+    const onEvent = vi.fn();
+
+    const operationId = await startObservedOperation("sync", async () => {
+      emit?.({ payload: event("op-early", "started") });
+      emit?.({ payload: event("op-early", "completed", 2) });
+      return "op-early";
+    }, onEvent);
+
+    expect(operationId).toBe("op-early");
+    expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(eventApi.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("stops listening when the start command fails", async () => {
+    eventApi.listen.mockResolvedValue(eventApi.unlisten);
+
+    await expect(startObservedOperation("sync", async () => { throw new Error("start failed"); }, vi.fn())).rejects.toThrow("start failed");
+
+    expect(eventApi.unlisten).toHaveBeenCalledOnce();
+  });
+});

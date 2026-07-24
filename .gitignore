@@ -1,0 +1,23 @@
+.toolchain/
+node_modules/
+dist/
+src-tauri/target/
+.vite/
+*.log
+.vite-server.*
+.http-server.*
+
+# Local development state
+artifacts/
+p4fnv.lnk
+.env
+.env.*
+!.env.example
+.p4config
+*.p4tickets
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

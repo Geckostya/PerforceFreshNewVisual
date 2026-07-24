@@ -1,0 +1,13 @@
+sandbox_mode = "workspace-write"
+[mcp_servers.p4fnv_agent]
+command = '.\.toolchain\node\node.exe'
+args = ['.\tools\p4fnv-agent\start.mjs']
+cwd = '.'
+enabled = true
+required = false
+startup_timeout_sec = 30
+tool_timeout_sec = 900
+default_tools_approval_mode = "writes"
+
+[sandbox_workspace_write]
+network_access = true
