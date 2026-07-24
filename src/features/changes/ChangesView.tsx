@@ -53,6 +53,7 @@ import type {
 import {
   changeOptionLabel,
   filterChangeGroups,
+  selectedChangesForArchive,
   type ChangeDropTarget,
 } from "./changes";
 import {
@@ -109,6 +110,8 @@ type MenuState = { kind: "opened" | "shelved"; depotPath: string; x: number; y: 
 export function ChangesView({ connection, info, onFileCountChange, initialChange }: Props) {
   const { language, t } = useLocale();
   const [selectedChange, setSelectedChange] = useState(initialChange || "default");
+  const [selectedChanges, setSelectedChanges] = useState([initialChange || "default"]);
+  const changeSelectionAnchor = useRef<string | undefined>(initialChange || "default");
   const {
     changes,
     files,
@@ -172,7 +175,24 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       .catch(() => undefined);
   }, []);
 
-  function selectChange(change: string) {
+  useEffect(() => {
+    if (state !== "ready") return;
+    const available = groups.map((group) => group.id);
+    setSelectedChanges((current) => {
+      const retained = current.filter((id) => available.includes(id));
+      if (retained.length > 0) return retained.length === current.length ? current : retained;
+      return available.includes(selectedChange) ? [selectedChange] : [];
+    });
+    if (changeSelectionAnchor.current && !available.includes(changeSelectionAnchor.current)) {
+      changeSelectionAnchor.current = available.includes(selectedChange) ? selectedChange : undefined;
+    }
+  }, [groups, selectedChange, state]);
+
+  function selectChange(change: string, event?: React.MouseEvent) {
+    const next = updateSelection(orderedChangeIds, selectedChanges, change, changeSelectionAnchor.current, selectionMode(event));
+    setSelectedChanges(next.selected);
+    changeSelectionAnchor.current = next.anchor;
+    if (change === selectedChange) return;
     setSelectedChange(change);
     fileSelection.clear();
     setDiff(undefined);
@@ -437,6 +457,10 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       fileSelection.clear();
       setDiff(undefined);
     }
+    if (!selectedChanges.includes(next.change)) {
+      setSelectedChanges([next.change]);
+      changeSelectionAnchor.current = next.change;
+    }
     if (next.kind === "opened" && !openedSelection.includes(next.depotPath)) {
       const file = files.find((item) => item.depotPath === next.depotPath);
       if (file) selectOpened(file);
@@ -455,16 +479,25 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   const contextGroup = menu ? groups.find((group) => group.id === menu.change) : undefined;
   const visibleGroups = filterChangeGroups(groups, changeQuery, currentGroup.id);
   const partitionedGroups = partitionArchived(visibleGroups, archivedChanges, (group) => group.id);
+  const orderedChangeIds = [...partitionedGroups.current, ...(unactualOpen ? partitionedGroups.archived : [])].map((group) => group.id);
   const contextOpened = menu?.kind === "opened"
     ? files.find((file) => file.depotPath === menu.depotPath)
     : undefined;
+
+  useEffect(() => {
+    if (changeSelectionAnchor.current && !orderedChangeIds.includes(changeSelectionAnchor.current)) {
+      changeSelectionAnchor.current = [...selectedChanges].reverse().find((id) => orderedChangeIds.includes(id));
+    }
+  }, [orderedChangeIds, selectedChanges]);
 
   function setUnactual(groupIds: string[], archived: boolean) {
     setArchived(groupIds.filter((id) => id !== "default"), archived);
   }
 
   function toggleUnactual(groupId: string) {
-    setUnactual([groupId], !archivedChanges.includes(groupId));
+    const archived = archivedChanges.includes(groupId);
+    const ids = selectedChangesForArchive(selectedChanges, groupId, archivedChanges);
+    setUnactual(ids, !archived);
   }
 
   const renderChange = (group: (typeof groups)[number]) => (
@@ -472,14 +505,20 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       type="button"
       draggable={!group.isDefault}
       title={!group.isDefault ? t("unactualDragHint") : undefined}
-      className={`change-item${group.id === currentGroup.id ? " selected" : ""}`}
+      className={`change-item${selectedChanges.includes(group.id) ? " selected" : ""}`}
       key={group.id}
-      onClick={() => selectChange(group.id)}
+      aria-pressed={selectedChanges.includes(group.id)}
+      onClick={(event) => selectChange(group.id, event)}
       onContextMenu={(event) => openMenu(event, { kind: "change", change: group.id, depotPath: "", x: 0, y: 0 })}
       onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) { event.preventDefault(); openMenu(event, { kind: "change", change: group.id, depotPath: "", x: 0, y: 0 }); } }}
       onDragOver={(event) => dragDrop.allowDrop(event, { kind: "changelist", change: group.id })}
       onDrop={(event) => void handleDrop(event, { kind: "changelist", change: group.id })}
-      onDragStart={(event) => archiveDragDrop.beginDrag(event, [group.id], archivedChanges.includes(group.id))}
+      onDragStart={(event) => {
+        const archived = archivedChanges.includes(group.id);
+        const ids = selectedChangesForArchive(selectedChanges, group.id, archivedChanges);
+        if (!selectedChanges.includes(group.id)) selectChange(group.id);
+        archiveDragDrop.beginDrag(event, ids, archived);
+      }}
       onDragEnd={archiveDragDrop.endDrag}
     >
       <span className="change-title-row">

@@ -78,6 +78,7 @@ History и Labels остаются доступны через быстрый п
 ### Unactual
 
 - В My Changes numbered changelist можно локально перенести в сворачиваемую нижнюю секцию Unactual и вернуть обратно через context menu или drag-and-drop строки между секциями.
+- Строки changelist поддерживают single, Ctrl/Cmd-toggle и Shift-range; перенос в/из Unactual применяется ко всей выбранной группе из той же секции.
 - Если списки Actual и Unactual в My Changes или Streams не помещаются по высоте, колонка прокручивается целиком; секции сохраняют высоту содержимого и не перекрывают друг друга.
 - В Streams та же классификация применяется к stream path; перенос доступен через context menu и drag-and-drop, включая выбранную группу stream одной секции. Объект остаётся полностью рабочим; меняется только его положение в UI.
 - Drop-target секции занимает всю оставшуюся область Unactual. Архивирование родителя каскадирует на потомков; обычное восстановление возвращает только выбранные paths, а отдельные context-команды работают со всеми потомками.
@@ -104,7 +105,7 @@ File lists поддерживают:
 - batch action над всей selection;
 - сохранение существующих IDs после refresh и удаление stale selection.
 
-Эти правила одинаковы для opened/shelved файлов в My Changes, workspace tree, Streams и файлов выбранного shelf; отдельный всегда-toggle режим для похожего списка не используется.
+Эти правила одинаковы для opened/shelved файлов в My Changes, файлов и папок workspace tree, changelist, Streams и файлов выбранного shelf. В workspace tree одна selection может одновременно содержать файлы и папки; отдельный всегда-toggle режим для похожего списка не используется.
 
 Drag-and-drop всегда имеет button/context-menu эквивалент. Курсор отражает семантику: reopen и перенос в/из Unactual — move, shelve/unshelve — copy. Invalid/external payload игнорируется; Default Shelf и Default changelist в Unactual не принимают drop.
 

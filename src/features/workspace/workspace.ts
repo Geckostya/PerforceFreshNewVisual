@@ -30,6 +30,16 @@ export function workspaceFolderPaths(folders: WorkspaceTreeFolder[]): string[] {
   return folders.flatMap((folder) => [folder.path, ...workspaceFolderPaths(folder.folders)]);
 }
 
+export function workspaceSelectionOrder(folders: WorkspaceTreeFolder[], collapsed = new Set<string>()): string[] {
+  return folders.flatMap((folder) => [
+    `folder:${folder.path}`,
+    ...(collapsed.has(folder.path) ? [] : [
+      ...workspaceSelectionOrder(folder.folders, collapsed),
+      ...folder.files.map((file) => `file:${file.depotPath}`),
+    ]),
+  ]);
+}
+
 const memoryFileCache = new Map<string, WorkspaceFile[]>();
 const memoryDirectoryCache = new Map<string, WorkspaceDirectorySnapshot>();
 const memoryStatusVersionCache = new Map<string, string>();

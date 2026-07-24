@@ -6,7 +6,7 @@ import { PathActions } from "../../shared/PathActions";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
-import { buildWorkspaceTree, filterWorkspaceFiles, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, type WorkspaceDirectorySnapshot, type WorkspaceFilter, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceFolderPaths, workspaceLazyRoot, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
+import { buildWorkspaceTree, filterWorkspaceFiles, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, type WorkspaceDirectorySnapshot, type WorkspaceFilter, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
 type WorkspaceDialog = "details" | "create" | "edit" | "rename" | "delete";
 type WorkspaceDraft = { name: string; root: string; stream: string; description: string };
@@ -50,7 +50,6 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [deleteLocalPath, setDeleteLocalPath] = useState<string>();
   const [menu, setMenu] = useState<{ file: WorkspaceFile; paths: string[]; x: number; y: number }>();
   const selectionAnchor = useRef<string | undefined>(undefined);
-  const folderSelectionAnchor = useRef<string | undefined>(undefined);
   const [filter, setFilter] = useState<WorkspaceFilter>("all");
   const [viewMode, setViewMode] = useState<"list" | "tree">("tree");
   const [query, setQuery] = useState("");
@@ -426,7 +425,8 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
 
   const selectedFiles = files.filter((file) => selected.includes(file.depotPath));
   const paths = selectedFiles.map((file) => file.depotPath);
-  const selectedFile = selectedFiles.length === 1 ? selectedFiles[0] : undefined;
+  const selectedSyncScopes = [...selectedFolders.map((folder) => `${folder.replace(/\/+$/, "")}/...`), ...paths];
+  const selectedFile = selectedFiles.length === 1 && selectedFolders.length === 0 ? selectedFiles[0] : undefined;
   const selectedHistoryPath = workspaceFileHistoryPath(selectedFile);
   const selectedUnresolvedPaths = selectedFiles.filter((file) => file.unresolved).map((file) => file.depotPath);
   const visibleFiles = useMemo(() => filterWorkspaceFiles(files, filter, query), [files, filter, query]);
@@ -435,25 +435,36 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const revisionScope = targetRevision.trim() ? `${scope.trim()}#${targetRevision.trim()}` : scope;
   const filtersActive = scope.trim() !== "//..." || query.trim() !== "" || filter !== "all" || viewMode !== "tree";
 
-  function selectFile(file: WorkspaceFile, event: React.MouseEvent) {
-    const ordered = visibleFiles.map((item) => item.depotPath);
-    const next = updateSelection(ordered, selected, file.depotPath, selectionAnchor.current, selectionMode(event));
-    setSelected(next.selected);
+  useEffect(() => {
+    const ordered = viewMode === "tree"
+      ? workspaceSelectionOrder(tree, collapsedFolders)
+      : visibleFiles.map((file) => `file:${file.depotPath}`);
+    if (selectionAnchor.current && !ordered.includes(selectionAnchor.current)) {
+      const current = [...selectedFolders.map((path) => `folder:${path}`), ...selected.map((path) => `file:${path}`)];
+      selectionAnchor.current = current.reverse().find((item) => ordered.includes(item));
+    }
+  }, [collapsedFolders, selected, selectedFolders, tree, viewMode, visibleFiles]);
+
+  function applyTreeSelection(target: string, event: React.MouseEvent) {
+    const current = [
+      ...selectedFolders.map((path) => `folder:${path}`),
+      ...selected.map((path) => `file:${path}`),
+    ];
+    const ordered = viewMode === "tree"
+      ? workspaceSelectionOrder(tree, collapsedFolders)
+      : visibleFiles.map((file) => `file:${file.depotPath}`);
+    const next = updateSelection(ordered, current, target, selectionAnchor.current, selectionMode(event));
     selectionAnchor.current = next.anchor;
-    setSelectedFolders([]);
+    setSelectedFolders(next.selected.filter((item) => item.startsWith("folder:")).map((item) => item.slice(7)));
+    setSelected(next.selected.filter((item) => item.startsWith("file:")).map((item) => item.slice(5)));
+  }
+
+  function selectFile(file: WorkspaceFile, event: React.MouseEvent) {
+    applyTreeSelection(`file:${file.depotPath}`, event);
   }
 
   function selectFolder(folder: WorkspaceTreeFolder, event: React.MouseEvent) {
-    const next = updateSelection(
-      workspaceFolderPaths(tree),
-      selectedFolders,
-      folder.path,
-      folderSelectionAnchor.current,
-      selectionMode(event),
-    );
-    folderSelectionAnchor.current = next.anchor;
-    setSelectedFolders(next.selected);
-    setSelected([]);
+    applyTreeSelection(`folder:${folder.path}`, event);
   }
 
   const renderFile = (file: WorkspaceFile) => {
@@ -488,7 +499,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     }} aria-busy={folder.loading}><summary role="treeitem" aria-label={ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name} aria-selected={selectedFolders.includes(folder.path)} aria-expanded={open} aria-busy={folder.loading} data-agent-id={`workspace-folder:${folder.path}`} data-agent-ignored={ignored} onClick={(event) => selectFolder(folder, event)}><span className="folder-icon" aria-hidden="true">▸</span><strong>{folder.name}</strong><span className="folder-summary-meta">{folder.loading ? <span className="folder-loading-indicator" role="status" aria-label={t("folderLoading")} title={t("folderLoading")} /> : null}<small>{folder.loaded ? folderFileCount(folder) : "…"}</small></span></summary>{open && <div role="group">{renderTree(folder.folders)}{folder.files.map(renderFile)}</div>}</details>;
   });
 
-  const selectedFolder = selectedFolders.length === 1 ? selectedFolders[0] : undefined;
+  const selectedFolder = selectedFolders.length === 1 && selected.length === 0 ? selectedFolders[0] : undefined;
 
   useEffect(() => {
     if (!selectedFile && !selectedFolder) {
@@ -535,7 +546,11 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
         <button className="secondary-button apply-scope-button" type="button" onClick={() => void load(scope)} disabled={busy}>{t("applyScope")}</button>
         <label className="field"><span className="field-label">{t("workspaceSearch")}</span><input value={query} placeholder={t("workspaceSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} /><small>{t("workspaceSearchHelp")}</small></label>
         <label className="field"><span className="field-label">{t("workspaceFilter")}</span><select value={filter} onChange={(event) => setFilter(event.target.value as WorkspaceFilter)}><option value="all">{t("workspaceFilterAll")}</option><option value="opened">{t("workspaceFilterOpened")}</option><option value="outdated">{t("workspaceFilterOutdated")}</option><option value="unresolved">{t("workspaceFilterUnresolved")}</option><option value="otherOpen">{t("workspaceFilterOtherOpen")}</option><option value="locked">{t("workspaceFilterLocked")}</option><option value="unmapped">{t("workspaceFilterUnmapped")}</option><option value="untracked">{t("workspaceFilterUntracked")}</option></select></label>
-        <label className="field compact-field"><span className="field-label">{t("workspaceViewMode")}</span><select value={viewMode} onChange={(event) => setViewMode(event.target.value as "list" | "tree")}><option value="list">{t("workspaceViewList")}</option><option value="tree">{t("workspaceViewTree")}</option></select></label>
+        <label className="field compact-field"><span className="field-label">{t("workspaceViewMode")}</span><select value={viewMode} onChange={(event) => {
+          const next = event.target.value as "list" | "tree";
+          setViewMode(next);
+          if (next === "list") setSelectedFolders([]);
+        }}><option value="list">{t("workspaceViewList")}</option><option value="tree">{t("workspaceViewTree")}</option></select></label>
       </div>
     </details>
     <div className="resource-workbench workspace-workbench">
@@ -547,11 +562,11 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
         <div className="column-heading"><strong>{t("fileDetailsLabel")}</strong><span>{selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : selected.length}</span></div>
         {!selected.length && !selectedFolders.length ? <EmptyState title={t("selectWorkspaceFile")} body={t("selectWorkspaceFileBody")} /> : <div className="inspector-content">
           <div><h2>{selectedFolder || (selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : selectedFile?.depotPath || `${selected.length} ${t("filesSelected")}`)}</h2>{selectedFile && <PathActions depotPath={selectedFile.depotPath} localPath={selectedFile.localPath} />}</div>
-          {selectedFolders.length > 0 && <div className="inspector-actions"><button className="primary-button" type="button" onClick={() => void safeSync.start(selectedFolders.map((folder) => `${folder.replace(/\/+$/, "")}/...`))} disabled={busy || safeSync.phase !== "idle"}>{t("updateSelected")}</button></div>}
+          {selectedSyncScopes.length > 0 && <div className="inspector-actions"><button className="primary-button" type="button" onClick={() => void safeSync.start(selectedSyncScopes)} disabled={busy || safeSync.phase !== "idle"}>{t("updateSelected")}</button></div>}
           {selectedFile && <dl className="file-facts"><dt>{t("actionLabel")}</dt><dd>{selectedFile.action || "—"}</dd><dt>{t("revisionLabel")}</dt><dd>{selectedFile.haveRevision || "—"} / {selectedFile.headRevision || "—"}</dd><dt>{t("workspaceStatus")}</dt><dd>{selectedFile.statusPending ? t("workspaceStatusLoading") : workspaceStatus(selectedFile).map((status) => t(`workspaceStatus_${status}` as never)).join(" · ") || t("workspaceStatusClean")}</dd></dl>}
           <section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <div className="history-compact-row" key={revision.revision}><strong>#{revision.revision} · {revision.action}</strong><span>CL {revision.change} · {revision.user}</span><small>{revision.description}</small></div>) : folderHistory.length ? folderHistory.map((changeItem) => <div className="history-compact-row" key={changeItem.id}><strong>CL {changeItem.id} · {changeItem.user}</strong><span>{changeItem.client}</span><small>{changeItem.description}</small></div>) : <CompactEmpty text={t("depotNoHistory")} />}</section>
           {selected.length > 0 && <><label className="field"><span className="field-label">{t("destinationChangelist")}</span><input value={change} onChange={(event) => setChange(event.target.value)} /></label>
-          <div className="inspector-actions"><button className="primary-button" type="button" onClick={() => void safeSync.start(paths)} disabled={busy || !paths.length || safeSync.phase !== "idle"}>{t("updateSelected")}</button><button className="secondary-button" type="button" onClick={() => void run(() => editFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("openForEdit")}</button><button className="secondary-button" type="button" onClick={() => void run(() => addFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("markForAdd")}</button><button className="secondary-button" type="button" onClick={() => void run(() => deleteFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("markForDelete")}</button><button className="secondary-button" type="button" onClick={() => void openRevert(paths)} disabled={busy || !selectedFiles.every((file) => file.action && (file.change || "default") === (selectedFiles[0]?.change || "default"))}>{t("revertSelected")}</button><button className="secondary-button" type="button" onClick={() => setRenameDestination(selectedFile?.depotPath || "")} disabled={!selectedFile || busy}>{t("renameFile")}</button><button className="secondary-button" type="button" onClick={() => void run(() => lockFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("lockFiles")}</button><button className="secondary-button" type="button" onClick={() => void run(() => unlockFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("unlockFiles")}</button></div>
+          <div className="inspector-actions"><button className="secondary-button" type="button" onClick={() => void run(() => editFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("openForEdit")}</button><button className="secondary-button" type="button" onClick={() => void run(() => addFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("markForAdd")}</button><button className="secondary-button" type="button" onClick={() => void run(() => deleteFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("markForDelete")}</button><button className="secondary-button" type="button" onClick={() => void openRevert(paths)} disabled={busy || !selectedFiles.every((file) => file.action && (file.change || "default") === (selectedFiles[0]?.change || "default"))}>{t("revertSelected")}</button><button className="secondary-button" type="button" onClick={() => setRenameDestination(selectedFile?.depotPath || "")} disabled={!selectedFile || busy}>{t("renameFile")}</button><button className="secondary-button" type="button" onClick={() => void run(() => lockFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("lockFiles")}</button><button className="secondary-button" type="button" onClick={() => void run(() => unlockFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("unlockFiles")}</button></div>
           {selectedUnresolvedPaths.length > 0 && <div className="inline-preview"><strong>{t("unresolvedFilesSelected")}: {selectedUnresolvedPaths.length}</strong><div className="inspector-actions"><button className="secondary-button" type="button" onClick={() => void showResolvePreview("yours")} disabled={busy}>{t("resolveKeepWorkspace")}</button><button className="secondary-button" type="button" onClick={() => void showResolvePreview("theirs")} disabled={busy}>{t("resolveAcceptServer")}</button><button className="secondary-button" type="button" onClick={() => void showResolvePreview("autoSafe")} disabled={busy}>{t("resolveAutoSafe")}</button><button className="secondary-button" type="button" onClick={() => void showResolvePreview("autoMerge")} disabled={busy}>{t("resolveAutoMerge")}</button></div></div>}
           <div className="inline-preview"><label className="field"><span className="field-label">{t("targetRevision")}</span><input value={targetRevision} placeholder={t("targetRevisionPlaceholder")} onChange={(event) => setTargetRevision(event.target.value)} /></label><button className="secondary-button" type="button" onClick={() => void showSyncPreview(revisionScope)} disabled={busy || !targetRevision.trim()}>{t("getRevision")}</button></div></>}
         </div>}

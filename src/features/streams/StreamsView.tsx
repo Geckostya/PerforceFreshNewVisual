@@ -88,6 +88,12 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
   );
   const menuDescendants = menu ? streamDescendantPaths(streams, menu.stream.path) : [];
 
+  useEffect(() => {
+    if (selectionAnchor.current && !orderedPaths.includes(selectionAnchor.current)) {
+      selectionAnchor.current = [...selectedPaths].reverse().find((path) => orderedPaths.includes(path));
+    }
+  }, [orderedPaths, selectedPaths]);
+
   function setUnactual(paths: string[], archived: boolean) {
     updateArchivedIds((current) => updateArchivedStreamPaths(streams, current, paths, archived));
   }

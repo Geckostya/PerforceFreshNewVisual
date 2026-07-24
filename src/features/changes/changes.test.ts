@@ -11,6 +11,7 @@ import {
   groupChanges,
   hasUnresolvedSubmitIssue,
   resolveChangeDrop,
+  selectedChangesForArchive,
   shouldRefreshOnFocus,
   visibleShelfFiles,
 } from "./changes";
@@ -60,6 +61,13 @@ describe("pending changelist filter", () => {
     expect(filterChangeGroups(groups, "release", "42").map((group) => group.id)).toEqual(["42", "77"]);
     expect(filterChangeGroups(groups, "menu").map((group) => group.id)).toEqual(["42"]);
     expect(filterChangeGroups(groups, "", "default")).toHaveLength(3);
+  });
+});
+
+describe("changelist multi-selection", () => {
+  it("keeps batch archive actions in the target section and excludes Default", () => {
+    expect(selectedChangesForArchive(["default", "42", "77", "99"], "42", ["99"])).toEqual(["42", "77"]);
+    expect(selectedChangesForArchive(["42", "77"], "99", ["99"])).toEqual(["99"]);
   });
 });
 

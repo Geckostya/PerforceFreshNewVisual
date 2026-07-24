@@ -31,6 +31,7 @@
 - Заголовки `Opened files` и `Shelved files` имеют контекстное меню для операций сразу над всей секцией: select all, move/shelve/revert all или unshelve/delete shelf.
 - Пустые, loading, permission denied, resolve required и out-of-date состояния должны быть отличимы друг от друга.
 - Numbered changelist можно косметически перенести в сворачиваемую секцию `Unactual` и вернуть обратно через контекстное меню или drag-and-drop строки между актуальным списком и секцией. Это локальная классификация по server/user/workspace: changelist остаётся selectable/editable и не меняется на сервере; Default не draggable/не архивируется, stale IDs удаляются после refresh.
+- Список changelist поддерживает single, Ctrl/Cmd-toggle и Shift-range. Drag-and-drop и перенос в/из `Unactual` применяются к выбранной группе одной секции; Default исключается из batch-переноса.
 
 ## 3. Полный каталог действий
 

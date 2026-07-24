@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OpenedFile, PendingChange, WorkspaceFile } from "../../shared/models";
-import { buildWorkspaceTree, filterWorkspaceFiles, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceLazyRoot, workspaceStatus, workspaceStatusVersion } from "./workspace";
+import { buildWorkspaceTree, filterWorkspaceFiles, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
 
 const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   depotPath: "//Acme/main/a.txt",
@@ -70,6 +70,21 @@ describe("workspace status filters", () => {
     ]);
     const ordered = workspaceFolderPaths(tree);
     expect(ordered).toEqual(["//Acme", "//Acme/main", "//Acme/main/deep", "//Acme/tools"]);
+    expect(workspaceSelectionOrder(tree)).toEqual([
+      "folder://Acme",
+      "folder://Acme/main",
+      "folder://Acme/main/deep",
+      "file://Acme/main/deep/b.txt",
+      "file://Acme/main/a.txt",
+      "folder://Acme/tools",
+      "file://Acme/tools/c.txt",
+    ]);
+    expect(workspaceSelectionOrder(tree, new Set(["//Acme/main"]))).toEqual([
+      "folder://Acme",
+      "folder://Acme/main",
+      "folder://Acme/tools",
+      "file://Acme/tools/c.txt",
+    ]);
   });
 
   it("shows discovered empty folders while their contents are still loading", () => {

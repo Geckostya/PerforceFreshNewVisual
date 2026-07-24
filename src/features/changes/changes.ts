@@ -71,6 +71,13 @@ export function filterChangeGroups<T extends ChangeGroup>(groups: T[], query: st
   return selected && !filtered.some((group) => group.id === selected.id) ? [selected, ...filtered] : filtered;
 }
 
+export function selectedChangesForArchive(selected: string[], target: string, archivedIds: string[]): string[] {
+  const archived = new Set(archivedIds);
+  const targetArchived = archived.has(target);
+  return (selected.includes(target) ? selected : [target])
+    .filter((id) => id !== "default" && archived.has(id) === targetArchived);
+}
+
 export function shouldRefreshOnFocus(focused: boolean, lastRefresh: number, now: number) {
   return focused && now - lastRefresh >= 1_500;
 }
