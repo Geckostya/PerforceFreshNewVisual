@@ -1,164 +1,164 @@
-# Требования к changelist и shelf
+# Changelist and shelf requirements
 
-Статус документа: рабочий контракт продукта и реализации. Обновлено 2026-07-22.
+Document status: active product and implementation contract. Updated 2026-07-22.
 
-## 1. Модель данных и обязательные состояния
+## 1. Data model and mandatory states
 
-Приложение не должно объединять локальные opened-файлы и shelved-файлы в один список. Shelf — серверный снимок, который продолжает существовать независимо от дальнейших правок или revert в workspace.
+The application must not merge local opened files and shelved files into one list. A shelf is a server snapshot that continues to exist independently of later edits or a workspace revert.
 
-Для каждого pending changelist интерфейс обязан различать:
+For every pending changelist, the UI must distinguish:
 
-| Состояние | Локальные opened-файлы | Shelf | Основное действие |
+| State | Local opened files | Shelf | Primary action |
 |---|---:|---:|---|
-| Пустой numbered changelist | 0 | 0 | Редактировать или удалить changelist |
-| Только локальная работа | >0 | 0 | Submit local или создать shelf |
-| Только shelf | 0 | >0 | Submit shelf или unshelve |
-| Локальная работа и shelf | >0 | >0 | Явно выбрать версию для submit |
-| Default changelist | 0..N | невозможен | Submit local; для shelf сначала создать numbered changelist |
-| Чужой или restricted shelf | неизвестно | 0..N | Только действия, разрешённые сервером; ошибки прав не маскировать |
+| Empty numbered changelist | 0 | 0 | Edit or delete the changelist |
+| Local work only | >0 | 0 | Submit local work or create a shelf |
+| Shelf only | 0 | >0 | Submit the shelf or unshelve |
+| Local work and shelf | >0 | >0 | Explicitly choose the version to submit |
+| Default changelist | 0..N | impossible | Submit local work; create a numbered changelist before shelving |
+| Foreign or restricted shelf | unknown | 0..N | Only server-permitted actions; do not mask permission errors |
 
-Одинаковый depot path в локальном списке и shelf также означает две версии. Они могут совпадать или отличаться.
+The same depot path in the local list and shelf still represents two versions. They may match or differ.
 
-## 2. Обязательная структура представления
+## 2. Mandatory view structure
 
-- Список pending changelists выбранного workspace, включая Default.
-- Явные признаки: номер, описание, количество локальных файлов, наличие shelf, дата.
-- Внутри выбранного changelist — два самостоятельных раздела: `Opened files` и `Shelved files`.
-- Shelf загружается лениво для выбранного changelist, чтобы не делать до 200 запросов `p4 files` при каждом refresh.
-- Выбранный файл показывает depot path, action, revision, type и источник `LOCAL`/`SHELF`.
-- Обновление при возврате фокуса и ручной Refresh обновляют локальный список, shelves и содержимое открытого shelf.
-- Частые действия находятся в основном потоке. Редкие и разрушительные действия находятся в контекстном меню и всегда вызывают подтверждение.
-- Заголовки `Opened files` и `Shelved files` имеют контекстное меню для операций сразу над всей секцией: select all, move/shelve/revert all или unshelve/delete shelf.
-- Пустые, loading, permission denied, resolve required и out-of-date состояния должны быть отличимы друг от друга.
-- Numbered changelist можно косметически перенести в сворачиваемую секцию `Unactual` и вернуть обратно через контекстное меню или drag-and-drop строки между актуальным списком и секцией. Это локальная классификация по server/user/workspace: changelist остаётся selectable/editable и не меняется на сервере; Default не draggable/не архивируется, stale IDs удаляются после refresh.
-- Список changelist поддерживает single, Ctrl/Cmd-toggle и Shift-range. Drag-and-drop и перенос в/из `Unactual` применяются к выбранной группе одной секции; Default исключается из batch-переноса.
+- A list of pending changelists for the selected workspace, including Default.
+- Explicit indicators: number, description, local-file count, shelf presence, and date.
+- Two independent sections inside the selected changelist: `Opened files` and `Shelved files`.
+- Lazy shelf loading for the selected changelist, avoiding up to 200 `p4 files` requests on every refresh.
+- The selected file shows depot path, action, revision, type, and `LOCAL`/`SHELF` source.
+- Focus-return refresh and manual Refresh update the local list, shelves, and contents of the open shelf.
+- Frequent actions stay in the primary flow. Rare and destructive actions live in the context menu and always request confirmation.
+- The `Opened files` and `Shelved files` headings have context menus for whole-section operations: select all, move/shelve/revert all, or unshelve/delete shelf.
+- Empty, loading, permission-denied, resolve-required, and out-of-date states must be distinguishable.
+- A numbered changelist can be moved cosmetically into the collapsible `Unactual` section and restored through the context menu or by dragging a row between the actual list and the section. This is local server/user/workspace classification: the changelist remains selectable/editable and is unchanged on the server; Default cannot be dragged or archived, and stale IDs are removed after refresh.
+- The changelist list supports single, Ctrl/Cmd-toggle, and Shift-range selection. Drag-and-drop and movement to/from `Unactual` apply to the selected group from one section; Default is excluded from batch movement.
 
-## 3. Полный каталог действий
+## 3. Complete action catalog
 
 ### 3.1 Changelist
 
-| Действие | Условия | UX | Статус |
+| Action | Conditions | UX | Status |
 |---|---|---|---|
-| Создать numbered changelist | Есть подключение и описание | Основное действие | Реализовано |
-| Изменить описание | Numbered pending, есть права владельца | Контекстное меню | Реализовано |
-| Перенести в/из Unactual | Numbered pending | Контекстное меню или DnD между актуальным списком и локальной сворачиваемой секцией | Реализовано; server state не меняется |
-| Удалить | Нет opened-файлов, shelf, jobs и stream spec | Контекстное меню + confirm | Реализовано; сервер проверяет инварианты |
-| Переместить один локальный файл | Файл opened в текущем workspace | Drag-and-drop или inspector | Реализовано |
-| Переместить несколько/все локальные файлы | То же | Multi-select / inspector / drag-and-drop | Реализовано |
-| Shelve выбранные файлы | Numbered CL, файлы opened в нём | Drop в Shelf / context | Реализовано для multi-select |
-| Shelve все / полностью обновить shelf | Есть локальные файлы | Контекстное меню + confirm | Реализовано через `p4 shelve -r` |
-| Unshelve выбранные/все | Shelf доступен, target CL выбран | Drag-and-drop / context + target | Реализовано |
-| Удалить выбранные/все shelved-копии | Пользователь владелец shelf | Контекстное меню + confirm | Реализовано |
-| Submit local / shelf / конфликт | См. раздел 5 | Submit dialog | Реализовано |
-| Revert выбранных локальных файлов | Файлы opened | Multi-select + server preview + destructive confirm | Реализовано; для `add` есть сохраняемая настройка удаления файла с диска |
-| Revert unchanged / всего CL | Нужны выбор и preview | Context / selection | Реализовано для unchanged и всего CL |
-| Resolve | Есть unresolved files | Отдельный preview/resolve workflow | Базовые keep workspace / accept server / auto modes реализованы в Workspace; full merge editor не закрыт |
-| Lock / unlock | Тип/права допускают | Контекстное меню для selected/all opened | Реализовано |
-| Связать/отвязать jobs | Job subsystem доступен | Jobs inspector | Реализовано через `p4 fix`; прямое редактирование из CL details не закрыто |
-| Сменить owner/workspace | Есть права; важно для handoff | Контекстное меню | Следующий инкремент |
-| Public/restricted | Есть права владельца | Edit dialog | Следующий инкремент |
-| Promote shelf | Commit-edge topology | Advanced context | Показывать только после определения topology |
-| Copy/reshelve в другой CL | Доступен shelf | Shelves inspector + confirm | Реализовано через `p4 reshelve -s -c` для выбранных файлов |
-| Создать/обновить code review | Настроен P4 Code Review | Integration action | Не показывать без интеграции |
+| Create numbered changelist | Connected with a description | Primary action | Implemented |
+| Edit description | Numbered pending change with owner rights | Context menu | Implemented |
+| Move to/from Unactual | Numbered pending change | Context menu or DnD between the actual list and local collapsible section | Implemented; server state is unchanged |
+| Delete | No opened files, shelf, jobs, or stream spec | Context menu + confirmation | Implemented; the server checks invariants |
+| Move one local file | File is opened in the current workspace | Drag-and-drop or inspector | Implemented |
+| Move several/all local files | Same | Multi-select / inspector / drag-and-drop | Implemented |
+| Shelve selected files | Numbered CL with files opened in it | Drop into Shelf / context | Implemented for multi-select |
+| Shelve all / fully update shelf | Local files exist | Context menu + confirmation | Implemented through `p4 shelve -r` |
+| Unshelve selected/all | Shelf is accessible and target CL selected | Drag-and-drop / context + target | Implemented |
+| Delete selected/all shelved copies | User owns the shelf | Context menu + confirmation | Implemented |
+| Submit local / shelf / conflict | See section 5 | Submit dialog | Implemented |
+| Revert selected local files | Files are opened | Multi-select + server preview + destructive confirmation | Implemented; `add` has a persistent setting for deleting the disk file |
+| Revert unchanged / whole CL | Selection and preview required | Context / selection | Implemented for unchanged and whole CL |
+| Resolve | Unresolved files exist | Separate preview/resolve workflow | Basic keep-workspace / accept-server / auto modes implemented in Workspace; full merge editor remains open |
+| Lock / unlock | Type/permissions allow | Context menu for selected/all opened | Implemented |
+| Attach/detach jobs | Job subsystem is available | Jobs inspector | Implemented through `p4 fix`; direct editing from CL details remains open |
+| Change owner/workspace | Permissions allow; important for handoff | Context menu | Next increment |
+| Public/restricted | Owner permissions allow | Edit dialog | Next increment |
+| Promote shelf | Commit-edge topology | Advanced context | Show only after topology is known |
+| Copy/reshelve to another CL | Shelf is available | Shelves inspector + confirmation | Implemented through `p4 reshelve -s -c` for selected files |
+| Create/update code review | P4 Code Review configured | Integration action | Do not show without integration |
 
-### 3.2 Локальный opened-файл
+### 3.2 Local opened file
 
-- Просмотреть diff local ↔ have revision — реализовано.
-- Переместить один или несколько файлов в другой changelist — реализовано через multi-select, inspector и drag-and-drop.
-- Shelve/update одного или нескольких выбранных файлов — реализовано.
-- Revert одного или нескольких файлов с server-backed preview и предупреждением о потере несохранённой в shelf версии — реализовано. Для opened-for-add флаг удаления файла соответствует `p4 revert -w` и сохраняется в `settings.json`; без него файл остаётся на диске.
-- Сравнить local ↔ shelf при наличии соответствующего shelved path — реализовано.
-- History, annotate, time-lapse, open in file manager/editor — относятся к общему file workflow и должны переиспользовать будущие экраны, а не дублироваться внутри changelist.
-- Resolve, accept yours/theirs/merge — нельзя сводить к одной опасной кнопке; необходимы preview и состояние unresolved.
+- View local ↔ have revision diff — implemented.
+- Move one or more files to another changelist — implemented through multi-select, inspector, and drag-and-drop.
+- Shelve/update one or more selected files — implemented.
+- Revert one or more files with a server-backed preview and a warning about losing a version not saved in a shelf — implemented. For opened-for-add, the file-deletion flag maps to `p4 revert -w` and persists in `settings.json`; without it, the file remains on disk.
+- Compare local ↔ shelf when the corresponding shelved path exists — implemented.
+- History, annotate, time-lapse, and open in file manager/editor belong to the shared file workflow and should reuse future screens instead of being duplicated inside changelists.
+- Resolve and accept yours/theirs/merge cannot be reduced to one dangerous button; preview and unresolved state are required.
 
-### 3.3 Shelved-файл
+### 3.3 Shelved file
 
-- Просмотреть имя, depot path, action, revision и type — реализовано.
-- Сравнить shelf ↔ depot head — реализовано.
-- Сравнить local ↔ shelf — реализовано, когда локальная версия доступна в workspace.
-- Unshelve одного или нескольких выбранных файлов в Default или numbered changelist — реализовано.
-- Если shelved `add` конфликтует с существующим неотслеживаемым локальным файлом, preflight показывает сразу все коллизии. По умолчанию они пропускаются; для выделенного поднабора через ПКМ можно явно разрешить перезапись `p4 unshelve -f`.
-- Удалить один или несколько выбранных файлов из shelf — реализовано с подтверждением.
-- Просмотреть содержимое бинарного файла — общий viewer показывает безопасное binary state; полноценный metadata/image preview остаётся будущим расширением.
-- Скачать shelved content без unshelve — реализован экспорт одного выбранного файла через `p4 print path@=change` только в новый output path; batch/native picker не закрыты.
+- View name, depot path, action, revision, and type — implemented.
+- Compare shelf ↔ depot head — implemented.
+- Compare local ↔ shelf — implemented when a local version is available in the workspace.
+- Unshelve one or more selected files into Default or a numbered changelist — implemented.
+- When a shelved `add` conflicts with an existing untracked local file, preflight shows every collision at once. They are skipped by default; a selected subset can explicitly receive overwrite via `p4 unshelve -f` from its context menu.
+- Delete one or more selected files from a shelf — implemented with confirmation.
+- View binary-file contents — the shared viewer shows a safe binary state; a full metadata/image preview remains a future extension.
+- Download shelved content without unshelving — export of one selected file through `p4 print path@=change` to a new output path is implemented; batch/native picker remain open.
 
 ## 4. Drag-and-drop
 
-| Источник | Цель | Команда/семантика |
+| Source | Target | Command/semantics |
 |---|---|---|
-| Local file(s) | Другой changelist | `p4 reopen -c target files...` — перемещение всего выбранного набора |
-| Local file(s) | Shelf текущего numbered CL | `p4 shelve -f -c change -Af files...` — создать/обновить копии |
-| Local file(s) | Shelf другого numbered CL | Сначала batch `reopen`, затем batch `shelve`; при ошибке shelve приложение пытается вернуть весь набор в исходный CL |
-| Shelved file(s) | Default/numbered changelist | `p4 unshelve -s source -c target -Af files...` — копирование, shelf сохраняется; перед выполнением проверяются конфликты shelved-add |
-| Shelved file | Shelf | Нет неявного действия; для server-to-server copy нужен явный `reshelve` workflow |
+| Local file(s) | Another changelist | `p4 reopen -c target files...` — move the entire selected set |
+| Local file(s) | Shelf of current numbered CL | `p4 shelve -f -c change -Af files...` — create/update copies |
+| Local file(s) | Shelf of another numbered CL | Batch `reopen`, then batch `shelve`; on shelve failure, attempt to return the whole set to its source CL |
+| Shelved file(s) | Default/numbered changelist | `p4 unshelve -s source -c target -Af files...` — copy while preserving the shelf; check shelved-add conflicts first |
+| Shelved file | Shelf | No implicit action; server-to-server copy requires an explicit `reshelve` workflow |
 
-Курсор должен показывать copy для unshelve и move для reopen. Внешние и повреждённые drag payload игнорируются. Drop в Default Shelf запрещён. После успешного drop выполняется серверный refresh, а не только оптимистическое изменение UI. Кэш содержимого shelf очищается при каждом refresh и никогда не отображается, если свежий список changelist больше не сообщает о наличии shelf.
+The cursor must show copy for unshelve and move for reopen. External and malformed drag payloads are ignored. Drop into Default Shelf is prohibited. A successful drop triggers a server refresh, not merely an optimistic UI change. The shelf-content cache is cleared on every refresh and is never displayed when the fresh changelist list no longer reports a shelf.
 
-## 5. Submit и конфликт непустого shelf
+## 5. Submit with a nonempty shelf
 
-Perforce не разрешает обычный submit changelist, пока в нём остаются shelved-файлы. Прямой submit shelf, в свою очередь, требует, чтобы в changelist не было локальных non-shelved opened-файлов. Поэтому при одновременном наличии local и shelf пользователь получает три честных варианта:
+Perforce does not allow an ordinary changelist submit while shelved files remain. Direct shelf submit, in turn, requires that the changelist contain no local nonshelved opened files. When local work and a shelf coexist, the user therefore receives three honest choices:
 
-### 5.1 Отправить shelf
+### 5.1 Submit the shelf
 
-1. Создать recovery changelist.
-2. Переместить туда все локальные opened-файлы исходного CL.
-3. Выполнить `p4 submit -e source`.
-4. Оставить локальную работу в recovery CL и показать его номер.
-5. Если submit shelf не прошёл, попытаться вернуть файлы в исходный CL и удалить пустой recovery CL.
+1. Create a recovery changelist.
+2. Move all local opened files from the source CL into it.
+3. Run `p4 submit -e source`.
+4. Leave local work in the recovery CL and show its number.
+5. If shelf submit fails, attempt to return files to the source CL and delete the empty recovery CL.
 
-Так shelf становится submitted-версией, а более новые локальные правки не теряются.
+The shelf becomes the submitted version while newer local edits are preserved.
 
-### 5.2 Отправить локальные и удалить shelf
+### 5.2 Submit local work and delete the shelf
 
-1. Явно предупредить, что старый shelf восстановить нельзя.
-2. Выполнить `p4 shelve -d -c change`.
-3. Выполнить `p4 submit -c change`.
+1. Explicitly warn that the old shelf cannot be recovered.
+2. Run `p4 shelve -d -c change`.
+3. Run `p4 submit -c change`.
 
-Это точное, быстрое, но более рискованное действие пользователя.
+This is exact and fast, but a riskier user action.
 
-### 5.3 Обновить shelf и отправить локальные
+### 5.3 Update the shelf and submit local work
 
-1. Заменить shelf полным текущим набором local через `p4 shelve -r -c change -Af`.
-2. Удалить shelf, потому что обычный `submit -c` иначе запрещён.
-3. Выполнить `p4 submit -c change`.
-4. Если submit не прошёл, автоматически заново создать обновлённый shelf из оставшихся opened-файлов.
+1. Replace the shelf with the complete current local set through `p4 shelve -r -c change -Af`.
+2. Delete the shelf because ordinary `submit -c` is otherwise prohibited.
+3. Run `p4 submit -c change`.
+4. If submit fails, automatically recreate the updated shelf from the remaining opened files.
 
-Этот режим использует shelf как серверную контрольную точку на время рискованной операции. После успешного submit shelf закономерно исчезает вместе с pending change.
+This mode uses the shelf as a server checkpoint during a risky operation. After a successful submit, the shelf disappears together with the pending change as expected.
 
-### 5.4 Общие требования submit
+### 5.4 Shared submit requirements
 
-- Не применять `-f` к unshelve неявно. Флаг разрешён только для конкретных конфликтующих файлов, которые пользователь выделил и явно назначил на перезапись; безопасное начальное решение — пропуск.
-- После success и failure всегда перечитывать состояние: сервер может перенумеровать changelist или оставить его pending.
-- Показывать server diagnostics и отдельно сообщать результат compensation/rollback.
-- Не обещать submit shelf из task stream или на чужом edge server: серверное ограничение должно быть показано пользователю.
-- Submit остаётся атомарным на стороне P4 Server; составные подготовительные операции приложения имеют явный rollback или предупреждение.
+- Never apply `-f` to unshelve implicitly. It is allowed only for specific conflicting files selected and explicitly assigned to overwrite by the user; the safe initial decision is Skip.
+- Always reread state after success and failure: the server may renumber the changelist or leave it pending.
+- Show server diagnostics and report compensation/rollback results separately.
+- Do not promise shelf submit from a task stream or on another user's edge server; show the server limitation to the user.
+- Submit remains atomic on the P4 Server; composite preparatory application operations have an explicit rollback or warning.
 
-## 6. Контекстное меню
+## 6. Context menu
 
 Changelist: Edit, Shelve/Update all, Unshelve all, Delete shelf, Delete empty changelist, Submit.
 
-Local file selection: Diff для одного файла, Shelve/update и Revert для всего выбранного набора.
+Local file selection: Diff for one file, Shelve/update and Revert for the whole selected set.
 
-Shelved file selection: Diff/Compare для одного файла, Unshelve selected и Delete selected from shelf для всего выбранного набора. В окне конфликтов отдельное ПКМ назначает Skip или Overwrite from shelf выделенным строкам.
+Shelved file selection: Diff/Compare for one file, Unshelve selected and Delete selected from shelf for the whole selected set. In the conflict window, a separate context menu assigns Skip or Overwrite from shelf to selected rows.
 
-Пункты не отображаются, если действие невозможно по локально известному состоянию. Сервер остаётся источником истины для прав и race conditions.
+Items are hidden when the action is impossible from locally known state. The server remains the source of truth for permissions and race conditions.
 
-## 7. Надёжность, масштаб и доступность
+## 7. Reliability, scale, and accessibility
 
-- Все depot paths и changelist IDs валидируются до передачи в CLI; shell interpolation не используется.
-- Лимит текстового diff — 2 MiB с явным признаком truncation.
-- Multi-select поддерживает обычный клик, Ctrl/Cmd-toggle и Shift-range; все batch-операции передают массивы путей без shell interpolation. Виртуализация остаётся отдельной задачей для очень больших changelist.
-- Разрушительные действия требуют отдельного общего confirmation dialog с описанием того, что сохраняется и что удаляется; browser-native `confirm` не используется.
-- Context menu доступно с focused row через системную клавишу `ContextMenu` и `Shift+F10`; все его пункты являются нативными button.
-- Drag-and-drop имеет эквивалентные команды через inspector/context menu.
-- Строки UI хранятся во внешних locale JSON; новые языки не требуют пересборки.
-- Предупреждения и ошибки, реально полученные от `p4` в текущей workspace-сессии, складываются в ограниченный сессионный журнал. Индикатор закреплён справа внизу; журнал показывает время и технические детали и может быть очищен пользователем.
+- Validate every depot path and changelist ID before passing it to the CLI; do not use shell interpolation.
+- Limit text diffs to 2 MiB with an explicit truncation indicator.
+- Multi-select supports ordinary click, Ctrl/Cmd-toggle, and Shift-range; every batch operation passes arrays of paths without shell interpolation. Virtualization remains a separate task for very large changelists.
+- Destructive actions require a separate shared confirmation dialog describing what is retained and deleted; browser-native `confirm` is not used.
+- The context menu is available from the focused row through the system `ContextMenu` key and `Shift+F10`; every item is a native button.
+- Drag-and-drop has equivalent commands through the inspector/context menu.
+- UI strings live in external locale JSON; new languages require no rebuild.
+- Warnings and errors actually received from `p4` in the current workspace session are collected in a bounded session log. Its indicator is fixed at bottom-right; the log shows time and technical details and can be cleared by the user.
 
-## 8. Проверки
+## 8. Verification
 
-- Unit: группировка default/numbered/shelf-only; single/toggle/range selection; кодирование multi-file drag payload; матрица drop intent.
-- Rust unit: JSON records opened/shelved/where; безопасные IDs/paths; аргументы revert с `-w` и без него; изменение Description без потери остальных полей changelist; submit-mode state helpers.
-- Integration с тестовым P4 Server: partial shelf delete, unshelve selected, shelf/local diff, каждый submit mode и compensation при искусственной ошибке submit.
-- Visual QA: empty/local-only/shelf-only/both, длинные paths, RU/EN, 100%/125% scale, узкое окно, context menu у правого и нижнего края.
+- Unit: default/numbered/shelf-only grouping; single/toggle/range selection; multi-file drag-payload encoding; drop-intent matrix.
+- Rust unit: opened/shelved/where JSON records; safe IDs/paths; revert arguments with and without `-w`; editing Description without losing other changelist fields; submit-mode state helpers.
+- Integration with a test P4 Server: partial shelf delete, unshelve selected, shelf/local diff, every submit mode, and compensation for an injected submit failure.
+- Visual QA: empty/local-only/shelf-only/both, long paths, English/Russian, 100%/125% scale, narrow window, and context menu near right/bottom edges.
 
-Официальные источники и исходный расширенный каталог сохранены в [`research/P4_FEATURE_CATALOG_AND_STORIES.md`](research/P4_FEATURE_CATALOG_AND_STORIES.md).
+Official sources and the original extended catalog are preserved in [`research/P4_FEATURE_CATALOG_AND_STORIES.md`](research/P4_FEATURE_CATALOG_AND_STORIES.md).

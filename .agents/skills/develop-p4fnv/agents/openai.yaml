@@ -1,4 +1,4 @@
 interface:
   display_name: "Develop P4FNV"
   short_description: "Build and maintain the P4FNV desktop client"
-  default_prompt: "Use $develop-p4fnv to continue implementing and validating the next P4FNV requirement."
+  default_prompt: "Use $develop-p4fnv to implement and validate this P4FNV task with only the relevant living contracts."

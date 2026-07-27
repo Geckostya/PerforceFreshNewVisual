@@ -1,31 +1,31 @@
-# Toolchain разработки
+# Development toolchain
 
-## Требования
+## Requirements
 
 - Windows 10/11 x64.
-- Visual Studio 2022 Build Tools/Community с MSVC и Windows SDK.
+- Visual Studio 2022 Build Tools/Community with MSVC and the Windows SDK.
 - WebView2 Runtime.
-- Установленный `p4.exe` для ручной работы с сервером.
-- Node `24.16.0` из `.node-version`.
-- Rust `1.97.1` с rustfmt/Clippy из `rust-toolchain.toml`.
+- An installed `p4.exe` for manual server interaction.
+- Node `24.16.0` from `.node-version`.
+- Rust `1.97.1` with rustfmt/Clippy from `rust-toolchain.toml`.
 
-В текущем workspace Node, Rust и npm cache находятся в ignored-каталоге `.toolchain`. Глобальный Tauri CLI, pnpm/yarn, C++ P4API, Docker и локальный P4 Server для обычной сборки не нужны.
+In the current workspace, Node, Rust, and the npm cache live in the ignored `.toolchain` directory. A global Tauri CLI, pnpm/yarn, C++ P4API, Docker, and a local P4 Server are not needed for an ordinary build.
 
-## Активация и установка зависимостей
+## Activation and dependency installation
 
-Каждую PowerShell-сессию начинать из корня проекта:
+Start every PowerShell session from the project root:
 
 ```powershell
 . .\scripts\toolchain.ps1
 ```
 
-Точка и пробел обязательны: скрипт изменяет environment текущей сессии. Затем:
+The dot and space are required: the script modifies the current session's environment. Then run:
 
 ```powershell
 npm ci
 ```
 
-Быстрая проверка:
+Quick check:
 
 ```powershell
 node --version
@@ -34,14 +34,14 @@ cargo clippy --version
 p4 -V
 ```
 
-## Разработка
+## Development
 
 ```powershell
 npm run dev       # Tauri application
-npm run dev:web   # только Vite UI; Tauri IPC недоступен
+npm run dev:web   # Vite UI only; Tauri IPC is unavailable
 ```
 
-Для низкоуровневой read-only диагностики snapshot bridge без MCP задайте абсолютный путь перед запуском:
+For low-level read-only diagnostics of the snapshot bridge without MCP, set an absolute path before launch:
 
 ```powershell
 $env:P4FNV_UI_SNAPSHOT_PATH = "C:\Temp\p4fnv-ui.json"
@@ -49,11 +49,11 @@ npm run dev
 Get-Content -Raw $env:P4FNV_UI_SNAPSHOT_PATH
 ```
 
-Файл обновляется атомарно после изменения DOM/form state или viewport. Без переменной наблюдатель и запись не запускаются. Password values в snapshot редактируются. Для обычной агентной проверки используйте основной MCP workflow ниже; ручная переменная нужна только для диагностики самого bridge.
+The file is updated atomically after DOM/form state or viewport changes. Without the variable, the observer and writer do not start. Password values are redacted in the snapshot. Use the primary MCP workflow below for ordinary agent verification; the manual variable is only for diagnosing the bridge itself.
 
 ### Agent MCP
 
-Project-scoped STDIO MCP зарегистрирован в `.codex/config.toml`. После первого checkout или изменения MCP-конфигурации:
+The raw project-scoped STDIO MCP is registered as `p4fnv_agent` in `.codex/config.toml`. Codex Desktop uses the personal plugin namespace `p4fnv_agent_plugin`. After the first checkout or an MCP configuration change:
 
 ```powershell
 . .\scripts\toolchain.ps1
@@ -61,13 +61,22 @@ npm ci
 npm run build:agent
 ```
 
-Затем перезапустите Codex и доверьте проект. Codex сам запускает bundled Node с `tools/p4fnv-agent/start.mjs`; вручную держать server process или локальный HTTP-порт не нужно. Launcher сохраняет STDIO в одном процессе и при необходимости сам вызывает TypeScript compiler. Для ручной protocol-диагностики доступен `npm run mcp:agent`, но его stdout зарезервирован за MCP JSON-RPC.
+Then perform Codex-side registration and verification according to [`CODEX_MCP_SETUP.md`](CODEX_MCP_SETUP.md). Codex starts the bundled Node with `tools/p4fnv-agent/start.mjs`; no server process or local HTTP port needs to be kept running manually. For manual protocol diagnostics, use `npm run --silent mcp:agent`; `--silent` removes the npm banner from stdout, which is reserved for MCP JSON-RPC.
 
-Основной verification flow: `app_start` → `ui_snapshot` → UI actions с текущим `stateVersion` → `ui_wait` → `app_stop`. На текущем Windows WebView2 native session требует обычное окно (`visible: true`, default): hidden/offscreen/background window приостанавливает JavaScript. `visible: false` отклоняется до запуска. Подробный контракт находится в [`AGENT_DEVELOPMENT.md`](AGENT_DEVELOPMENT.md).
+The primary verification flow, build freshness, transport, and WebView2 limitations belong to [`AGENT_DEVELOPMENT.md`](AGENT_DEVELOPMENT.md).
 
-## Проверки
+Complete manual smoke from an ordinary terminal:
 
-Для небольшого изменения сначала запускать ближайший тест. Перед передачей изменения выполнять полный gate:
+```powershell
+. .\scripts\toolchain.ps1
+npm run smoke:agent
+```
+
+The smoke builds the agent and release, reads schema v2, performs a safe `ui_focus` with the current version, waits for a new settled state, and stops only the test process it created. If `p4fnv_agent_plugin` does not appear in a Desktop task, follow [`CODEX_MCP_SETUP.md`](CODEX_MCP_SETUP.md).
+
+## Checks
+
+For a small change, run the nearest test first. Before handoff, run the full gate:
 
 ```powershell
 . .\scripts\toolchain.ps1
@@ -78,7 +87,7 @@ cargo clippy --manifest-path src-tauri\Cargo.toml --all-targets -- -D warnings
 npm run build
 ```
 
-`npm run build` включает TypeScript check, Vite production build, Rust release build и копирование language packs.
+`npm run build` includes the TypeScript check, Vite production build, Rust release build, and copying language packs.
 
 ## Shipping artifact
 
@@ -86,18 +95,19 @@ npm run build
 src-tauri\target\release\p4fnv.exe
 src-tauri\target\release\locales\en.json
 src-tauri\target\release\locales\ru.json
+src-tauri\target\release\THIRD_PARTY_NOTICES.md
 ```
 
-Перед передачей проверить наличие locale files и получить hash:
+Before handoff, verify the locale files and obtain a hash:
 
 ```powershell
 Get-FileHash .\src-tauri\target\release\p4fnv.exe -Algorithm SHA256
 ```
 
-Если `.exe` заблокирован, сначала проверить путь процесса и завершать только экземпляр `p4fnv.exe` из этого repository. Не завершать `p4`, `p4d` или другие процессы Perforce.
+If the `.exe` is locked, first verify the process path and terminate only the `p4fnv.exe` instance from this repository. Do not terminate `p4`, `p4d`, or other Perforce processes.
 
-## Обновление версий
+## Version updates
 
-Node/Rust/Tauri обновляются отдельным изменением вместе с version files, lockfile и полным gate. Не использовать плавающий `latest`. Tauri desktop bundle собирается на native runner каждой ОС; cross-compilation не является целью проекта.
+Update Node/Rust/Tauri in a dedicated change together with version files, the lockfile, and the full gate. Do not use a floating `latest`. Build the Tauri desktop bundle on each OS's native runner; cross-compilation is not a project goal.
 
-История первоначальной настройки и ссылки на installers сохранены в [`research/TOOLCHAIN_BOOTSTRAP.md`](research/TOOLCHAIN_BOOTSTRAP.md).
+The initial setup history and installer links are preserved in [`research/TOOLCHAIN_BOOTSTRAP.md`](research/TOOLCHAIN_BOOTSTRAP.md).

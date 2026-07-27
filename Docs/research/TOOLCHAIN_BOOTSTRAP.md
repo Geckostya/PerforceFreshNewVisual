@@ -1,16 +1,16 @@
-# Исходная настройка toolchain разработки
+# Initial development toolchain setup
 
-> Research snapshot. Актуальные команды находятся в [`../TOOLCHAIN.md`](../TOOLCHAIN.md).
+> Research snapshot. Current commands are in [`../TOOLCHAIN.md`](../TOOLCHAIN.md).
 
-## Текущее состояние Windows-машины
+## Current Windows machine state
 
-Проверено 21 июля 2026 года:
+Verified on July 21, 2026:
 
-| Компонент | Версия / состояние | Расположение |
+| Component | Version / state | Location |
 |---|---|---|
 | Windows | 10.0.26200, x64 | system |
 | Visual Studio | Community 2022 17.13.5 | `C:\Tools\Visual Studio\2022\Community` |
-| MSVC | 14.38 и 14.43, x64 tools | Visual Studio |
+| MSVC | 14.38 and 14.43, x64 tools | Visual Studio |
 | Windows SDK | 10.0.22621.0 | system |
 | WebView2 Runtime | 150.0.4078.83 | system |
 | Git | 2.51.0.windows.1 | `C:\Tools\Git` |
@@ -18,21 +18,21 @@
 | Node.js LTS | 24.16.0 | `.toolchain/node` |
 | npm | 11.13.0 | `.toolchain/node` |
 | Rust | 1.97.1 stable-msvc | `.toolchain/rustup` |
-| Cargo, rustfmt, Clippy | из Rust 1.97.1 | `.toolchain/cargo/bin` |
+| Cargo, rustfmt, Clippy | from Rust 1.97.1 | `.toolchain/cargo/bin` |
 
-Системные зависимости Tauri для Windows уже были установлены. Node.js и Rust скачаны из официальных источников в локальный ignored-каталог `.toolchain`, потому что текущая сессия не имеет административного токена для system-wide MSI.
+System Tauri dependencies for Windows were already installed. Node.js and Rust were downloaded from official sources into the local ignored `.toolchain` directory because the current session has no administrative token for a system-wide MSI.
 
-## Активация
+## Activation
 
-В новом PowerShell из корня проекта выполнить:
+In a new PowerShell from the project root, run:
 
 ```powershell
 . .\scripts\toolchain.ps1
 ```
 
-Точка и пробел в начале важны: скрипт должен изменить environment текущей PowerShell-сессии. После этого доступны `node`, `npm`, `rustup`, `rustc`, `cargo`, `rustfmt` и `clippy`. Кэш npm также остаётся в ignored-каталоге `.toolchain/npm-cache`.
+The leading dot and space matter: the script must modify the current PowerShell session's environment. Afterwards, `node`, `npm`, `rustup`, `rustc`, `cargo`, `rustfmt`, and `clippy` are available. The npm cache also remains in the ignored `.toolchain/npm-cache` directory.
 
-Проверка:
+Check:
 
 ```powershell
 node --version
@@ -43,18 +43,18 @@ cargo clippy --version
 p4 -V
 ```
 
-## Зафиксированные версии
+## Pinned versions
 
-- `.node-version` фиксирует Node.js `24.16.0`.
-- `rust-toolchain.toml` фиксирует Rust `1.97.1`, rustfmt и Clippy.
-- После создания frontend `package-lock.json` фиксирует npm-зависимости.
-- Tauri CLI должен быть `devDependency`, запуск — `npm run tauri`, не глобальная установка.
+- `.node-version` pins Node.js `24.16.0`.
+- `rust-toolchain.toml` pins Rust `1.97.1`, rustfmt, and Clippy.
+- Once the frontend exists, `package-lock.json` pins npm dependencies.
+- Tauri CLI must be a `devDependency`, invoked through `npm run tauri`, not a global installation.
 
-## Создание приложения на следующем этапе
+## Creating the application in the next phase
 
-После активации окружения проект можно инициализировать Tauri-шаблоном React + TypeScript в текущей папке. Перед выполнением нужно сохранить существующие `Docs`, `scripts` и version files; автоматический генератор не должен их перезаписывать.
+After activating the environment, the project can be initialized with a Tauri React + TypeScript template in the current directory. Preserve existing `Docs`, `scripts`, and version files first; the automatic generator must not overwrite them.
 
-Предпочтительный набор npm scripts после инициализации:
+Preferred npm scripts after initialization:
 
 ```json
 {
@@ -68,19 +68,19 @@ p4 -V
 }
 ```
 
-Vitest добавляется вместе с первым нетривиальным frontend-тестом, не заранее. Rust использует встроенный test runner Cargo.
+Add Vitest with the first nontrivial frontend test, not before. Rust uses Cargo's built-in test runner.
 
-## Что не требуется
+## Not required
 
-- Глобальный Tauri CLI: версия должна жить в проекте.
-- pnpm/yarn: npm уже поставляется с Node и создаёт lockfile.
-- C++ P4API: интеграция идёт через установленный `p4`.
-- Docker и локальный Helix Server для обычной сборки: fake executable покрывает integration tests; реальный сервер нужен только smoke-тестам.
-- Android/iOS toolchain: приложение desktop-only до отдельного продуктового решения.
+- Global Tauri CLI: the version must live in the project.
+- pnpm/yarn: npm already ships with Node and creates the lockfile.
+- C++ P4API: integration uses the installed `p4`.
+- Docker and a local Helix Server for ordinary builds: a fake executable covers integration tests; a real server is needed only for smoke tests.
+- Android/iOS toolchain: the application is desktop-only until a separate product decision.
 
-## Обновление
+## Updates
 
-Обновлять Node или Rust следует отдельным изменением вместе с version files, lockfile и полной проверкой:
+Update Node or Rust in a dedicated change together with version files, the lockfile, and full verification:
 
 ```powershell
 npm ci
@@ -92,13 +92,13 @@ cargo test --manifest-path src-tauri/Cargo.toml
 npm run build
 ```
 
-Не использовать плавающий `latest` в CI. Каждая ОС собирает свой Tauri installer на native runner; кросс-компиляция desktop bundle с Windows на macOS/Linux не является целью.
+Do not use a floating `latest` in CI. Each OS builds its Tauri installer on a native runner; cross-compiling a desktop bundle from Windows to macOS/Linux is not a goal.
 
-## Источники установки
+## Installation sources
 
 - Tauri prerequisites: https://v2.tauri.app/start/prerequisites/
 - Rust: https://www.rust-lang.org/tools/install
 - Node.js LTS: https://nodejs.org/en/download
 - Perforce CLI: https://www.perforce.com/downloads/helix-command-line-client-p4
 
-Архив Node.js проверен по официальному `SHASUMS256.txt`. `rustup-init.exe` получен по официальному HTTPS endpoint `https://win.rustup.rs/x86_64`; Windows-бинарник rustup не содержит Authenticode-подписи, поэтому источник и TLS endpoint принципиальны.
+The Node.js archive was verified against official `SHASUMS256.txt`. `rustup-init.exe` came from the official HTTPS endpoint `https://win.rustup.rs/x86_64`; the Windows rustup binary has no Authenticode signature, so the source and TLS endpoint are essential.

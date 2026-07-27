@@ -1,44 +1,46 @@
-# Структура проекта
+# Project structure
 
-## Цель структуры
+## Purpose of the structure
 
-Структура должна помогать быстро найти код пользовательской функции и не вынуждать разработчика поддерживать слои, которые пока ничего не дают. Основная единица организации frontend — пользовательская функция, backend — безопасная операция Perforce.
+The structure must make feature code easy to find without forcing developers to maintain layers that do not yet provide value. The frontend's primary organizational unit is a user feature; the backend's is a safe Perforce operation.
 
-Проект остаётся одним Tauri-приложением и одним репозиторием. Monorepo, отдельные пакеты, plugin SDK и общий «Perforce SDK» на старте не нужны.
+The project remains one Tauri application in one repository. A monorepo, separate packages, a plugin SDK, and a general "Perforce SDK" are not needed at the outset.
 
-## Целевая структура
+## Target structure
 
 ```text
 P4FNV/
 ├─ Docs/
-│  ├─ README.md                 # входная точка и владельцы контрактов
-│  ├─ ARCHITECTURE.md           # границы, потоки данных, решения
-│  ├─ PROJECT_STRUCTURE.md      # правила расположения кода
-│  ├─ P4_FEATURE_CHECKLIST.md    # приоритетный backlog и статусы реализации
-│  ├─ UI_UX_SPECIFICATION.md    # рабочий UI/UX-контракт
-│  ├─ CHANGELIST_REQUIREMENTS.md # сложная семантика changes/shelves/submit
-│  ├─ TOOLCHAIN.md              # окружение и проверка установки
-│  ├─ LOCALIZATION.md           # формат и установка language packs
-│  └─ research/                 # история, исследования и полные исходные каталоги
-├─ locales/                     # внешние JSON-переводы shipping build
+│  ├─ README.md                 # entry point and contract owners
+│  ├─ DOCUMENTATION_POLICY.md   # progressive disclosure and ownership rules
+│  ├─ ARCHITECTURE.md           # boundaries, data flows, decisions
+│  ├─ WORKSPACE_FILES.md        # Files, Local Files cache, and safe sync
+│  ├─ PROJECT_STRUCTURE.md      # code-placement rules
+│  ├─ P4_FEATURE_CHECKLIST.md   # prioritized backlog and implementation status
+│  ├─ UI_UX_SPECIFICATION.md    # working UI/UX contract
+│  ├─ CHANGELIST_REQUIREMENTS.md # complex changes/shelves/submit semantics
+│  ├─ TOOLCHAIN.md              # environment and installation verification
+│  ├─ LOCALIZATION.md           # language-pack format and installation
+│  └─ research/                 # history, research, and full source catalogs
+├─ locales/                     # external JSON translations for the shipping build
 │  ├─ en.json
 │  └─ ru.json
 ├─ scripts/
-│  ├─ toolchain.ps1             # локальное окружение разработки
-│  └─ copy-locales.mjs          # копирование packs рядом с release exe
+│  ├─ toolchain.ps1             # local development environment
+│  └─ copy-locales.mjs          # copy packs beside the release executable
 ├─ tools/
-│  └─ p4fnv-agent/              # локальный STDIO MCP и native app lifecycle
+│  └─ p4fnv-agent/              # local STDIO MCP and native app lifecycle
 ├─ .codex/
 │  └─ config.toml               # project-scoped MCP registration
 ├─ src/                         # React + TypeScript frontend
 │  ├─ app/
-│  │  ├─ App.tsx                # каркас окна и верхняя навигация
-│  │  └─ app.css                # тема, сетка и дизайн-токены
+│  │  ├─ App.tsx                # window shell and top navigation
+│  │  └─ app.css                # theme, grid, and design tokens
 │  ├─ features/
-│  │  ├─ connection/            # сервер, пользователь, workspace, login
+│  │  ├─ connection/            # server, user, workspace, login
 │  │  ├─ changes/               # changelists, shelves, submit, DnD
 │  │  ├─ workspace/             # workspace files, sync, reconcile, resolve
-│  │  ├─ streams/               # stream tree/graph и switch orchestration
+│  │  ├─ streams/               # stream tree/graph and switch orchestration
 │  │  │  └─ streamPreferences.ts # scoped visibility/collapse preferences
 │  │  ├─ depot/                 # read-only depot browser
 │  │  ├─ history/               # file/submitted history, compare, undo
@@ -46,34 +48,34 @@ P4FNV/
 │  │  ├─ jobs/                  # jobs and fixes
 │  │  └─ labels/                # labels and sync preview
 │  ├─ shared/
-│  │  ├─ api.ts                 # типизированные вызовы Tauri invoke/events
-│  │  ├─ i18n.tsx               # загрузка packs, fallback и текущий язык UI
-│  │  ├─ models.ts              # DTO, реально общие для нескольких функций
-│  │  ├─ operations.ts          # общая подписка и модель длительных операций
-│  │  ├─ localArchive.ts        # scoped cosmetic Unactual IDs и validated DnD payload
-│  │  ├─ useLocalArchive.ts      # единый lifecycle persistent Unactual state
-│  │  ├─ useArchiveDragDrop.ts  # общий WebView-safe DnD между actual/Unactual
-│  │  ├─ selection.ts            # единые selection и keyboard interaction rules
-│  │  ├─ SafeSync.tsx            # общий safe-sync post-check, preview и conflict UI
-│  │  ├─ OperationsCenter.tsx   # единственный progress/cancel/retry surface
-│  │  ├─ uiSnapshot.ts          # opt-in DOM snapshot и allow-listed agent actions
-│  │  └─ View.tsx               # общий page/dialog/empty/error vocabulary
+│  │  ├─ api.ts                 # typed Tauri invoke/event calls
+│  │  ├─ i18n.tsx               # pack loading, fallback, and current UI language
+│  │  ├─ models.ts              # DTOs genuinely shared by multiple features
+│  │  ├─ operations.ts          # shared subscription and long-operation model
+│  │  ├─ localArchive.ts        # scoped cosmetic Unactual IDs and validated DnD payload
+│  │  ├─ useLocalArchive.ts      # shared lifecycle for persistent Unactual state
+│  │  ├─ useArchiveDragDrop.ts  # shared WebView-safe DnD between actual/Unactual
+│  │  ├─ selection.ts            # shared selection and keyboard-interaction rules
+│  │  ├─ SafeSync.tsx            # shared safe-sync post-check, preview, and conflict UI
+│  │  ├─ OperationsCenter.tsx   # the only progress/cancel/retry surface
+│  │  ├─ uiSnapshot.ts          # opt-in DOM snapshot and allow-listed agent actions
+│  │  └─ View.tsx               # shared page/dialog/empty/error vocabulary
 │  ├─ main.tsx
-│  └─ index.css                 # reset и глобальные базовые стили
+│  └─ index.css                 # reset and global base styles
 ├─ src-tauri/
 │  ├─ capabilities/
-│  │  └─ default.json           # минимальные разрешения окна
+│  │  └─ default.json           # minimum window permissions
 │  ├─ src/
 │  │  ├─ main.rs                # desktop entry point
-│  │  ├─ lib.rs                 # сборка Tauri, команды и managed state
-│  │  ├─ p4.rs                  # разрешённые доменные операции и parsers
+│  │  ├─ lib.rs                 # Tauri setup, commands, and managed state
+│  │  ├─ p4.rs                  # allowed domain operations and parsers
 │  │  ├─ p4/
-│  │  │  ├─ runner.rs           # process boundary, JSON Lines, ошибки, CLI log
-│  │  │  └─ validation.rs       # общая валидация P4 identifiers и form values
-│  │  ├─ commands.rs            # разрешённые UI операции
-│  │  ├─ diagnostics.rs         # opt-in snapshot и tokenized agent mailbox
-│  │  ├─ models.rs              # сериализуемые модели приложения
-│  │  └─ settings.rs            # несекретные локальные настройки
+│  │  │  ├─ runner.rs           # process boundary, JSON Lines, errors, CLI log
+│  │  │  └─ validation.rs       # shared validation of P4 identifiers and form values
+│  │  ├─ commands.rs            # allowed UI operations
+│  │  ├─ diagnostics.rs         # opt-in snapshot and tokenized agent mailbox
+│  │  ├─ models.rs              # serializable application models
+│  │  └─ settings.rs            # nonsecret local settings
 │  ├─ Cargo.toml
 │  ├─ build.rs
 │  └─ tauri.conf.json
@@ -86,55 +88,55 @@ P4FNV/
 └─ vite.config.ts
 ```
 
-`tools/p4fnv-agent` является development-only процессом и не входит в Tauri process boundary. Он умеет собрать/запустить release, обмениваться только allow-listed UI-событиями через opt-in bridge и остановить собственный child process. Доменная Perforce-логика, connection environment и mutations остаются внутри существующих React → typed Tauri command → Rust → `p4` границ.
+`tools/p4fnv-agent` is a development-only process outside the Tauri process boundary. It can build/start the release, exchange only allow-listed UI events through the opt-in bridge, and stop its own child process. Perforce domain logic, the connection environment, and mutations remain inside the existing React → typed Tauri command → Rust → `p4` boundaries.
 
-Папки функций в `src/features` — карта реализованного продукта, а не будущий scaffold. Новая папка появляется вместе с первым законченным пользовательским сценарием.
+Feature folders in `src/features` map the implemented product, not a future scaffold. A new folder appears with its first complete user workflow.
 
-## Что лежит внутри frontend-функции
+## Contents of a frontend feature
 
-Минимальный пример:
+Minimal example:
 
 ```text
 features/changes/
-├─ ChangesView.tsx          # orchestration пользовательских сценариев
-├─ ChangeComponents.tsx     # специфичные для changes диалоги и context menu
+├─ ChangesView.tsx          # user-workflow orchestration
+├─ ChangeComponents.tsx     # changes-specific dialogs and context menu
 ├─ useChangesData.ts        # server snapshot, shelves, refresh-on-focus
-├─ useFileSelection.ts      # согласованный opened/shelved multiselect
+├─ useFileSelection.ts      # consistent opened/shelved multiselect
 ├─ useChangeDragDrop.ts     # browser drag-and-drop boundary
-├─ changes.ts               # чистые преобразования и матрица drop-действий
-└─ changes.test.ts          # regression tests чистой логики
+├─ changes.ts               # pure transformations and drop-action matrix
+└─ changes.test.ts          # regression tests for pure logic
 ```
 
-Компоненты, запросы и тесты одной функции находятся рядом. Не создавать отдельные глобальные папки `components`, `hooks`, `services`, `utils` и `types`: они быстро превращаются в свалку без понятного владельца.
+Components, requests, and tests for one feature live together. Do not create separate global `components`, `hooks`, `services`, `utils`, or `types` folders: they quickly become dumping grounds without a clear owner.
 
-Файл переносится в `shared` только когда им действительно пользуются минимум две функции. Общий UI-примитив должен описывать поведение (`View`, `ActionDialog`, `EmptyState`), а не конкретный экран (`SubmitDialog`). Ресурсные экраны используют один каркас «заголовок → компактный toolbar → list/inspector workbench»; отличие домена остаётся внутри feature.
+Move a file to `shared` only when at least two features genuinely use it. A shared UI primitive describes behavior (`View`, `ActionDialog`, `EmptyState`), not a specific screen (`SubmitDialog`). Resource screens use one "heading → compact toolbar → list/inspector workbench" shell; domain differences remain inside the feature.
 
-## Когда делить Rust-файлы
+## When to split Rust files
 
-Начать с плоских `p4.rs`, `commands.rs`, `models.rs` и `settings.rs`. Делить файл следует по ответственности, когда в нём стало трудно ориентироваться, а не по числу строк само по себе.
+Start with flat `p4.rs`, `commands.rs`, `models.rs`, and `settings.rs`. Split a file by responsibility when it becomes difficult to navigate, not by line count alone.
 
-Текущее разделение:
+Current split:
 
 ```text
 src-tauri/src/
-├─ p4.rs                # validated Perforce operations и DTO parsers
+├─ p4.rs                # validated Perforce operations and DTO parsers
 ├─ p4/
 │  ├─ runner.rs         # executable/process/JSON/error/log boundary
-│  └─ validation.rs     # единая trust-boundary validation для P4 операций
+│  └─ validation.rs     # shared trust-boundary validation for P4 operations
 ├─ commands.rs          # allow-listed Tauri IPC
 ├─ models.rs
 ├─ settings.rs
 └─ locales.rs
 ```
 
-Следующее деление `p4.rs` или `commands.rs` выполняется по законченной пользовательской области (`changes`, `history`, `integration`), когда появляется соответствующая вертикаль. `runner.rs` не должен знать о submit/unshelve/revert и не предоставляет frontend универсальный запуск команды.
+The next split of `p4.rs` or `commands.rs` follows a complete user domain (`changes`, `history`, `integration`) when the corresponding vertical slice exists. `runner.rs` must not know about submit/unshelve/revert and does not expose universal command execution to the frontend.
 
-Не создавать trait с единственной реализацией, repository/service/controller на каждую сущность или отдельный crate до появления второй реальной реализации либо независимого повторного использования.
+Do not create a trait with one implementation, a repository/service/controller for every entity, or a separate crate before a second real implementation or independent reuse exists.
 
-## Направление зависимостей
+## Dependency direction
 
 ```text
-React feature -> shared/api.ts -> конкретная Tauri command
+React feature -> shared/api.ts -> specific Tauri command
                                       |
                                       v
                               Rust command handler
@@ -146,39 +148,39 @@ React feature -> shared/api.ts -> конкретная Tauri command
                                  P4 runner -> p4 CLI
 ```
 
-- Frontend-функции не импортируют друг друга. Совместный сценарий собирает `app` либо небольшой общий модуль.
-- `shared` ничего не импортирует из `features`.
-- Rust command handler знает пользовательское намерение; доменная функция `p4.rs` знает безопасную Perforce-команду и преобразует DTO; `p4/runner.rs` знает только процесс, JSON Lines, диагностику и CLI log.
-- Frontend никогда не передаёт произвольную командную строку, имя executable или переменные окружения.
+- Frontend features do not import each other. The `app` layer or a small shared module assembles a cross-feature workflow.
+- `shared` imports nothing from `features`.
+- A Rust command handler knows the user intent; a `p4.rs` domain function knows the safe Perforce command and converts DTOs; `p4/runner.rs` knows only the process, JSON Lines, diagnostics, and CLI log.
+- The frontend never passes an arbitrary command line, executable name, or environment variables.
 
-## Именование
+## Naming
 
-- В коде — английские термины Helix Core: `workspace`, `changelist`, `revision`, `stream`, `integrate`.
-- В интерфейсе — понятное действие, при необходимости с официальным термином во вторичной подписи.
-- Компоненты — существительные (`ChangeList`, `FileHistory`), обработчики — действия (`submit_change`, `revert_files`).
-- Tauri commands описывают намерение: `list_pending_changes`, а не `run_p4_changes`.
+- Use English Helix Core terms in code: `workspace`, `changelist`, `revision`, `stream`, `integrate`.
+- In the UI, use an understandable action, with the official term in secondary text when needed.
+- Components are nouns (`ChangeList`, `FileHistory`); handlers are actions (`submit_change`, `revert_files`).
+- Tauri commands describe intent: `list_pending_changes`, not `run_p4_changes`.
 
-Рекомендуемый словарь интерфейса:
+Recommended UI vocabulary:
 
-| Термин Helix Core | Название в интерфейсе |
+| Helix Core term | English UI name |
 |---|---|
-| Workspace / client | Рабочая область |
-| Pending changelist | Мои изменения |
-| Submitted changelist | История изменений |
-| Sync | Обновить файлы |
-| Revert | Отменить локальные изменения |
-| Stream | Ветка (Stream) |
-| Integrate / merge | Объединить изменения |
-| Cherry-pick | Перенести выбранные изменения |
-| Get revision | Получить эту версию |
-| Undo | Создать откат этой версии |
+| Workspace / client | Workspace |
+| Pending changelist | My Changes |
+| Submitted changelist | Change History |
+| Sync | Update files |
+| Revert | Revert local changes |
+| Stream | Stream |
+| Integrate / merge | Merge changes |
+| Cherry-pick | Apply selected changes |
+| Get revision | Get this revision |
+| Undo | Create an undo change |
 
-Последние две операции нельзя объединять одной кнопкой: получение старой ревизии меняет содержимое workspace, а `p4 undo` создаёт новые открытые изменения для последующего submit.
+The last two operations cannot share one button: retrieving an older revision changes workspace contents, while `p4 undo` creates new opened changes for a later submit.
 
-## Правила роста
+## Growth rules
 
-1. Каждый этап заканчивается рабочим вертикальным сценарием UI → Rust → `p4` → UI.
-2. Новая зависимость добавляется только для уже существующей задачи, которую сложнее и рискованнее решить платформой или стандартной библиотекой.
-3. Настройки хранятся в небольшом JSON-файле. База данных нужна только при доказанной необходимости локального индекса или офлайн-поиска.
-4. Не дублировать модели «на всякий случай». DTO разделяется на transport/domain/view только когда их формы реально расходятся.
-5. Архитектурное решение фиксируется в `Docs/ARCHITECTURE.md`; отдельный каталог ADR появляется, когда решений станет достаточно много, чтобы один документ мешал навигации.
+1. Every phase ends with a working vertical UI → Rust → `p4` → UI workflow.
+2. Add a dependency only for an existing task that would be harder and riskier to solve with the platform or standard library.
+3. Store settings in a small JSON file. A database is needed only after a proven need for a local index or offline search.
+4. Do not duplicate models "just in case." Split a DTO into transport/domain/view forms only when those forms genuinely diverge.
+5. Record an architecture decision in `Docs/ARCHITECTURE.md`; create a separate ADR directory only when enough decisions accumulate that one document impairs navigation.

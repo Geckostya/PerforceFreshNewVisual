@@ -1,28 +1,28 @@
 # Language packs
 
-P4FNV загружает языки из отдельных JSON-файлов при запуске. Для добавления языка не требуется пересобирать приложение.
+P4FNV loads languages from separate JSON files at startup. Adding a language does not require rebuilding the application.
 
-## Где лежат файлы
+## File locations
 
-Shipping-каталог:
+Shipping directory:
 
 ```text
 p4fnv.exe
 locales/
   en.json
   ru.json
-  de.json       # дополнительный пакет
+  de.json       # additional pack
 ```
 
-Пользовательские пакеты также можно положить в app config directory:
+User packs may also be placed in the app config directory:
 
 ```text
 Windows: %APPDATA%\dev.p4fnv.client\locales
 ```
 
-Папка создаётся после первого запуска. Пакет из app config directory переопределяет пакет с тем же `code` рядом с executable. После добавления или изменения файла приложение нужно перезапустить.
+The directory is created after the first launch. A pack in the app config directory overrides a pack with the same `code` beside the executable. Restart the application after adding or changing a file.
 
-## Формат
+## Format
 
 ```json
 {
@@ -34,16 +34,16 @@ Windows: %APPDATA%\dev.p4fnv.client\locales
 }
 ```
 
-- `code` — уникальный код из ASCII-букв, цифр, `-` или `_`, максимум 32 символа;
-- `name` — самоназвание языка, которое показывается в списке;
-- `translations` должен содержать все ключи из [`locales/en.json`](../locales/en.json).
+- `code` is a unique code containing ASCII letters, digits, `-`, or `_`, with a maximum of 32 characters;
+- `name` is the language's self-name shown in the list;
+- `translations` must contain every key from [`locales/en.json`](../locales/en.json).
 
-Неполный или повреждённый файл пропускается, остальные языки продолжают работать. Английский словарь встроен как аварийный fallback. Дополнительные ключи разрешены и не мешают загрузке.
+An incomplete or damaged file is skipped while other languages continue to work. The English dictionary is embedded as an emergency fallback. Additional keys are allowed and do not interfere with loading.
 
-## Изменение строк приложения
+## Changing application strings
 
-1. Добавить один и тот же key в `locales/en.json` и `locales/ru.json`.
-2. Использовать `t("key")`; тип `TranslationKey` выводится из English pack.
-3. Не помещать пользовательский текст в Rust diagnostics: backend возвращает стабильный `ErrorKind`, frontend выбирает локализованную строку.
-4. Запустить `npm test -- --run` и `cargo test --manifest-path src-tauri\Cargo.toml`; тесты проверяют совпадение полного контракта packs.
-5. Shipping build выполняется через `npm run build` и копирует `locales` рядом с release executable.
+1. Add the same key to `locales/en.json` and `locales/ru.json`.
+2. Use `t("key")`; the `TranslationKey` type is inferred from the English pack.
+3. Do not put user-facing text in Rust diagnostics: the backend returns a stable `ErrorKind`, and the frontend selects a localized string.
+4. Run `npm test -- --run` and `cargo test --manifest-path src-tauri\Cargo.toml`; tests verify that the complete pack contracts match.
+5. The shipping build runs through `npm run build` and copies `locales` beside the release executable.

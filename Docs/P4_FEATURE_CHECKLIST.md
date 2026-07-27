@@ -1,42 +1,42 @@
-# Функциональный checklist P4FNV
+# P4FNV feature checklist
 
-Статус: живой backlog и снимок реализации. Обновлено 23 июля 2026 года.
+Status: living backlog and implementation snapshot. Updated July 23, 2026.
 
-Полный исходный каталог CLI-возможностей, personas и narrative user stories сохранён в [`research/P4_FEATURE_CATALOG_AND_STORIES.md`](research/P4_FEATURE_CATALOG_AND_STORIES.md). Этот документ содержит только данные, необходимые для выбора и завершения следующей разработки.
+The full original catalog of CLI capabilities, personas, and narrative user stories is preserved in [`research/P4_FEATURE_CATALOG_AND_STORIES.md`](research/P4_FEATURE_CATALOG_AND_STORIES.md). This document contains only the data needed to select and complete the next development work.
 
-## Статусы и Definition of Done
+## Statuses and Definition of Done
 
-- `[x]` — пользовательский flow реализован UI → Rust → `p4` → refresh и покрыт релевантной автоматической проверкой.
-- `[~]` — flow полезен, но перечисленные ограничения не позволяют считать область закрытой.
-- `[ ]` — пользовательского flow нет.
-- P0 — ежедневная работа; P1 — профессиональная stream/team работа; P2 — редкий/advanced workflow.
+- `[x]` — the user flow is implemented UI → Rust → `p4` → refresh and covered by relevant automated verification.
+- `[~]` — the flow is useful, but listed limitations prevent the area from being complete.
+- `[ ]` — no user flow exists.
+- P0 — daily work; P1 — professional stream/team work; P2 — rare/advanced workflow.
 
-Пункт становится `[x]`, когда:
+An item becomes `[x]` when:
 
-- Tauri command узкая, Rust валидирует IDs/paths/revisions и не использует shell;
-- mutation имеет точный scope, preview/confirmation по риску и server refresh;
-- partial/unknown result не маскируется как success;
-- есть loading/empty/error/permission states и keyboard path;
-- новые строки добавлены в полные EN/RU packs;
-- добавлен минимальный regression test для parser/arguments/state logic;
-- выполнен полный gate из [`TOOLCHAIN.md`](TOOLCHAIN.md);
-- live-server/WebView зависимость либо проверена на disposable setup, либо явно отмечена непроверенной.
+- the Tauri command is narrow, Rust validates IDs/paths/revisions, and no shell is used;
+- the mutation has exact scope, risk-appropriate preview/confirmation, and server refresh;
+- a partial/unknown result is not masked as success;
+- loading/empty/error/permission states and a keyboard path exist;
+- new strings are added to complete English/Russian packs;
+- a minimal regression test covers parser/arguments/state logic;
+- the full gate from [`TOOLCHAIN.md`](TOOLCHAIN.md) passes;
+- a live-server/WebView dependency is either verified on a disposable setup or explicitly marked unverified.
 
-## Текущий продукт
+## Current product
 
-| Область | Статус | Реализовано | Не закрыто |
+| Area | Status | Implemented | Remaining |
 |---|---|---|---|
 | Connection/auth | `[~]` P0 | detect `p4`, profiles/favorites, info, password login/status/logout, read-only trust list, restore last workspace | trust confirmation/write, MFA/login2, SSO/P4 AS, capability matrix |
 | Workspace spec | `[~]` P0 | list/open/switch/create/edit/rename/delete, stream switch dialog, unknown form fields/mappings preserved | visual mapping editor, AltRoots/options validation, live-server stream-switch matrix |
-| Workspace files | `[~]` P0 | lazy authorized-root directory reads, per-directory memory/IndexedDB disk and P4 cache, per-folder loading state, changelist-fingerprint-gated non-recursive `fstat -Rc`, explicit reconcile preview, optional disclosed scope/search/filter, status icons/tooltips, file/folder history, ignored/local-only presentation, edit/add/ignore/delete-local/delete/move/lock/unlock/revert/reconcile | virtualization of a single exceptionally large directory, full mapping/ignore/move classification, external editor |
-| Sync/Get revision | `[~]` P0 | единый safe-sync controller для project/selection/depot/label/post-stream-switch, per-file writable keep/force resolution, batch force apply, file/byte progress with ETA и cancel, previewed numeric revision и label targets | changelist/date picker, parallel transfer controls, richer recovery |
+| Workspace files | `[~]` P0 | lazy authorized-root directory reads, per-directory memory/IndexedDB disk and P4 cache, per-folder loading state, changelist-fingerprint-gated non-recursive `fstat -Rc`, explicit reconcile preview, optional disclosed scope/search/filter, status icons/tooltips, full-height file/folder history inspector, ignored text/local-only presentation, edit/add/ignore/delete-local/delete/move/lock/unlock/revert/reconcile | virtualization of a single exceptionally large directory, full mapping/ignore/move classification, external editor |
+| Sync/Get revision | `[~]` P0 | shared safe-sync controller for project/selection/depot/label/post-stream-switch, history-row exact file revision/folder changelist target, per-file writable keep/force resolution, batch force apply, file/byte progress with ETA and cancel | date picker, parallel transfer controls, richer recovery |
 | My Changes | `[x]` P0 | pending/default CL, local/shelf sections, cosmetic persistent Unactual with context/DnD transfer, create/edit/delete, batch reopen, filtering, DnD equivalents | advanced owner/type/jobs editing belongs to later scopes |
 | Shelve/unshelve | `[x]` P0 | selected/full shelf, safe add-collision preview, per-file force, partial result, delete shelf/files | broader conflict taxonomy tracked below |
 | Submit | `[~]` P0 | local, shelf and local+shelf strategies; preflight; recovery/compensation; local submit events | richer trigger diagnostics, shelf-preserving operations in common operation protocol, unknown-result recovery UI |
 | Revert | `[x]` P0 | selected, unchanged and full CL with server preview; explicit delete-added-files setting | partial-selection compensation is optional expansion |
 | Resolve | `[~]` P0 | unresolved detection, submit gate, preview, keep workspace/accept server/auto-safe/auto-merge | three-way editor, binary/move/filetype/stream-spec resolve |
 | Depot | `[~]` P0 | source switch, scoped dirs/files, deleted toggle, breadcrumbs, blue depot/local-only disabled presentation, bounded folder/file history and sync preview | depot roots/types, lazy recursive tree, mapping navigation, server pagination |
-| History | `[~]` P0 | scoped submitted list/details/jobs/files, filelog, preview/export, compare, workspace diff, annotate, undo preview/apply | cursor/server filters, range/folder compare, rename history, Revision Graph |
+| History | `[~]` P0 | scoped submitted list/details/jobs/files, filelog, preview/single export, safe exact-revision changelist export, compare, workspace diff, annotate, undo preview/apply | cursor/server filters, range/folder compare, rename history, Revision Graph |
 | Diff | `[~]` P0 | shared bounded unified/split viewer, line numbers, hunk navigation, whitespace modes, binary state, patch export | chunked large text, syntax/word highlight, image/binary preview, external tools |
 | Operations/errors | `[~]` P0 | app-level sync/submit events, cancel, bounded history/log, explicit sync retry, core error kinds | all long operations, generic partial recovery, stale/offline mode, timeout/capability errors |
 | Jobs | `[~]` P1 | bounded search/details/fixes, attach/detach, submit preflight metadata, history job filter | custom jobspec-aware create/edit and status workflow |
@@ -45,100 +45,100 @@
 | Streams/integration | `[~]` P1 | bounded stream catalog/tree/graph, multi-select with top-panel batch show/hide, collapsible branches, asymmetric hierarchical visibility, subtree-aware cosmetic Unactual with batch DnD, confirmed switch with local/content strategies | disposable-server switch verification, stream spec/history, integrate/copy/cherry-pick/interchanges |
 | Settings/accessibility | `[~]` P0 | language, connection/revert settings, semantic controls and core keyboard flows | themes/density/preferences, full screen-reader contract, verified 200% layout |
 
-Сложная семантика changelist, shelf, DnD и submit зафиксирована в [`CHANGELIST_REQUIREMENTS.md`](CHANGELIST_REQUIREMENTS.md).
+Complex changelist, shelf, DnD, and submit semantics are defined in [`CHANGELIST_REQUIREMENTS.md`](CHANGELIST_REQUIREMENTS.md).
 
-## P0 — следующий обязательный слой
+## P0 — next mandatory layer
 
-### Authentication и capability
+### Authentication and capability
 
-- [ ] Trust flow: показать полный новый/изменившийся fingerprint, default Cancel, explicit `p4 trust` только после подтверждения.
-- [ ] MFA/login2 и SSO/P4 Authentication Service без логирования URL/token/credentials.
-- [ ] Capability snapshot из client/server version, services/topology, unicode/case handling и доступности нужных command flags.
+- [ ] Trust flow: show the full new/changed fingerprint, default to Cancel, and run explicit `p4 trust` only after confirmation.
+- [ ] MFA/login2 and SSO/P4 Authentication Service without logging URL/token/credentials.
+- [ ] Capability snapshot from client/server version, services/topology, Unicode/case handling, and availability of required command flags.
 
 ### Workspace/Depot correctness
 
-- [ ] Depot roots/types и lazy bounded tree с permission/maxresults состояниями.
-- [ ] Depot ↔ client ↔ local mapping navigation через server `where`; unmapped path не получает ложный local path.
-- [ ] Reconcile классифицирует add/edit/delete/move/ignored/unsafe и повторно проверяет stale preview.
-- [ ] Edit/add/delete/move preflight показывает mapping, have/head, collision, other-open/lock и destination changelist.
-- [ ] Большие file lists/history используют incremental loading; virtualization добавляется только после измерения.
+- [ ] Depot roots/types and a lazy bounded tree with permission/maxresults states.
+- [ ] Depot ↔ client ↔ local mapping navigation through server `where`; an unmapped path receives no false local path.
+- [ ] Reconcile classifies add/edit/delete/move/ignored/unsafe and rechecks stale previews.
+- [ ] Edit/add/delete/move preflight shows mapping, have/head, collisions, other-open/lock, and destination changelist.
+- [ ] Large file lists/history use incremental loading; virtualization is added only after measurement.
 
-### Resolve и submit reliability
+### Resolve and submit reliability
 
-- [ ] Three-way text resolve: base/source/workspace/result, conflict navigation, save и server read-back.
-- [ ] Binary, move/name, filetype/attribute и stream-spec resolve имеют отдельные понятные flows.
-- [ ] Trigger rejection, cancellation/network loss и unknown submit result дают read-back `submitted/pending/unknown` и recovery action.
-- [ ] Shelf-preserving submit modes публикуют те же operation events, что local submit.
-- [ ] Partial result UI показывает succeeded/failed/skipped и compensation outcome.
+- [ ] Three-way text resolve: base/source/workspace/result, conflict navigation, save, and server read-back.
+- [ ] Binary, move/name, filetype/attribute, and stream-spec resolve have separate understandable flows.
+- [ ] Trigger rejection, cancellation/network loss, and unknown submit result provide `submitted/pending/unknown` read-back and a recovery action.
+- [ ] Shelf-preserving submit modes publish the same operation events as local submit.
+- [ ] Partial-result UI shows succeeded/failed/skipped and compensation outcome.
 
-### History и recovery
+### History and recovery
 
-- [ ] Server-side path/user/client/date/job filters и incremental cursor/limit без скрытого глобального scan.
-- [ ] Folder/changelist compare показывает added/changed/deleted/type-changed summary.
-- [ ] File rename/integration history следует records, не склеивая имена эвристикой.
-- [ ] Rollback range имеет preview направления/revisions и создаёт opened changes, не меняя историю.
+- [ ] Server-side path/user/client/date/job filters and incremental cursor/limit without a hidden global scan.
+- [ ] Folder/changelist compare shows an added/changed/deleted/type-changed summary.
+- [ ] File rename/integration history follows records without heuristically joining names.
+- [ ] Rollback range has a direction/revision preview and creates opened changes without rewriting history.
 
-### UX, errors и scale
+### UX, errors, and scale
 
-- [ ] Stale/offline mode сохраняет read-only snapshot, отключает mutation с причиной и делает controlled refresh.
-- [ ] Timeout/unsupported/server-limit errors отделены от connection failure; truncated records считаются partial result.
-- [ ] Pane keyboard navigation, focus restoration, operation announcements и Windows Narrator smoke.
-- [ ] Проверенный layout на RU/EN, 100/125/200% и минимальном окне.
+- [ ] Stale/offline mode preserves a read-only snapshot, disables mutations with a reason, and performs controlled refresh.
+- [ ] Timeout/unsupported/server-limit errors are separated from connection failure; truncated records count as partial results.
+- [ ] Pane keyboard navigation, focus restoration, operation announcements, and Windows Narrator smoke.
+- [ ] Verified layout in English/Russian at 100/125/200% and the minimum window size.
 
-## P1 — замена P4V для stream/team workflow
+## P1 — replace P4V for stream/team workflows
 
-### Streams и integration
+### Streams and integration
 
-- [ ] Bounded streams tree реализовано; details/spec/history и compatible workspaces требуют следующего инкремента и live-server smoke.
-- [ ] Stream Graph parent/child/type реализован и визуально проверен; accessibility/scale matrix ещё не закрывает полный DoD.
-- [ ] Safe workspace/stream switch и стратегии реализованы; требуется mutating smoke на disposable Helix Core.
-- [ ] `integrate/copy -n` preview с явными source/target, interchanges и target changelist.
-- [ ] Merge down, copy up и cherry-pick не выполняют автоматический submit; результат идёт Resolve → Review → Submit.
-- [ ] Filename/stream-spec conflicts проходят соответствующий resolve flow.
+- [ ] Bounded streams tree is implemented; details/spec/history and compatible workspaces require the next increment and live-server smoke.
+- [ ] Stream Graph parent/child/type is implemented and visually verified; the accessibility/scale matrix does not yet complete the full DoD.
+- [ ] Safe workspace/stream switch and strategies are implemented; mutating smoke on disposable Helix Core is required.
+- [ ] `integrate/copy -n` preview with explicit source/target, interchanges, and target changelist.
+- [ ] Merge down, copy up, and cherry-pick never submit automatically; the result proceeds Resolve → Review → Submit.
+- [ ] Filename/stream-spec conflicts pass through the corresponding resolve flow.
 
 ### Content tools
 
-- [ ] External editor/diff/merge запускается без shell с явными arguments и lifecycle temp files.
-- [ ] Image diff и binary metadata preview имеют size limits и безопасный fallback.
-- [ ] Revision Graph использует filelog/integration records, имеет focus/filter/compare и не выдумывает edges.
+- [ ] External editor/diff/merge starts without a shell, using explicit arguments and lifecycle-managed temporary files.
+- [ ] Image diff and binary metadata preview have size limits and a safe fallback.
+- [ ] Revision Graph uses filelog/integration records, supports focus/filter/compare, and does not invent edges.
 
-### Collaboration и productivity
+### Collaboration and productivity
 
-- [ ] Jobs create/edit учитывает custom jobspec; submit показывает будущий server-defined status.
-- [ ] Labels create/edit/delete и tag/untag имеют preview и permission handling.
-- [ ] Saved filters/recent destinations хранятся per server/workspace.
-- [ ] Settings: appearance/density, pane sizes, columns, diff mode, external tools, shortcuts и diagnostics/privacy.
+- [ ] Jobs create/edit honors custom jobspec; submit shows the future server-defined status.
+- [ ] Labels create/edit/delete and tag/untag have preview and permission handling.
+- [ ] Saved filters/recent destinations are stored per server/workspace.
+- [ ] Settings: appearance/density, pane sizes, columns, diff mode, external tools, shortcuts, and diagnostics/privacy.
 
-## P2 — после P0/P1
+## P2 — after P0/P1
 
-- [ ] Promoted shelves и commit-edge topology actions.
-- [ ] P4 Code Review integration только при настроенном endpoint.
-- [ ] Classic branch maps и advanced integration ranges.
+- [ ] Promoted shelves and commit-edge topology actions.
+- [ ] P4 Code Review integration only with a configured endpoint.
+- [ ] Classic branch maps and advanced integration ranges.
 - [ ] File attributes, spec depot read-only browsing, archive/unload visibility.
-- [ ] Graph/hybrid depot и DVCS/remotes как отдельный product mode.
-- [ ] P4 Search integration с bounded fallback.
-- [ ] Custom tools только как validated executable + explicit arguments; общего shell console не будет.
+- [ ] Graph/hybrid depot and DVCS/remotes as a separate product mode.
+- [ ] P4 Search integration with a bounded fallback.
+- [ ] Custom tools only as a validated executable plus explicit arguments; there will be no general shell console.
 
-## Порядок реализации
+## Implementation order
 
-1. Закрыть P0 reliability: auth/trust, mapping/reconcile, resolve, submit recovery, stale/partial states.
-2. Закрыть P0 scale/history: bounded Depot/History, incremental lists, accessibility и visual scale.
-3. Проверить Stream switch на disposable server и продолжить Streams → Integration → Resolve → Submit как P1 vertical workflow.
-4. Добавить production content tools, Jobs/Labels CRUD и persistent preferences.
-5. Брать P2 только по конкретному пользовательскому запросу или server topology.
+1. Complete P0 reliability: auth/trust, mapping/reconcile, resolve, submit recovery, and stale/partial states.
+2. Complete P0 scale/history: bounded Depot/History, incremental lists, accessibility, and visual scale.
+3. Verify Stream switch on a disposable server and continue Streams → Integration → Resolve → Submit as a P1 vertical workflow.
+4. Add production content tools, Jobs/Labels CRUD, and persistent preferences.
+5. Take P2 only for a specific user request or server topology.
 
-## Обязательный smoke перед крупной отметкой `[x]`
+## Mandatory smoke before a major `[x]`
 
-- Plain и SSL server; новый/изменившийся fingerprint.
-- Valid/expired ticket, password login/logout и доступный тестовый MFA/SSO setup.
-- Classic и stream workspace; include/exclude/overlay mapping.
-- Case-sensitive/case-insensitive и Unicode paths.
-- Server limit/permission/trigger failure и partial output.
-- Sync с locally modified unopened file и cancel посередине.
-- Reconcile add/edit/delete/move с P4IGNORE.
-- Submit success, unresolved, out-of-date, lock conflict и network interruption.
-- Shelf-only/local-only/local+shelf; force unshelve только выбранных collision paths.
-- Undo/resolve и, после появления integration, merge down/copy up/cherry-pick.
-- RU/EN, keyboard-only, 100/125/200% и Windows Narrator.
+- Plain and SSL server; new/changed fingerprint.
+- Valid/expired ticket, password login/logout, and an available test MFA/SSO setup.
+- Classic and stream workspace; include/exclude/overlay mapping.
+- Case-sensitive/case-insensitive and Unicode paths.
+- Server limit/permission/trigger failure and partial output.
+- Sync with a locally modified unopened file and cancellation midway.
+- Reconcile add/edit/delete/move with P4IGNORE.
+- Submit success, unresolved, out-of-date, lock conflict, and network interruption.
+- Shelf-only/local-only/local+shelf; force unshelve only for selected collision paths.
+- Undo/resolve and, after integration exists, merge down/copy up/cherry-pick.
+- English/Russian, keyboard-only, 100/125/200%, and Windows Narrator.
 
-Не запускать mutating smoke на пользовательском сервере без явного разрешения; использовать disposable Helix Core setup.
+Do not run mutating smoke against the user's server without explicit authorization; use a disposable Helix Core setup.

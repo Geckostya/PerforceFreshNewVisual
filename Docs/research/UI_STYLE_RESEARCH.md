@@ -1,37 +1,37 @@
-# Исследование размеров и визуальной согласованности UI
+# UI size and visual-consistency research
 
-Дата: 22 июля 2026 года. Это обоснование решений; обязательный актуальный контракт находится в [`../UI_UX_SPECIFICATION.md`](../UI_UX_SPECIFICATION.md).
+Date: July 22, 2026. This document records rationale; the mandatory current contract is in [`../UI_UX_SPECIFICATION.md`](../UI_UX_SPECIFICATION.md).
 
-## Проблема исходного интерфейса
+## Original interface problem
 
-Аудит `src/app/app.css` обнаружил несвязанную шкалу: пользовательский текст задавался размерами от 8 до 25 px, кнопки — высотой 25, 28, 30, 32, 34, 36 и 38 px. В Files строка файла имела высоту 52 px, а строка папки того же дерева — 34 px. History в inspector использовала 10 px, metadata Streams и CLI log — 9 px, отдельные badges — 8 px. Концептуально одинаковые элементы поэтому выглядели как компоненты разных продуктов, а важная история читалась хуже второстепенных controls.
+An audit of `src/app/app.css` found a disconnected scale: user-facing text ranged from 8 to 25 px, while buttons had heights of 25, 28, 30, 32, 34, 36, and 38 px. In Files, a file row was 52 px high while a folder row in the same tree was 34 px. Inspector history used 10 px, Streams metadata and CLI log used 9 px, and some badges used 8 px. Conceptually identical elements therefore looked like components from different products, and important history was less readable than secondary controls.
 
-## Внешние ориентиры
+## External references
 
-- [Fluent 2 Typography](https://fluent2.microsoft.design/typography) задаёт Windows ramp 12/16 px для Caption, 14/20 px для Body, 20/28 px для Subtitle и 28/36 px для Title. Это опора для семантических ролей, а не повод использовать все ступени одновременно.
-- [Microsoft Windows typography](https://learn.microsoft.com/en-us/windows/apps/design/signature-experiences/typography) рекомендует Segoe UI Variable и подчёркивает иерархию и читаемость. P4FNV уже использует корректный Windows font stack.
-- [Windows content layout and spacing](https://learn.microsoft.com/en-us/windows/apps/design/basics/content-basics) группирует интерфейс устойчивыми интервалами 8, 12 и 16 effective px и рекомендует Body для основного текста списков, Caption — только для тесных вторичных мест.
-- [WCAG 2.2 Target Size (Minimum)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum) устанавливает floor 24×24 CSS px либо требует достаточный spacing. Для desktop UI P4FNV принят более предсказуемый минимум 32 px для соседних controls.
-- [WCAG 2.2 Resize Text](https://www.w3.org/TR/WCAG22/#resize-text) требует сохранять содержимое и функции при увеличении текста до 200%; поэтому плотность нельзя обеспечивать микрошрифтом и фиксированными тесными контейнерами.
+- [Fluent 2 Typography](https://fluent2.microsoft.design/typography) defines a Windows ramp of 12/16 px for Caption, 14/20 px for Body, 20/28 px for Subtitle, and 28/36 px for Title. This guides semantic roles; it is not a reason to use every step simultaneously.
+- [Microsoft Windows typography](https://learn.microsoft.com/en-us/windows/apps/design/signature-experiences/typography) recommends Segoe UI Variable and emphasizes hierarchy and readability. P4FNV already uses the correct Windows font stack.
+- [Windows content layout and spacing](https://learn.microsoft.com/en-us/windows/apps/design/basics/content-basics) groups the UI with stable 8, 12, and 16 effective-pixel intervals and recommends Body for primary list text, reserving Caption for tight secondary locations.
+- [WCAG 2.2 Target Size (Minimum)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum) sets a 24×24 CSS px floor or requires sufficient spacing. P4FNV adopts a more predictable 32 px minimum for adjacent desktop controls.
+- [WCAG 2.2 Resize Text](https://www.w3.org/TR/WCAG22/#resize-text) requires preserving content and function at 200% text enlargement; density therefore cannot rely on tiny fonts and fixed tight containers.
 
-## Принятое решение
+## Adopted decision
 
-P4FNV использует небольшую семантическую систему, адаптированную к плотному Windows desktop client:
+P4FNV uses a small semantic system adapted to a dense Windows desktop client:
 
 1. Typography: Caption 12/16, Body 14/20, Subtitle 16/22, Title 20/28, Display 28/36 px.
-2. Geometry: controls 32/36 px; list/tree rows 44 px для одной строки и 52 px для двух строк.
-3. Spacing: 4 px base с рабочими шагами 4, 8, 12, 16, 24 и 32 px.
-4. Одинаковая роль означает одинаковую геометрию. Файл и папка одного дерева различаются смысловыми affordances, но не типографикой и плотностью.
-5. 10 px остаётся только для коротких badges, где текст дублирует более явный статус. Вся читаемая metadata начинается с 12 px.
+2. Geometry: controls 32/36 px; list/tree rows 44 px for one line and 52 px for two lines.
+3. Spacing: 4 px base with working steps of 4, 8, 12, 16, 24, and 32 px.
+4. The same role means the same geometry. A file and folder in one tree differ through semantic affordances, not typography or density.
+5. Reserve 10 px for short badges whose text duplicates a clearer status. All readable metadata starts at 12 px.
 
-## Почему не добавлен UI framework
+## Why no UI framework was added
 
-Проект уже имеет общие selectors и один CSS entry point. Токены устраняют расхождения без зависимости, миграции компонентов и изменения DOM. Это также сохраняет текущую локализацию, keyboard behavior и Tauri/WebView2 boundary.
+The project already has shared selectors and one CSS entry point. Tokens remove inconsistencies without a dependency, component migration, or DOM change. This also preserves current localization, keyboard behavior, and the Tauri/WebView2 boundary.
 
-## Критерии проверки
+## Verification criteria
 
-- Files: folder/file rows воспринимаются одним деревом, имеют одинаковую высоту и базовую линию.
-- History: описание ревизии читается как Body, metadata — как Caption.
-- Controls: adjacent buttons не меньше 32 px; обычные поля и primary actions — 36 px.
-- Screens: RU/EN, 100/125/200%, минимальное окно; нет clipping, потери действий или горизонтального scroll всей страницы.
-- CSS audit: новые feature styles используют tokens вместо новых локальных шкал.
+- Files: folder/file rows read as one tree and have the same height and baseline.
+- History: revision description reads as Body, metadata as Caption.
+- Controls: adjacent buttons are at least 32 px; ordinary fields and primary actions are 36 px.
+- Screens: English/Russian, 100/125/200%, minimum window; no clipping, lost actions, or whole-page horizontal scroll.
+- CSS audit: new feature styles use tokens instead of new local scales.
