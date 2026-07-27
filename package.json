@@ -10,7 +10,8 @@
     "build:agent": "tsc -p tools/p4fnv-agent/tsconfig.json",
     "build:app": "tauri build --no-bundle && node scripts/copy-locales.mjs",
     "build:web": "tsc --noEmit && vite build",
-    "mcp:agent": ".toolchain/node/node.exe tools/p4fnv-agent/start.mjs",
+    "mcp:agent": ".\\.toolchain\\node\\node.exe tools\\p4fnv-agent\\start.mjs",
+    "smoke:agent": "npm run build:agent && .\\.toolchain\\node\\node.exe tools\\p4fnv-agent\\dist\\smoke.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri"

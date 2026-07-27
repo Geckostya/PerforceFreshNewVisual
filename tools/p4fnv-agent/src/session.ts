@@ -146,13 +146,24 @@ export class P4FnvAgentSession {
     child.once("exit", (code) => { this.exitCode = code; });
     child.once("error", () => { this.exitCode = -1; });
 
-    await this.waitForSnapshot({
-      timeoutMs: options.timeoutMs ?? 20_000,
-      settleMs: 300,
-      excludedScreen: "startup",
-      settled: true,
-    });
-    return this.status();
+    try {
+      await this.waitForSnapshot({
+        timeoutMs: options.timeoutMs ?? 20_000,
+        settleMs: 300,
+        excludedScreen: "startup",
+        settled: true,
+      });
+      return this.status();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        await this.stop();
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        throw new Error(`P4FNV agent session failed to start: ${message} Cleanup also failed: ${cleanupMessage}`);
+      }
+      throw new Error(`P4FNV agent session failed to start: ${message}`);
+    }
   }
 
   async stop(): Promise<SessionStatus> {
@@ -319,7 +330,24 @@ export function snapshotForTool(snapshot: UiSnapshot, includeHtml = false): Omit
 async function applicationBuildIsStale(): Promise<boolean> {
   if (!await fileExists(releaseExecutable)) return true;
   const executableTime = (await stat(releaseExecutable)).mtimeMs;
-  const roots = ["src", "src-tauri/src", "locales", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "package.json"];
+  const roots = [
+    "src",
+    "src-tauri/src",
+    "src-tauri/capabilities",
+    "locales",
+    "index.html",
+    "src-tauri/build.rs",
+    "src-tauri/tauri.conf.json",
+    "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock",
+    "scripts/copy-locales.mjs",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "vite.config.ts",
+    ".node-version",
+    "rust-toolchain.toml",
+  ];
   for (const root of roots) {
     const path = join(repositoryRoot, root);
     if (await newestModification(path) > executableTime) return true;
@@ -341,8 +369,11 @@ async function newestModification(path: string): Promise<number> {
 
 async function buildApplication(): Promise<void> {
   const toolchainRoot = join(repositoryRoot, ".toolchain");
-  const npm = join(toolchainRoot, "node", "npm.cmd");
-  if (!await fileExists(npm)) throw new Error("P4FNV bundled npm is missing. Activate scripts/toolchain.ps1 first.");
+  const node = join(toolchainRoot, "node", "node.exe");
+  const npm = join(toolchainRoot, "node", "node_modules", "npm", "bin", "npm-cli.js");
+  if (!await fileExists(node) || !await fileExists(npm)) {
+    throw new Error("P4FNV bundled Node/npm is missing. Run scripts/toolchain.ps1 and npm ci first.");
+  }
   const environment = {
     ...process.env,
     CARGO_HOME: join(toolchainRoot, "cargo"),
@@ -350,7 +381,7 @@ async function buildApplication(): Promise<void> {
     npm_config_cache: join(toolchainRoot, "npm-cache"),
     PATH: [join(toolchainRoot, "node"), join(toolchainRoot, "cargo", "bin"), process.env.PATH ?? ""].join(";"),
   };
-  const result = await runProcess(npm, ["run", "build:app"], environment, 15 * 60_000);
+  const result = await runProcess(node, [npm, "run", "build:app"], environment, 15 * 60_000);
   if (result.code !== 0) throw new Error(`P4FNV build failed.\n${result.output}`);
 }
 
