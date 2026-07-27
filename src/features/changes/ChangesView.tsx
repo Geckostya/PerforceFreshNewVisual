@@ -4,6 +4,7 @@ import {
   useState,
   type DragEvent,
 } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   createChange,
   deleteChange,
@@ -579,7 +580,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
             onDragOver={(event) => archiveDragDrop.allowDrop(event, "archived")}
             onDrop={(event) => { const ids = archiveDragDrop.takeDrop(event, "archived"); if (ids) setUnactual(ids, true); }}
           >
-            <button className="unactual-heading" type="button" aria-expanded={unactualOpen} onClick={() => setUnactualOpen((value) => !value)}><span aria-hidden="true">{unactualOpen ? "▾" : "▸"}</span><strong>{t("unactual")}</strong><small>{partitionedGroups.archived.length}</small></button>
+            <button className="unactual-heading" type="button" aria-expanded={unactualOpen} onClick={() => setUnactualOpen((value) => !value)}>{unactualOpen ? <ChevronDown className="ui-icon" aria-hidden="true" /> : <ChevronRight className="ui-icon" aria-hidden="true" />}<strong>{t("unactual")}</strong><small>{partitionedGroups.archived.length}</small></button>
             {unactualOpen && <div className="unactual-list">{partitionedGroups.archived.length ? partitionedGroups.archived.map(renderChange) : <CompactEmpty text={t("unactualChangesEmpty")} />}</div>}
           </section>
         </aside>

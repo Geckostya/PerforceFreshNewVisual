@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { listStreams, normalizeAppError, openWorkspace, previewSync, switchStream } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
 import { partitionArchived } from "../../shared/localArchive";
@@ -211,7 +212,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
           if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, node.stream);
         }}>
         {node.children.length > 0
-          ? <button className="stream-branch-toggle" type="button" aria-label={`${t(collapsed ? "expandStreamBranch" : "collapseStreamBranch")}: ${node.stream.path}`} aria-expanded={!collapsed} onClick={(event) => { event.stopPropagation(); toggleCollapsed(node.stream.path); }} onDoubleClick={(event) => event.stopPropagation()}>{collapsed ? "▸" : "▾"}</button>
+          ? <button className="stream-branch-toggle" type="button" aria-label={`${t(collapsed ? "expandStreamBranch" : "collapseStreamBranch")}: ${node.stream.path}`} aria-expanded={!collapsed} onClick={(event) => { event.stopPropagation(); toggleCollapsed(node.stream.path); }} onDoubleClick={(event) => event.stopPropagation()}>{collapsed ? <ChevronRight className="ui-icon" aria-hidden="true" /> : <ChevronDown className="ui-icon" aria-hidden="true" />}</button>
           : <span className="stream-branch-spacer" aria-hidden="true" />}
         <input
           type="checkbox"
@@ -254,7 +255,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
           onDragOver={(event) => archiveDragDrop.allowDrop(event, "archived")}
           onDrop={(event) => { const paths = archiveDragDrop.takeDrop(event, "archived"); if (paths) setUnactual(paths, true); }}
         >
-          <button className="unactual-heading" type="button" aria-expanded={archivedOpen} onClick={() => setArchivedExpanded(!archivedOpen)}><span aria-hidden="true">{archivedOpen ? "▾" : "▸"}</span><strong>{t("unactual")}</strong><small>{partition.archived.length}</small></button>
+          <button className="unactual-heading" type="button" aria-expanded={archivedOpen} onClick={() => setArchivedExpanded(!archivedOpen)}>{archivedOpen ? <ChevronDown className="ui-icon" aria-hidden="true" /> : <ChevronRight className="ui-icon" aria-hidden="true" />}<strong>{t("unactual")}</strong><small>{partition.archived.length}</small></button>
           {archivedOpen && <div className="streams-tree archived" role="tree" aria-multiselectable="true">{archivedForest.length ? renderTree(archivedForest, true) : <CompactEmpty text={t("unactualStreamsEmpty")} />}</div>}
         </section>
       </aside>

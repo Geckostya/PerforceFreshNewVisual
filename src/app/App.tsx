@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Archive, ClipboardList, EyeOff, FolderTree, GitBranch, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
 import { ChangesView } from "../features/changes/ChangesView";
 import { WorkspaceView } from "../features/workspace/WorkspaceView";
 import { HistoryView } from "../features/history/HistoryView";
@@ -216,21 +217,22 @@ function FilesSourceControl({ source, setSource }: { source: "local" | "depot"; 
 }
 
 function NavIcon({ name }: { name: "menu" | "files" | "changes" | "streams" | "shelves" | "jobs" | "expand" | "collapse" | "hide" }) {
-  const paths = {
-    menu: "M4 6h16M4 12h16M4 18h16",
-    files: "M3 7h7l2 2h9v10H3zM3 7V5h7l2 2",
-    changes: "M5 5h14v14H5zM8 9h8M8 13h6M8 17h4",
-    streams: "M6 4v16M6 8h7a4 4 0 0 1 4 4v8M6 16h5",
-    shelves: "M4 5h16v14H4zM8 9h8M8 13h8M8 17h5",
-    jobs: "M5 6h14v14H5zM8 3h8v6H8zM8 13h8M8 17h5",
-    expand: "M9 5l7 7-7 7",
-    collapse: "M15 5l-7 7 7 7",
-    hide: "M4 4l16 16M3 12s3-6 9-6c5 0 9 6 9 6s-1 2-3 4M9 18c-4-1-6-6-6-6",
-  } as const;
-  return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
+  const icons: Record<typeof name, LucideIcon> = {
+    menu: Menu,
+    files: FolderTree,
+    changes: ListChecks,
+    streams: GitBranch,
+    shelves: Archive,
+    jobs: ClipboardList,
+    expand: PanelLeftOpen,
+    collapse: PanelLeftClose,
+    hide: EyeOff,
+  };
+  const Icon = icons[name];
+  return <Icon className="nav-icon" aria-hidden="true" />;
 }
 
 function StartupScreen() {
   const { t } = useLocale();
-  return <div className="app" data-agent-screen="startup"><header className="app-header"><div className="brand" aria-label="P4FNV"><span className="brand-mark" aria-hidden="true">P4</span>P4FNV</div><LanguagePicker /></header><main className="startup-page"><div className="startup-status" role="status"><span className="status-symbol" aria-hidden="true">···</span><strong>{t("openingSavedWorkspace")}</strong></div></main></div>;
+  return <div className="app" data-agent-screen="startup"><header className="app-header"><div className="brand" aria-label="P4FNV"><span className="brand-mark" aria-hidden="true">P4</span>P4FNV</div><LanguagePicker /></header><main className="startup-page"><div className="startup-status" role="status"><LoaderCircle className="status-symbol icon-spin" aria-hidden="true" /><strong>{t("openingSavedWorkspace")}</strong></div></main></div>;
 }

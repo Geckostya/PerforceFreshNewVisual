@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { Activity, X } from "lucide-react";
 import { cancelOperation, startSync } from "./api";
 import { useLocale } from "./i18n";
 import type { ConnectionInput, OperationEvent } from "./models";
@@ -63,7 +64,7 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   if (items.length === 0) return null;
   return <><div className={`operations-center${open ? " open" : ""}`}>
     {open && <section className="operations-panel" aria-label={t("operationsCenter")}>
-      <header><div><strong>{t("operationsCenter")}</strong><span>{activeCount} {t("operationsActive")}</span></div><button type="button" onClick={() => setOpen(false)} aria-label={t("close")}>×</button></header>
+      <header><div><strong>{t("operationsCenter")}</strong><span>{activeCount} {t("operationsActive")}</span></div><button type="button" onClick={() => setOpen(false)} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></header>
       <div className="operations-list">
         {retryError && <p className="error-banner" role="alert">{t("operationRetryFailed")}</p>}
         {cancelError && <p className="error-banner" role="alert">{t("operationCancelFailed")}</p>}
@@ -75,7 +76,7 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
       </div>
     </section>}
     <button className={`operations-toggle${activeCount > 0 ? " active" : ""}`} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={t("operationsCenter")}>
-      <span aria-hidden="true">◌</span>{activeCount > 0 ? `${activeCount} ${t("operationsActive")}` : t("operationsCenter")}
+      <Activity className="ui-icon" aria-hidden="true" />{activeCount > 0 ? `${activeCount} ${t("operationsActive")}` : t("operationsCenter")}
     </button>
   </div>{retryCandidate && <ActionDialog title={t("retryOperation")} confirmLabel={t("retryOperation")} busy={retryBusy} onClose={() => setRetryCandidate(undefined)} onConfirm={() => void retry(retryCandidate)}><p>{t("operationRetryConfirm")}</p>{retryCandidate.scope && <strong>{retryCandidate.scope}</strong>}</ActionDialog>}</>;
 }

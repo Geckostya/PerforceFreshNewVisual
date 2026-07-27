@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Check, Inbox, X } from "lucide-react";
 import { useLocale } from "./i18n";
 import type { AppError } from "./models";
 import { formatEta, operationProgress, useActiveOperation } from "./operations";
@@ -50,11 +51,11 @@ export function ErrorBanner({ error }: { error: AppError }) {
 
 export function Notice({ text, onDismiss }: { text: string; onDismiss?: () => void }) {
   const { t } = useLocale();
-  return <div className="operation-toast" role="status"><span aria-hidden="true">✓</span><strong>{text}</strong>{onDismiss && <button type="button" onClick={onDismiss} aria-label={t("close")}>×</button>}</div>;
+  return <div className="operation-toast" role="status"><Check className="ui-icon" aria-hidden="true" /><strong>{text}</strong>{onDismiss && <button type="button" onClick={onDismiss} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button>}</div>;
 }
 
 export function EmptyState({ title, body }: { title: string; body: string }) {
-  return <div className="empty-state"><span aria-hidden="true">◇</span><strong>{title}</strong><p>{body}</p></div>;
+  return <div className="empty-state"><Inbox className="ui-icon empty-state-icon" aria-hidden="true" /><strong>{title}</strong><p>{body}</p></div>;
 }
 
 export function CompactEmpty({ text }: { text: string }) {
@@ -68,7 +69,7 @@ export function Modal({ title, busy, wide, onClose, children }: { title: string;
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [busy, onClose]);
-  return <div className="dialog-layer"><section className={`action-dialog${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="action-dialog-title"><div className="dialog-heading"><h2 id="action-dialog-title">{title}</h2><button type="button" onClick={onClose} disabled={busy} aria-label={t("close")}>×</button></div>{children}</section></div>;
+  return <div className="dialog-layer"><section className={`action-dialog${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="action-dialog-title"><div className="dialog-heading"><h2 id="action-dialog-title">{title}</h2><button type="button" onClick={onClose} disabled={busy} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></div>{children}</section></div>;
 }
 
 export function ActionDialog({ title, confirmLabel, busy, confirmDisabled, danger, onClose, onConfirm, children }: {

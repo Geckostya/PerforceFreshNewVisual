@@ -1,4 +1,5 @@
 import { useLocale, type TranslationKey } from "../../shared/i18n";
+import { RefreshCw } from "lucide-react";
 import type { SubmitMode, SubmitPreflightIssue, SubmitPreflightSummary } from "../../shared/models";
 import { Modal } from "../../shared/View";
 import { formatSubmitJob, groupChanges, hasUnresolvedSubmitIssue } from "./changes";
@@ -68,7 +69,7 @@ export function CheckField({ checked, onChange, label, body }: { checked: boolea
 }
 
 export function RefreshIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6M20 5v6h-6" /></svg>;
+  return <RefreshCw className="ui-icon" aria-hidden="true" />;
 }
 
 export function fileName(path: string) {
