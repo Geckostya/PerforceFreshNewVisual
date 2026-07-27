@@ -72,6 +72,7 @@ pub fn run() {
             commands::file_history,
             commands::print_revision,
             commands::save_revision,
+            commands::save_change_files,
             commands::save_shelved_file,
             commands::diff_revisions,
             commands::diff_revision_workspace,

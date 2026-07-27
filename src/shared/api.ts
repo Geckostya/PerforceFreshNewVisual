@@ -22,6 +22,7 @@ import type {
   SubmitOutcome,
   SubmitPreflightSummary,
   SubmittedChangeDetail,
+  ChangeExportResult,
   UndoPreviewItem,
   UnshelvePreview,
   WorkspaceSummary,
@@ -300,6 +301,10 @@ export async function printRevision(connection: ConnectionInput, depotPath: stri
 
 export async function saveRevision(connection: ConnectionInput, depotPath: string, revision: string, outputPath: string): Promise<void> {
   return invoke("save_revision", { input: { connection, depotPath, revision, outputPath } });
+}
+
+export async function saveChangeFiles(connection: ConnectionInput, change: string, outputDirectory: string): Promise<ChangeExportResult> {
+  return invoke<ChangeExportResult>("save_change_files", { input: { connection, change, outputDirectory } });
 }
 
 export async function saveShelvedFile(connection: ConnectionInput, sourceChange: string, depotPath: string, outputPath: string): Promise<void> {

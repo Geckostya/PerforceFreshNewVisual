@@ -1,17 +1,17 @@
 use crate::{
     diagnostics, locales,
     models::{
-        AnnotationLine, AppError, AppSettings, CliLogEntry, ConnectionInput, CreateChangeInput,
-        DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile, DiffInput, EditChangeInput,
-        ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, Job, Label, LocaleCatalog,
-        MoveInput, OpenedFile, OperationEvent, OperationEventKind, P4Detection, P4Info,
-        PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
-        ResolveInput, RevertInput, RevertPreviewItem, SaveRevisionInput, SaveShelvedInput,
-        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamSummary, SubmitInput,
-        SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmittedChangeDetail,
-        SwitchStreamInput, SyncPreview, TrustEntry, UndoPreviewItem, UnshelveInput,
-        UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec,
-        WorkspaceSummary, WorkspaceUpdateInput,
+        AnnotationLine, AppError, AppSettings, ChangeExportResult, CliLogEntry, ConnectionInput,
+        CreateChangeInput, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
+        DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix,
+        Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationEvent, OperationEventKind,
+        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
+        ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput,
+        SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
+        ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
+        SubmittedChangeDetail, SwitchStreamInput, SyncPreview, TrustEntry, UndoPreviewItem,
+        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
+        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{OperationHandle, OperationRegistry, wait_for_process},
     p4, settings,
@@ -1043,6 +1043,17 @@ pub async fn save_revision(input: SaveRevisionInput) -> Result<(), AppError> {
             &input.revision,
             &input.output_path,
         )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_change_files(
+    input: SaveChangeFilesInput,
+) -> Result<ChangeExportResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_change_files(&input.connection, &input.change, &input.output_directory)
     })
     .await
     .map_err(task_error)?

@@ -10,10 +10,10 @@ use std::{
 use serde_json::{Map, Value};
 
 use crate::models::{
-    AnnotationLine, AppError, CliLogLevel, ConnectionInput, DepotDirectory, DepotFile, DiffMode,
-    ErrorKind, FileDiff, FileRevision, Fix, Job, Label, LoginStatus, OpenedFile, P4Detection,
-    P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem,
-    ShelvedFile, StreamLocalStrategy, StreamSummary, SubmitMode, SubmitOutcome,
+    AnnotationLine, AppError, ChangeExportResult, CliLogLevel, ConnectionInput, DepotDirectory,
+    DepotFile, DiffMode, ErrorKind, FileDiff, FileRevision, Fix, Job, Label, LoginStatus,
+    OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
+    RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamSummary, SubmitMode, SubmitOutcome,
     SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmittedChangeDetail,
     SubmittedFile, SyncPreview, SyncPreviewItem, TrustEntry, UndoPreviewItem, UnshelveConflict,
     UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
@@ -1897,6 +1897,137 @@ pub fn save_revision(
     })
 }
 
+pub fn save_change_files(
+    input: &ConnectionInput,
+    change: &str,
+    output_directory: &str,
+) -> Result<ChangeExportResult, AppError> {
+    required_client(input)?;
+    validate_numbered_change(change)?;
+    let destination = validated_new_output_directory(output_directory)?;
+    let detail = describe_change(input, change)?;
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::new();
+
+    for file in &detail.files {
+        if !submitted_file_is_downloadable(file) {
+            continue;
+        }
+        let revision = validate_revision(file.revision.as_deref().unwrap_or_default())?.to_owned();
+        let relative = submitted_export_relative_path(&file.depot_path)?;
+        let key = relative.to_string_lossy().to_lowercase();
+        if !seen.insert(key) {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Несколько depot-файлов совпадают в файловой системе назначения.",
+            ));
+        }
+        files.push((
+            file.depot_path.clone(),
+            revision,
+            destination.join(relative),
+        ));
+    }
+
+    if files.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "В changelist нет доступных для скачивания ревизий файлов.",
+        ));
+    }
+
+    fs::create_dir_all(&destination).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не удалось создать каталог для экспорта changelist.",
+        )
+        .with_diagnostics(error.to_string())
+    })?;
+
+    let mut saved_files = 0_u32;
+    for (depot_path, revision, output_path) in &files {
+        let result = (|| {
+            let parent = output_path.parent().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Некорректный путь файла экспорта.",
+                )
+            })?;
+            fs::create_dir_all(parent).map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось создать подкаталог для экспорта changelist.",
+                )
+                .with_diagnostics(error.to_string())
+            })?;
+            save_revision(input, depot_path, revision, &output_path.to_string_lossy())
+        })();
+
+        if let Err(error) = result {
+            let _ = fs::remove_file(output_path);
+            if saved_files == 0 {
+                let _ = fs::remove_dir_all(&destination);
+                return Err(error);
+            }
+            return Err(AppError::new(
+                ErrorKind::PartialResult,
+                format!("Сохранено файлов: {saved_files}. Экспорт changelist завершён частично."),
+            )
+            .with_hint("Уже сохранённые файлы оставлены в каталоге назначения.")
+            .with_diagnostics(format!("{}\n{:?}", output_path.display(), error)));
+        }
+        saved_files += 1;
+    }
+
+    Ok(ChangeExportResult {
+        saved_files,
+        skipped_files: u32::try_from(detail.files.len() - files.len()).unwrap_or(u32::MAX),
+    })
+}
+
+fn validated_new_output_directory(output_directory: &str) -> Result<PathBuf, AppError> {
+    let output_directory = output_directory.trim();
+    if output_directory.is_empty() || output_directory.contains(['\r', '\n']) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Некорректный путь каталога для экспорта changelist.",
+        ));
+    }
+    let destination = PathBuf::from(output_directory);
+    if destination.exists() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Каталог назначения уже существует.",
+        )
+        .with_hint("Укажите новый каталог, чтобы не перезаписать существующие файлы."));
+    }
+    Ok(destination)
+}
+
+fn submitted_file_is_downloadable(file: &SubmittedFile) -> bool {
+    let action = file.action.to_ascii_lowercase();
+    file.revision.is_some() && !action.contains("delete") && action != "purge"
+}
+
+fn submitted_export_relative_path(depot_path: &str) -> Result<PathBuf, AppError> {
+    validate_depot_path(depot_path)?;
+    let mut relative = PathBuf::new();
+    for segment in depot_path.trim_start_matches("//").split('/') {
+        if segment.is_empty()
+            || matches!(segment, "." | "..")
+            || segment.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
+        {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Depot path нельзя безопасно представить в каталоге экспорта.",
+            )
+            .with_diagnostics(depot_path));
+        }
+        relative.push(segment);
+    }
+    Ok(relative)
+}
+
 pub fn save_shelved_file(
     input: &ConnectionInput,
     source_change: &str,
@@ -3599,6 +3730,38 @@ mod tests {
         );
         assert!(validated_new_output_path("", "invalid").is_err());
         assert!(validated_new_output_path("C:\\tmp\\out\n.bin", "invalid").is_err());
+    }
+
+    #[test]
+    fn submitted_change_export_paths_stay_below_the_new_directory() {
+        assert_eq!(
+            submitted_export_relative_path("//Acme/main/src/file.txt").unwrap(),
+            PathBuf::from("Acme")
+                .join("main")
+                .join("src")
+                .join("file.txt")
+        );
+        assert!(submitted_export_relative_path("//Acme/main/../secret.txt").is_err());
+        assert!(submitted_export_relative_path("//Acme/main/C:\\secret.txt").is_err());
+    }
+
+    #[test]
+    fn submitted_change_export_skips_revisions_without_content() {
+        let edit = SubmittedFile {
+            depot_path: "//Acme/main/a.txt".to_owned(),
+            action: "edit".to_owned(),
+            revision: Some("4".to_owned()),
+            file_type: Some("text".to_owned()),
+        };
+        assert!(submitted_file_is_downloadable(&edit));
+        assert!(!submitted_file_is_downloadable(&SubmittedFile {
+            action: "delete".to_owned(),
+            ..edit.clone()
+        }));
+        assert!(!submitted_file_is_downloadable(&SubmittedFile {
+            revision: None,
+            ..edit
+        }));
     }
 
     #[test]

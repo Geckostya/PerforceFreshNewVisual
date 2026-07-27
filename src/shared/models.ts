@@ -366,4 +366,5 @@ export interface FileRevision {
 
 export interface SubmittedFile { depotPath: string; action: string; revision?: string; fileType?: string; }
 export interface SubmittedChangeDetail { id: string; description: string; user: string; client: string; time?: string; jobs: string[]; files: SubmittedFile[]; }
+export interface ChangeExportResult { savedFiles: number; skippedFiles: number; }
 export interface UndoPreviewItem { depotPath: string; action: string; localPath?: string; }

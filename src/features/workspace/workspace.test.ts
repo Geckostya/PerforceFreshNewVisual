@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OpenedFile, PendingChange, WorkspaceFile } from "../../shared/models";
-import { buildWorkspaceTree, filterWorkspaceFiles, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
+import { buildWorkspaceTree, canDiffSubmittedFile, canDownloadSubmittedFile, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
 
 const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   depotPath: "//Acme/main/a.txt",
@@ -179,5 +179,20 @@ describe("workspace status filters", () => {
     expect(workspaceStatusVersion([...pending].reverse(), [...opened].reverse(), submitted)).toBe(version);
     expect(workspaceStatusVersion(pending, [{ ...opened[0], action: "delete" }], submitted)).not.toBe(version);
     expect(workspaceStatusVersion(pending, opened, [{ ...submitted[0], id: "101" }])).not.toBe(version);
+  });
+
+  it("uses the selected history row as the update target", () => {
+    const selectedFile = file({ depotPath: "//Acme/main/a.txt" });
+    expect(workspaceHistorySyncScopes(selectedFile, undefined, { change: "88", revision: "4" }, ["//Acme/main/a.txt"])).toEqual(["//Acme/main/a.txt#4"]);
+    expect(workspaceHistorySyncScopes(undefined, "//Acme/main", { change: "88" }, ["//Acme/main/..."])).toEqual(["//Acme/main/...@88"]);
+    expect(workspaceHistorySyncScopes(selectedFile, undefined, undefined, ["//Acme/main/a.txt"])).toEqual(["//Acme/main/a.txt"]);
+  });
+
+  it("allows single-file revision actions only when depot content exists", () => {
+    expect(canDownloadSubmittedFile({ depotPath: "//Acme/main/a.txt", action: "edit", revision: "4" })).toBe(true);
+    expect(canDiffSubmittedFile({ depotPath: "//Acme/main/a.txt", action: "edit", revision: "4" })).toBe(true);
+    expect(canDiffSubmittedFile({ depotPath: "//Acme/main/a.txt", action: "add", revision: "1" })).toBe(false);
+    expect(canDownloadSubmittedFile({ depotPath: "//Acme/main/a.txt", action: "delete", revision: "5" })).toBe(false);
+    expect(formatWorkspaceHistoryTime("not-a-time", "en")).toBe("not-a-time");
   });
 });

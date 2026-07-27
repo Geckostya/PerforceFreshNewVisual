@@ -502,6 +502,13 @@ pub struct SubmittedChangeDetail {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ChangeExportResult {
+    pub saved_files: u32,
+    pub skipped_files: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct UndoPreviewItem {
     pub depot_path: String,
     pub action: String,
@@ -532,6 +539,14 @@ pub struct SaveRevisionInput {
     pub depot_path: String,
     pub revision: String,
     pub output_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveChangeFilesInput {
+    pub connection: ConnectionInput,
+    pub change: String,
+    pub output_directory: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

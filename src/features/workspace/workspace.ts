@@ -1,6 +1,43 @@
-import type { ConnectionInput, OpenedFile, PendingChange, WorkspaceFile } from "../../shared/models";
+import type { ConnectionInput, OpenedFile, PendingChange, SubmittedFile, WorkspaceFile } from "../../shared/models";
 
 export type WorkspaceFilter = "all" | "opened" | "outdated" | "unresolved" | "otherOpen" | "locked" | "unmapped" | "untracked";
+
+export interface WorkspaceHistorySelection {
+  change: string;
+  revision?: string;
+}
+
+export function workspaceHistorySyncScopes(
+  selectedFile: WorkspaceFile | undefined,
+  selectedFolder: string | undefined,
+  history: WorkspaceHistorySelection | undefined,
+  fallback: string[],
+): string[] {
+  if (selectedFile && history?.revision) return [`${selectedFile.depotPath}#${history.revision}`];
+  if (selectedFolder && history?.change) return [`${selectedFolder.replace(/\/+$/, "")}/...@${history.change}`];
+  return fallback;
+}
+
+export function previousWorkspaceRevision(revision?: string): string | undefined {
+  const value = Number(revision);
+  return Number.isInteger(value) && value > 1 ? String(value - 1) : undefined;
+}
+
+export function canDownloadSubmittedFile(file: SubmittedFile): boolean {
+  return Boolean(file.revision) && !file.action.toLowerCase().includes("delete") && file.action.toLowerCase() !== "purge";
+}
+
+export function canDiffSubmittedFile(file: SubmittedFile): boolean {
+  return canDownloadSubmittedFile(file) && previousWorkspaceRevision(file.revision) !== undefined;
+}
+
+export function formatWorkspaceHistoryTime(value: string | undefined, language: string): string | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  return Number.isFinite(seconds)
+    ? new Intl.DateTimeFormat(language, { dateStyle: "medium" }).format(new Date(seconds * 1000))
+    : value;
+}
 
 export interface WorkspaceTreeGroup {
   path: string;

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { addFiles, createWorkspace, deleteFiles, deleteLocalFile, deleteWorkspace, editFiles, fileHistory, ignoreLocalFile, inspectWorkspace, listLocalWorkspaceDirectory, listOpenedFiles, listPendingChanges, listSubmittedChanges, listWorkspaceFiles, lockFiles, moveFile, normalizeAppError, previewReconcile, previewResolve, previewRevertSelected, previewSync, reconcileFiles, renameWorkspace, resolveFiles, revertFiles, unlockFiles, updateWorkspace } from "../../shared/api";
+import { Ban, CheckCircle2, ChevronRight, CircleAlert, FileCode2, FileImage, FileText, LoaderCircle, LockKeyhole, Minus, Pencil, Plus, Users, type LucideIcon } from "lucide-react";
+import { addFiles, createWorkspace, deleteFiles, deleteLocalFile, deleteWorkspace, editFiles, fileHistory, ignoreLocalFile, inspectWorkspace, listLocalWorkspaceDirectory, listOpenedFiles, listPendingChanges, listSubmittedChanges, listWorkspaceFiles, lockFiles, moveFile, normalizeAppError, previewReconcile, previewResolve, previewRevertSelected, reconcileFiles, renameWorkspace, resolveFiles, revealPath, revertFiles, unlockFiles, updateWorkspace } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
-import type { AppError, ConnectionInput, FileRevision, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem, SyncPreview, WorkspaceFile, WorkspaceSpec } from "../../shared/models";
-import { PathActions } from "../../shared/PathActions";
-import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
+import type { AppError, ConnectionInput, FileRevision, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem, WorkspaceFile, WorkspaceSpec } from "../../shared/models";
+import { SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
-import { buildWorkspaceTree, filterWorkspaceFiles, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, type WorkspaceDirectorySnapshot, type WorkspaceFilter, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
+import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
+import { buildWorkspaceTree, filterWorkspaceFiles, formatWorkspaceHistoryTime, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
 type WorkspaceDialog = "details" | "create" | "edit" | "rename" | "delete";
 type WorkspaceDraft = { name: string; root: string; stream: string; description: string };
@@ -14,7 +15,7 @@ type WorkspaceDraft = { name: string; root: string; stream: string; description:
 const emptyDraft: WorkspaceDraft = { name: "", root: "", stream: "", description: "" };
 
 export function WorkspaceView({ connection, info, initialScope, sourceControl, onDeleted, onRenamed }: { connection: ConnectionInput; info: P4Info; initialScope?: string; sourceControl?: ReactNode; onDeleted?: () => void; onRenamed?: (name: string) => void }) {
-  const { t } = useLocale();
+  const { t, language } = useLocale();
   const initialWorkspaceScope = initialScope?.trim() || "//...";
   const initialLazyRoot = workspaceLazyRoot(connection, initialWorkspaceScope);
   const initialFiles = initialLazyRoot ? [] : loadWorkspaceFileCache(workspaceFileCacheKey(connection, initialWorkspaceScope));
@@ -26,15 +27,10 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [loadedDirectoryPaths, setLoadedDirectoryPaths] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string[]>([]);
   const [change, setChange] = useState("default");
-  const [targetRevision, setTargetRevision] = useState("");
-  const [preview, setPreview] = useState<SyncPreview>();
-  const [syncPreviewOpen, setSyncPreviewOpen] = useState(false);
-  const [syncPreviewBusy, setSyncPreviewBusy] = useState(false);
-  const [syncAcknowledged, setSyncAcknowledged] = useState(false);
-  const [syncScopes, setSyncScopes] = useState<string[]>([]);
   const [reconcileCandidates, setReconcileCandidates] = useState<ReconcileItem[]>();
   const [reconcileSelected, setReconcileSelected] = useState<ReconcileItem[]>([]);
   const [pendingResolveMode, setPendingResolveMode] = useState<ResolveMode>();
+  const [pendingResolvePaths, setPendingResolvePaths] = useState<string[]>([]);
   const [resolvePreview, setResolvePreview] = useState<ResolvePreviewItem[]>([]);
   const [workspaceSpec, setWorkspaceSpec] = useState<WorkspaceSpec>();
   const [workspaceDialog, setWorkspaceDialog] = useState<WorkspaceDialog>();
@@ -45,6 +41,8 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [revisionHistory, setRevisionHistory] = useState<FileRevision[]>([]);
   const [folderHistory, setFolderHistory] = useState<PendingChange[]>([]);
+  const [historySelection, setHistorySelection] = useState<WorkspaceHistorySelection>();
+  const [historyChange, setHistoryChange] = useState<string>();
   const [historyBusy, setHistoryBusy] = useState(false);
   const [revertPreviewItems, setRevertPreviewItems] = useState<RevertPreviewItem[]>();
   const [deleteLocalPath, setDeleteLocalPath] = useState<string>();
@@ -286,27 +284,6 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     finally { setBusy(false); }
   }
 
-  async function showSyncPreview(requestedScope = scope) {
-    setBusy(true);
-    setSyncPreviewBusy(true);
-    setPreview(undefined);
-    setSyncPreviewOpen(true);
-    setError(undefined);
-    try {
-      setSyncScopes([requestedScope]);
-      setPreview(await previewSync(connection, [requestedScope]));
-      setSyncAcknowledged(false);
-    } catch (reason) { setSyncPreviewOpen(false); setError(normalizeAppError(reason)); }
-    finally { setSyncPreviewBusy(false); setBusy(false); }
-  }
-
-  async function runSync() {
-    const requestedScopes = syncScopes.length ? syncScopes : [scope];
-    setPreview(undefined);
-    setSyncPreviewOpen(false);
-    await safeSync.start(requestedScopes);
-  }
-
   async function showReconcilePreview() {
     setBusy(true);
     setError(undefined);
@@ -324,22 +301,40 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     await run(() => reconcileFiles(connection, change, paths), t("reconcileSucceeded"));
   }
 
-  async function showResolvePreview(mode: ResolveMode) {
+  async function showResolvePreview(mode: ResolveMode, requestedPaths = selectedUnresolvedPaths) {
+    if (!requestedPaths.length) return;
     setBusy(true);
     setError(undefined);
     try {
-      setResolvePreview(await previewResolve(connection, selectedUnresolvedPaths));
+      setResolvePreview(await previewResolve(connection, requestedPaths));
+      setPendingResolvePaths(requestedPaths);
       setPendingResolveMode(mode);
     } catch (reason) { setError(normalizeAppError(reason)); }
     finally { setBusy(false); }
   }
 
   async function applyResolve() {
-    if (!pendingResolveMode) return;
+    if (!pendingResolveMode || !pendingResolvePaths.length) return;
     const mode = pendingResolveMode;
+    const paths = pendingResolvePaths;
     setPendingResolveMode(undefined);
+    setPendingResolvePaths([]);
     setResolvePreview([]);
-    await run(() => resolveFiles(connection, selectedUnresolvedPaths, mode), t("resolveSucceeded"));
+    await run(() => resolveFiles(connection, paths, mode), t("resolveSucceeded"));
+  }
+
+  async function copyPath(path: string) {
+    try {
+      await navigator.clipboard.writeText(path);
+      setNotice(t("pathCopied"));
+    } catch {
+      setError({ kind: "command_failed", message: t("copyPathFailed"), hints: [] });
+    }
+  }
+
+  async function revealLocalPath(path: string) {
+    try { await revealPath(path); }
+    catch { setError({ kind: "command_failed", message: t("revealPathFailed"), hints: [] }); }
   }
 
   async function openWorkspaceSettings() {
@@ -425,14 +420,15 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
 
   const selectedFiles = files.filter((file) => selected.includes(file.depotPath));
   const paths = selectedFiles.map((file) => file.depotPath);
-  const selectedSyncScopes = [...selectedFolders.map((folder) => `${folder.replace(/\/+$/, "")}/...`), ...paths];
+  const defaultSelectedSyncScopes = [...selectedFolders.map((folder) => `${folder.replace(/\/+$/, "")}/...`), ...paths];
   const selectedFile = selectedFiles.length === 1 && selectedFolders.length === 0 ? selectedFiles[0] : undefined;
+  const selectedFolder = selectedFolders.length === 1 && selected.length === 0 ? selectedFolders[0] : undefined;
+  const selectedSyncScopes = workspaceHistorySyncScopes(selectedFile, selectedFolder, historySelection, defaultSelectedSyncScopes);
   const selectedHistoryPath = workspaceFileHistoryPath(selectedFile);
   const selectedUnresolvedPaths = selectedFiles.filter((file) => file.unresolved).map((file) => file.depotPath);
   const visibleFiles = useMemo(() => filterWorkspaceFiles(files, filter, query), [files, filter, query]);
   const visibleDirectories = useMemo(() => filter === "all" && !query.trim() ? directoryPaths : [], [directoryPaths, filter, query]);
   const tree = useMemo(() => buildWorkspaceTree(visibleFiles, visibleDirectories, loadingDirectoryPaths, lazyRoot.current ? loadedDirectoryPaths : undefined, ignoredDirectoryPaths), [visibleFiles, visibleDirectories, loadingDirectoryPaths, loadedDirectoryPaths, ignoredDirectoryPaths]);
-  const revisionScope = targetRevision.trim() ? `${scope.trim()}#${targetRevision.trim()}` : scope;
   const filtersActive = scope.trim() !== "//..." || query.trim() !== "" || filter !== "all" || viewMode !== "tree";
 
   useEffect(() => {
@@ -471,10 +467,11 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     const statuses = workspaceStatus(file);
     const statusText = file.statusPending ? t("workspaceStatusLoading") : statuses.map((status) => t(`workspaceStatus_${status}` as never)).join(" · ") || t("workspaceStatusClean");
     const title = `${file.depotPath}\n${t("workspaceStatus")}: ${statusText}\n${t("fileSize")}: ${file.fileSize === undefined ? "—" : formatBytes(file.fileSize)}\n${t("changelistLabel")}: ${file.change || "default"}`;
+    const FileIcon = fileIcon(file.depotPath);
     return <button type="button" role="treeitem" title={title} aria-selected={selected.includes(file.depotPath)} data-agent-ignored={file.ignored} className={`workspace-file-row${selected.includes(file.depotPath) ? " selected" : ""}${file.ignored ? " ignored" : ""}`} key={file.depotPath} onClick={(event) => selectFile(file, event)} onContextMenu={(event) => openFileMenu(event, file)} onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openFileMenu(event, file); }}>
-      <span className="file-tree-icon" aria-hidden="true">{fileIcon(file.depotPath)}</span>
+      <FileIcon className="file-tree-icon" aria-hidden="true" />
       <span><strong>{file.depotPath.split("/").at(-1) || file.depotPath}</strong><small>{file.localPath || file.clientPath || file.depotPath} · {statusText}</small></span>
-      <span className="file-status-markers" aria-label={statusText}>{statusMarkers(file).map((marker) => <span title={marker.status === "clean" ? t("workspaceStatusClean") : marker.status === "loading" ? t("workspaceStatusLoading") : t(`workspaceStatus_${marker.status}` as never)} className={marker.className} key={marker.status}>{marker.symbol}</span>)}</span>
+      <span className="file-status-markers" aria-label={statusText}>{statusMarkers(file).map(({ icon: StatusIcon, status, className }) => <span title={status === "clean" ? t("workspaceStatusClean") : status === "loading" ? t("workspaceStatusLoading") : t(`workspaceStatus_${status}` as never)} className={className} key={status}><StatusIcon aria-hidden="true" /></span>)}</span>
       <span className="revision-cell">{file.haveRevision || "—"} / {file.headRevision || "—"}</span>
     </button>;
   };
@@ -496,12 +493,11 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
         if (nextOpen) next.add(folder.path); else next.delete(folder.path);
         return next;
       });
-    }} aria-busy={folder.loading}><summary role="treeitem" aria-label={ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name} aria-selected={selectedFolders.includes(folder.path)} aria-expanded={open} aria-busy={folder.loading} data-agent-id={`workspace-folder:${folder.path}`} data-agent-ignored={ignored} onClick={(event) => selectFolder(folder, event)}><span className="folder-icon" aria-hidden="true">▸</span><strong>{folder.name}</strong><span className="folder-summary-meta">{folder.loading ? <span className="folder-loading-indicator" role="status" aria-label={t("folderLoading")} title={t("folderLoading")} /> : null}<small>{folder.loaded ? folderFileCount(folder) : "…"}</small></span></summary>{open && <div role="group">{renderTree(folder.folders)}{folder.files.map(renderFile)}</div>}</details>;
+    }} aria-busy={folder.loading}><summary role="treeitem" aria-label={ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name} aria-selected={selectedFolders.includes(folder.path)} aria-expanded={open} aria-busy={folder.loading} data-agent-id={`workspace-folder:${folder.path}`} data-agent-ignored={ignored} onClick={(event) => selectFolder(folder, event)}><ChevronRight className="folder-icon" aria-hidden="true" /><strong>{folder.name}</strong><span className="folder-summary-meta">{folder.loading ? <span className="folder-loading-indicator" role="status" aria-label={t("folderLoading")} title={t("folderLoading")} /> : null}<small>{folder.loaded ? folderFileCount(folder) : "…"}</small></span></summary>{open && <div role="group">{renderTree(folder.folders)}{folder.files.map(renderFile)}</div>}</details>;
   });
 
-  const selectedFolder = selectedFolders.length === 1 && selected.length === 0 ? selectedFolders[0] : undefined;
-
   useEffect(() => {
+    setHistorySelection(undefined);
     if (!selectedFile && !selectedFolder) {
       setRevisionHistory([]);
       setFolderHistory([]);
@@ -527,6 +523,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const menuFiles = menu ? files.filter((file) => menu.paths.includes(file.depotPath)) : [];
   const menuChange = menuFiles[0]?.change || "default";
   const menuCanRevert = menuFiles.length > 0 && menuFiles.every((file) => Boolean(file.action) && (file.change || "default") === menuChange);
+  const menuCanResolve = menuFiles.length > 0 && menuFiles.every((file) => file.unresolved);
 
   return <View
     id="workspace-files-title"
@@ -535,9 +532,9 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     subtitle={`${info.clientRoot || connection.client} · ${t("workspaceFilesBody")}`}
     error={error}
     notice={notice}
-    operationLabel={syncPreviewBusy ? t("preparingUpdate") : safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
+    operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
     onDismissNotice={() => setNotice("")}
-    actions={<>{sourceControl}<button className="secondary-button" type="button" onClick={() => void openWorkspaceSettings()} disabled={busy}>{t("workspaceSpec")}</button><button className="secondary-button" type="button" onClick={() => void showReconcilePreview()} disabled={busy}>{t("reconcile")}</button><button className="secondary-button" type="button" onClick={() => void refreshLoadedDirectories()} disabled={busy}>{busy && !syncPreviewBusy ? t("updatingFileStatuses") : t("refresh")}</button><button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start([scope])} disabled={busy || safeSync.phase !== "idle"}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button></>}
+    actions={<>{sourceControl}<button className="secondary-button" type="button" onClick={() => void openWorkspaceSettings()} disabled={busy}>{t("workspaceSpec")}</button><button className="secondary-button" type="button" onClick={() => void showReconcilePreview()} disabled={busy}>{t("reconcile")}</button><button className="secondary-button" type="button" onClick={() => void refreshLoadedDirectories()} disabled={busy}>{busy ? t("updatingFileStatuses") : t("refresh")}</button><button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start([scope])} disabled={busy || safeSync.phase !== "idle"}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button></>}
   >
     <details className="files-options">
       <summary><strong>{t("filesSearchAndFilters")}</strong><span>{t(filtersActive ? "filesFiltersActive" : "filesFiltersOptional")}</span></summary>
@@ -561,40 +558,48 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
       <aside className="resource-inspector">
         <div className="column-heading"><strong>{t("fileDetailsLabel")}</strong><span>{selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : selected.length}</span></div>
         {!selected.length && !selectedFolders.length ? <EmptyState title={t("selectWorkspaceFile")} body={t("selectWorkspaceFileBody")} /> : <div className="inspector-content">
-          <div><h2>{selectedFolder || (selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : selectedFile?.depotPath || `${selected.length} ${t("filesSelected")}`)}</h2>{selectedFile && <PathActions depotPath={selectedFile.depotPath} localPath={selectedFile.localPath} />}</div>
-          {selectedSyncScopes.length > 0 && <div className="inspector-actions"><button className="primary-button" type="button" onClick={() => void safeSync.start(selectedSyncScopes)} disabled={busy || safeSync.phase !== "idle"}>{t("updateSelected")}</button></div>}
+          <div><h2>{selectedFolder || (selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : selectedFile?.depotPath || `${selected.length} ${t("filesSelected")}`)}</h2></div>
+          {selectedSyncScopes.length > 0 && <div className="inspector-actions history-update-action"><button className="primary-button" type="button" onClick={() => void safeSync.start(selectedSyncScopes)} disabled={busy || safeSync.phase !== "idle"}>{t("updateSelected")}</button>{historySelection && <small>{historySelection.revision ? `#${historySelection.revision}` : `CL ${historySelection.change}`}</small>}</div>}
           {selectedFile && <dl className="file-facts"><dt>{t("actionLabel")}</dt><dd>{selectedFile.action || "—"}</dd><dt>{t("revisionLabel")}</dt><dd>{selectedFile.haveRevision || "—"} / {selectedFile.headRevision || "—"}</dd><dt>{t("workspaceStatus")}</dt><dd>{selectedFile.statusPending ? t("workspaceStatusLoading") : workspaceStatus(selectedFile).map((status) => t(`workspaceStatus_${status}` as never)).join(" · ") || t("workspaceStatusClean")}</dd></dl>}
-          <section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <div className="history-compact-row" key={revision.revision}><strong>#{revision.revision} · {revision.action}</strong><span>CL {revision.change} · {revision.user}</span><small>{revision.description}</small></div>) : folderHistory.length ? folderHistory.map((changeItem) => <div className="history-compact-row" key={changeItem.id}><strong>CL {changeItem.id} · {changeItem.user}</strong><span>{changeItem.client}</span><small>{changeItem.description}</small></div>) : <CompactEmpty text={t("depotNoHistory")} />}</section>
-          {selected.length > 0 && <><label className="field"><span className="field-label">{t("destinationChangelist")}</span><input value={change} onChange={(event) => setChange(event.target.value)} /></label>
-          <div className="inspector-actions"><button className="secondary-button" type="button" onClick={() => void run(() => editFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("openForEdit")}</button><button className="secondary-button" type="button" onClick={() => void run(() => addFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("markForAdd")}</button><button className="secondary-button" type="button" onClick={() => void run(() => deleteFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("markForDelete")}</button><button className="secondary-button" type="button" onClick={() => void openRevert(paths)} disabled={busy || !selectedFiles.every((file) => file.action && (file.change || "default") === (selectedFiles[0]?.change || "default"))}>{t("revertSelected")}</button><button className="secondary-button" type="button" onClick={() => setRenameDestination(selectedFile?.depotPath || "")} disabled={!selectedFile || busy}>{t("renameFile")}</button><button className="secondary-button" type="button" onClick={() => void run(() => lockFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("lockFiles")}</button><button className="secondary-button" type="button" onClick={() => void run(() => unlockFiles(connection, change, paths))} disabled={busy || !paths.length}>{t("unlockFiles")}</button></div>
-          {selectedUnresolvedPaths.length > 0 && <div className="inline-preview"><strong>{t("unresolvedFilesSelected")}: {selectedUnresolvedPaths.length}</strong><div className="inspector-actions"><button className="secondary-button" type="button" onClick={() => void showResolvePreview("yours")} disabled={busy}>{t("resolveKeepWorkspace")}</button><button className="secondary-button" type="button" onClick={() => void showResolvePreview("theirs")} disabled={busy}>{t("resolveAcceptServer")}</button><button className="secondary-button" type="button" onClick={() => void showResolvePreview("autoSafe")} disabled={busy}>{t("resolveAutoSafe")}</button><button className="secondary-button" type="button" onClick={() => void showResolvePreview("autoMerge")} disabled={busy}>{t("resolveAutoMerge")}</button></div></div>}
-          <div className="inline-preview"><label className="field"><span className="field-label">{t("targetRevision")}</span><input value={targetRevision} placeholder={t("targetRevisionPlaceholder")} onChange={(event) => setTargetRevision(event.target.value)} /></label><button className="secondary-button" type="button" onClick={() => void showSyncPreview(revisionScope)} disabled={busy || !targetRevision.trim()}>{t("getRevision")}</button></div></>}
+          {selected.length > 0 && <label className="field"><span className="field-label">{t("destinationChangelist")}</span><input value={change} onChange={(event) => setChange(event.target.value)} /></label>}
+          <section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <button type="button" aria-pressed={historySelection?.revision === revision.revision} data-agent-id={`workspace-history:${revision.change}:${revision.revision}`} className={`history-compact-row${historySelection?.revision === revision.revision ? " selected" : ""}`} key={revision.revision} onClick={() => setHistorySelection({ change: revision.change, revision: revision.revision })} onDoubleClick={() => revision.change && setHistoryChange(revision.change)} onKeyDown={(event) => { if (event.key === "Enter" && revision.change) { event.preventDefault(); setHistoryChange(revision.change); } }}><strong>{revision.description?.trim() || t("noDescription")}</strong><span>{[`CL ${revision.change || "—"}`, revision.user, revision.client, formatWorkspaceHistoryTime(revision.time, language)].filter(Boolean).join(" · ")}</span><small>#{revision.revision} · {revision.action || "—"}</small></button>) : folderHistory.length ? folderHistory.map((changeItem) => <button type="button" aria-pressed={historySelection?.change === changeItem.id} data-agent-id={`workspace-history:${changeItem.id}`} className={`history-compact-row${historySelection?.change === changeItem.id ? " selected" : ""}`} key={changeItem.id} onClick={() => setHistorySelection({ change: changeItem.id })} onDoubleClick={() => setHistoryChange(changeItem.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setHistoryChange(changeItem.id); } }}><strong>{changeItem.description || t("noDescription")}</strong><span>{[`CL ${changeItem.id}`, changeItem.user, changeItem.client, formatWorkspaceHistoryTime(changeItem.time, language)].filter(Boolean).join(" · ")}</span></button>) : <CompactEmpty text={t("depotNoHistory")} />}</section>
         </div>}
       </aside>
     </div>
 
     {menu && <ContextMenu x={menu.x} y={menu.y} onSelect={() => setMenu(undefined)}>
       <MenuButton onClick={() => void safeSync.start(menu.paths)}>{t("updateSelected")}</MenuButton>
+      {menu.paths.length === 1 && <MenuButton onClick={() => void copyPath(menu.file.depotPath)}>{t("copyDepotPath")}</MenuButton>}
+      {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void copyPath(menu.file.localPath!)}>{t("copyLocalPath")}</MenuButton>}
+      {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void revealLocalPath(menu.file.localPath!)}>{t("revealInExplorer")}</MenuButton>}
       {menuFiles.every((file) => !file.action && !file.untracked) && <MenuButton onClick={() => void run(() => editFiles(connection, change, menu.paths))}>{t("openForEdit")}</MenuButton>}
       {menuFiles.every((file) => file.untracked && !file.ignored) && <MenuButton onClick={() => void run(() => addFiles(connection, change, menu.paths))}>{t("markForAdd")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.untracked && menu.file.localPath && <MenuButton onClick={() => void run(() => ignoreLocalFile(connection, menu.file.localPath!), t("fileIgnored"))}>{t("addToIgnore")}</MenuButton>}
       {menuFiles.every((file) => !file.untracked && !file.action) && <MenuButton onClick={() => void run(() => deleteFiles(connection, change, menu.paths))}>{t("markForDelete")}</MenuButton>}
+      {menu.paths.length === 1 && <MenuButton onClick={() => setRenameDestination(menu.file.depotPath)}>{t("renameFile")}</MenuButton>}
+      {menuCanRevert && <MenuButton onClick={() => void run(() => lockFiles(connection, menuChange, menu.paths))}>{t("lockFiles")}</MenuButton>}
+      {menuCanRevert && <MenuButton onClick={() => void run(() => unlockFiles(connection, menuChange, menu.paths))}>{t("unlockFiles")}</MenuButton>}
+      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("yours", menu.paths)}>{t("resolveKeepWorkspace")}</MenuButton>}
+      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("theirs", menu.paths)}>{t("resolveAcceptServer")}</MenuButton>}
+      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoSafe", menu.paths)}>{t("resolveAutoSafe")}</MenuButton>}
+      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoMerge", menu.paths)}>{t("resolveAutoMerge")}</MenuButton>}
       {menuCanRevert && <MenuButton danger onClick={() => void openRevert(menu.paths)}>{t("revertSelected")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.localPath && <MenuButton danger onClick={() => setDeleteLocalPath(menu.file.localPath)}>{t("deleteLocally")}</MenuButton>}
     </ContextMenu>}
 
-    {syncPreviewOpen && <SyncPreviewDialog preview={preview} busy={busy} acknowledged={syncAcknowledged} onAcknowledged={setSyncAcknowledged} onClose={() => setSyncPreviewOpen(false)} onConfirm={() => void runSync()} />}
     <SafeSyncConflictDialog sync={safeSync} />
 
     {reconcileCandidates && <ActionDialog title={t("reconcilePreviewTitle")} confirmLabel={t("applyReconcile")} busy={busy} confirmDisabled={!reconcileSelected.length} onClose={() => setReconcileCandidates(undefined)} onConfirm={() => void applyReconcile()}><p>{t("reconcilePreviewBody")}</p><div className="resource-detail-list">{reconcileCandidates.length ? reconcileCandidates.map((item) => <button type="button" className={`resource-entry preview-select${reconcileSelected.some((selectedItem) => selectedItem.depotPath === item.depotPath) ? " selected" : ""}`} key={`${item.depotPath}-${item.action}`} onClick={() => setReconcileSelected((current) => current.some((selectedItem) => selectedItem.depotPath === item.depotPath) ? current.filter((selectedItem) => selectedItem.depotPath !== item.depotPath) : [...current, item])}><strong>{item.depotPath}</strong><small>{item.action}{item.localPath ? ` · ${item.localPath}` : ""}</small></button>) : <CompactEmpty text={t("noReconcileChanges")} />}</div></ActionDialog>}
 
-    {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length} onClose={() => { setPendingResolveMode(undefined); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={item.depotPath}><span><strong>{item.depotPath}</strong><small>{item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
+    {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length} onClose={() => { setPendingResolveMode(undefined); setPendingResolvePaths([]); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={item.depotPath}><span><strong>{item.depotPath}</strong><small>{item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
 
     {renameDestination !== undefined && selectedFile && <ActionDialog title={t("renameFile")} confirmLabel={t("renameFile")} busy={busy} confirmDisabled={!renameDestination.trim() || renameDestination.trim() === selectedFile.depotPath} onClose={() => setRenameDestination(undefined)} onConfirm={() => void applyRename()}><p>{selectedFile.depotPath}</p><label className="field"><span className="field-label">{t("renameDestinationPrompt")}</span><input autoFocus value={renameDestination} onChange={(event) => setRenameDestination(event.target.value)} /></label></ActionDialog>}
 
     {revertPreviewItems && <ActionDialog danger title={t("revertSelected")} confirmLabel={t("revertNow")} busy={busy} confirmDisabled={!revertPreviewItems.length} onClose={() => setRevertPreviewItems(undefined)} onConfirm={() => void applyRevert()}><p>{t("revertWarning")}</p>{revertPreviewItems.length ? <div className="file-selection-summary">{revertPreviewItems.map((item) => <span key={item.depotPath}>{item.action}: {item.depotPath}</span>)}</div> : <CompactEmpty text={t("noRevertFiles")} />}</ActionDialog>}
 
     {deleteLocalPath && <ActionDialog danger title={t("deleteLocally")} confirmLabel={t("deleteLocally")} busy={busy} onClose={() => setDeleteLocalPath(undefined)} onConfirm={() => { const path = deleteLocalPath; setDeleteLocalPath(undefined); void run(() => deleteLocalFile(connection, path), t("localFileDeleted")); }}><p>{t("deleteLocallyWarning")}</p><strong>{deleteLocalPath}</strong></ActionDialog>}
+
+    {historyChange && <ChangeHistoryDialog connection={connection} change={historyChange} onClose={() => setHistoryChange(undefined)} />}
 
     {workspaceDialog === "details" && workspaceSpec && <Modal title={t("workspaceSpecTitle")} busy={busy} onClose={() => setWorkspaceDialog(undefined)}><div className="dialog-body"><p>{workspaceSpec.description || t("workspaceSpecNoValue")}</p><dl className="dialog-facts"><dt>{t("workspaceSpecName")}</dt><dd>{workspaceSpec.name}</dd><dt>{t("workspaceSpecOwner")}</dt><dd>{workspaceSpec.owner}</dd><dt>{t("workspaceSpecRoot")}</dt><dd>{workspaceSpec.root}</dd><dt>{t("workspaceSpecHost")}</dt><dd>{workspaceSpec.host || "—"}</dd><dt>{t("workspaceSpecStream")}</dt><dd>{workspaceSpec.stream || "—"}</dd><dt>{t("workspaceSpecOptions")}</dt><dd>{workspaceSpec.options.join(", ") || "—"}</dd></dl><div className="resource-detail-list">{workspaceSpec.mappings.map((mapping) => <div className="resource-detail-row" key={mapping}><span><strong>{mapping}</strong></span></div>)}</div></div><div className="dialog-actions workspace-spec-actions"><button className="secondary-button" type="button" onClick={() => openWorkspaceEditor("create")}>{t("createWorkspace")}</button><button className="secondary-button" type="button" onClick={() => openWorkspaceEditor("edit")}>{t("editWorkspace")}</button><button className="secondary-button" type="button" onClick={() => openWorkspaceEditor("rename")}>{t("renameWorkspace")}</button><button className="danger-button" type="button" onClick={() => setWorkspaceDialog("delete")}>{t("deleteWorkspace")}</button></div></Modal>}
 
@@ -616,24 +621,24 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value < 10 ? 1 : 0)} ${unit}`;
 }
 
-function fileIcon(path: string): string {
+function fileIcon(path: string): LucideIcon {
   const extension = path.split(".").at(-1)?.toLowerCase();
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(extension || "")) return "▧";
-  if (["ts", "tsx", "js", "jsx", "rs", "cpp", "h", "cs", "py"].includes(extension || "")) return "<>";
-  return "▤";
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(extension || "")) return FileImage;
+  if (["ts", "tsx", "js", "jsx", "rs", "cpp", "h", "cs", "py"].includes(extension || "")) return FileCode2;
+  return FileText;
 }
 
-function statusMarkers(file: WorkspaceFile): { symbol: string; status: string; className: string }[] {
-  const markers: { symbol: string; status: string; className: string }[] = [];
-  if (file.statusPending) return [{ symbol: "…", status: "loading", className: "pending" }];
-  if (file.action === "add") markers.push({ symbol: "+", status: "added", className: "added" });
-  else if (file.action === "delete") markers.push({ symbol: "−", status: "deleted", className: "deleted" });
-  else if (file.action) markers.push({ symbol: "✎", status: "edited", className: "opened" });
-  if (file.otherLock) markers.push({ symbol: "▣", status: "locked", className: "locked" });
-  if (file.otherOpen) markers.push({ symbol: "●", status: "otherOpen", className: "other-open" });
-  if (file.unresolved) markers.push({ symbol: "!", status: "unresolved", className: "unresolved" });
-  if (file.ignored) markers.push({ symbol: "∅", status: "ignored", className: "ignored" });
-  if (!markers.length) markers.push({ symbol: "·", status: "clean", className: "clean" });
+function statusMarkers(file: WorkspaceFile): { icon: LucideIcon; status: string; className: string }[] {
+  const markers: { icon: LucideIcon; status: string; className: string }[] = [];
+  if (file.statusPending) return [{ icon: LoaderCircle, status: "loading", className: "pending" }];
+  if (file.action === "add") markers.push({ icon: Plus, status: "added", className: "added" });
+  else if (file.action === "delete") markers.push({ icon: Minus, status: "deleted", className: "deleted" });
+  else if (file.action) markers.push({ icon: Pencil, status: "edited", className: "opened" });
+  if (file.otherLock) markers.push({ icon: LockKeyhole, status: "locked", className: "locked" });
+  if (file.otherOpen) markers.push({ icon: Users, status: "otherOpen", className: "other-open" });
+  if (file.unresolved) markers.push({ icon: CircleAlert, status: "unresolved", className: "unresolved" });
+  if (file.ignored) markers.push({ icon: Ban, status: "ignored", className: "ignored" });
+  if (!markers.length) markers.push({ icon: CheckCircle2, status: "clean", className: "clean" });
   return markers;
 }
 
