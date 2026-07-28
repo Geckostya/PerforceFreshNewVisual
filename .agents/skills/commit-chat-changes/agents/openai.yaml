@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit Chat Changes"
+  short_description: "Commit only changes made in the current chat"
+  default_prompt: "Use $commit-chat-changes to commit only the changes made in this chat."

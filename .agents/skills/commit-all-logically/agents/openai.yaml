@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit All Logically"
+  short_description: "Split all worktree changes into logical commits"
+  default_prompt: "Use $commit-all-logically to split every suitable worktree change into logical commits."
