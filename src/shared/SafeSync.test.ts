@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { overwritePathsAfterForce, updateOverwritePaths } from "./SafeSync";
+import { overwritePathsAfterForce, shouldShowSyncConflictDialog, updateOverwritePaths } from "./SafeSync";
 
 describe("safe sync writable choices", () => {
   it("keeps overwrite choices unique and removable per file", () => {
@@ -13,5 +13,12 @@ describe("safe sync writable choices", () => {
     expect(overwritePathsAfterForce("failed", paths)).toBe(paths);
     expect(overwritePathsAfterForce("cancelled", paths)).toBe(paths);
     expect(overwritePathsAfterForce("completed", paths)).toEqual([]);
+  });
+
+  it("closes the conflict dialog while the selected update runs", () => {
+    const paths = ["//depot/a"];
+    expect(shouldShowSyncConflictDialog(paths, "idle")).toBe(true);
+    expect(shouldShowSyncConflictDialog(paths, "forcing")).toBe(false);
+    expect(shouldShowSyncConflictDialog(paths, "checking")).toBe(false);
   });
 });

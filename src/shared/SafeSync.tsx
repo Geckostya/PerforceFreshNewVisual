@@ -7,6 +7,10 @@ import { Modal } from "./View";
 
 type SyncPhase = "idle" | "syncing" | "checking" | "forcing";
 
+export function shouldShowSyncConflictDialog(conflicts: string[], phase: SyncPhase): boolean {
+  return conflicts.length > 0 && phase === "idle";
+}
+
 export function updateOverwritePaths(current: string[], path: string, overwrite: boolean): string[] {
   return overwrite ? [...new Set([...current, path])] : current.filter((item) => item !== path);
 }
@@ -184,7 +188,7 @@ export function SyncPreviewDialog({ preview, busy, acknowledged, onAcknowledged,
 
 export function SafeSyncConflictDialog({ sync }: { sync: SafeSyncController }) {
   const { t } = useLocale();
-  if (sync.conflicts.length === 0) return null;
+  if (!shouldShowSyncConflictDialog(sync.conflicts, sync.phase)) return null;
   const busy = sync.phase !== "idle";
   return <Modal title={t("syncWritableConflictsTitle")} busy={busy} onClose={() => void sync.finish([])}>
     <div className="dialog-body">

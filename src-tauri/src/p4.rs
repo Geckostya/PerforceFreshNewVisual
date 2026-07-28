@@ -4,7 +4,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    thread,
 };
 
 use serde_json::{Map, Value};
@@ -29,6 +30,7 @@ use validation::*;
 const MAX_RECORDS: &str = "200";
 const MAX_HISTORY_RECORDS: &str = "5000";
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RECOVERY_WORKERS: usize = 4;
 const IGNORE_DIRECTORY_PROBE: &str = "__p4fnv_ignore_probe__";
 static RECOVERY_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1227,22 +1229,43 @@ fn download_remaining_from_depot(
         })?;
     let root = fs::canonicalize(root)
         .map_err(|error| local_file_error("Не удалось проверить root workspace.", error))?;
-    let mut restored = true;
-    for item in recovery_download_items(preview, overwrite_remaining) {
-        if let Err(error) = download_revision_to_workspace(input, &root, item) {
-            restored = false;
-            push_cli_log(
-                CliLogLevel::Error,
-                format!("Не удалось окончательно восстановить {}.", item.depot_path),
-                Some(format!(
-                    "{}\n{}",
-                    error.message,
-                    error.diagnostics.unwrap_or_default()
-                )),
-            );
-        }
+    let items = recovery_download_items(preview, overwrite_remaining);
+    let worker_count = recovery_worker_count(items.len());
+    if worker_count == 0 {
+        return Ok(true);
     }
-    Ok(restored)
+    let next = AtomicUsize::new(0);
+    let restored = AtomicBool::new(true);
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            scope.spawn(|| {
+                while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    if let Err(error) = download_revision_to_workspace(input, &root, item) {
+                        restored.store(false, Ordering::Relaxed);
+                        push_cli_log(
+                            CliLogLevel::Error,
+                            format!("Не удалось окончательно восстановить {}.", item.depot_path),
+                            Some(format!(
+                                "{}\n{}",
+                                error.message,
+                                error.diagnostics.unwrap_or_default()
+                            )),
+                        );
+                    }
+                }
+            });
+        }
+    });
+    Ok(restored.load(Ordering::Relaxed))
+}
+
+fn recovery_worker_count(item_count: usize) -> usize {
+    item_count.min(
+        thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(MAX_RECOVERY_WORKERS),
+    )
 }
 
 fn recovery_download_items(
@@ -4192,6 +4215,9 @@ mod tests {
             recovery_download_items(&preview_with_missing_have, false).len(),
             1
         );
+        assert_eq!(recovery_worker_count(0), 0);
+        assert_eq!(recovery_worker_count(1), 1);
+        assert!(recovery_worker_count(100) <= MAX_RECOVERY_WORKERS);
         let replacement = local_path.with_extension("downloaded");
         fs::write(&replacement, b"depot content").unwrap();
         let mut replacement_permissions = fs::metadata(&replacement).unwrap().permissions();
