@@ -12,6 +12,7 @@ import "./app.css";
 import { classifyGoTo } from "./goTo";
 import { CommandPalette } from "./CommandPalette";
 import { ActionDialog } from "../shared/View";
+import { connectionForServer } from "../shared/connection";
 
 const ChangesView = lazy(() => import("../features/changes/ChangesView").then((module) => ({ default: module.ChangesView })));
 const WorkspaceView = lazy(() => import("../features/workspace/WorkspaceView").then((module) => ({ default: module.WorkspaceView })));
@@ -63,7 +64,7 @@ function AppContent() {
         try {
           const info = await openWorkspace(connection);
           await clearCliLog().catch(() => undefined);
-          if (active) setSession({ connection, info });
+          if (active) setSession({ connection: connectionForServer(connection, info), info });
         } catch (error) {
           if (active) setAutoOpenError(normalizeAppError(error));
         }

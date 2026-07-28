@@ -122,6 +122,7 @@ The bridge is an opt-in, development-only boundary without arbitrary filesystem,
 - Unactual IDs cannot be cleaned while the corresponding pending/stream snapshot is still loading or in error; stale cleanup is allowed only after a successful server read.
 - Local Files and its scoped IndexedDB cache follow [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
 - A connection profile contains only executable, port, user, client, charset, and explicit config paths.
+- Automatic charset remains unset for non-Unicode servers; after `p4 info` reports a Unicode server, the active session uses UTF-8 for metadata, forms, and descriptions while preserving the saved Auto choice.
 - Every user-facing string exists in complete `locales/en.json` and `locales/ru.json` packs.
 - Additional complete JSON packs load beside the shipping executable or from the app config directory; see [`LOCALIZATION.md`](LOCALIZATION.md).
 

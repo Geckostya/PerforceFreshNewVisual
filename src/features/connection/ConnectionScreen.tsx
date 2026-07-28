@@ -17,6 +17,7 @@ import {
 import { LanguagePicker } from "../../shared/LanguagePicker";
 import { useLocale, type TranslationKey } from "../../shared/i18n";
 import type { AppError, ConnectionInput, ErrorKind, LoginStatus, P4Detection, P4Info, TrustEntry, WorkspaceSummary } from "../../shared/models";
+import { connectionForServer } from "../../shared/connection";
 import { validateConnection, type ConnectionErrors } from "./connection";
 
 type DetectionState =
@@ -156,7 +157,7 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
       setWorkspaceError(undefined);
       setWorkspacesLoading(true);
       try {
-        const found = await listWorkspaces(input);
+        const found = await listWorkspaces(connectionForServer(input, value));
         setWorkspaces(found);
         const preferred = [input.client, value.clientName].find((name) =>
           Boolean(name && found.some((workspace) => workspace.name === name)),
@@ -194,7 +195,7 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
       }
       const workspace = workspaces.find((item) => item.name === connection.client);
       onConnected({
-        connection,
+        connection: connectionForServer(connection, info),
         info: {
           ...info,
           clientName: connection.client,
