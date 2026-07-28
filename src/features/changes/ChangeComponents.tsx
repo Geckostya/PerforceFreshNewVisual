@@ -2,6 +2,7 @@ import { useLocale, type TranslationKey } from "../../shared/i18n";
 import { RefreshCw } from "lucide-react";
 import type { SubmitMode, SubmitPreflightIssue, SubmitPreflightSummary } from "../../shared/models";
 import { Modal } from "../../shared/View";
+import { ChangelistDescription, ChangelistDescriptionEditor } from "../../shared/ChangelistDescription";
 import { formatSubmitJob, groupChanges, hasUnresolvedSubmitIssue } from "./changes";
 
 export function SubmitDialog({ group, shelfCount, description, setDescription, busy, preflightIssues, preflightSummary, preflightReady, onClose, onSubmit }: {
@@ -24,9 +25,9 @@ export function SubmitDialog({ group, shelfCount, description, setDescription, b
   return <Modal title={both ? t("chooseSubmitVersion") : simpleMode === "shelf" ? t("submitShelfTitle") : t("submitTitle")} busy={busy} onClose={onClose} wide>
     <div className="dialog-body">
       <p>{both ? t("submitConflictExplanation") : t("submitWarning")}</p>
-      <dl className="dialog-facts"><dt>{t("changelistLabel")}</dt><dd>{group.isDefault ? t("defaultChangelist") : `CL ${group.id}`}</dd><dt>{t("openedFilesLabel")}</dt><dd>{group.files.length}</dd><dt>{t("shelvedFilesLabel")}</dt><dd>{shelfCount}</dd></dl>
+      <dl className="dialog-facts"><dt>{t("changelistLabel")}</dt><dd className={group.isDefault ? undefined : "changelist-number"}>{group.isDefault ? t("defaultChangelist") : `CL ${group.id}`}</dd><dt>{t("openedFilesLabel")}</dt><dd>{group.files.length}</dd><dt>{t("shelvedFilesLabel")}</dt><dd>{shelfCount}</dd></dl>
       {group.isDefault && <DescriptionField value={description} onChange={setDescription} />}
-      {!group.isDefault && <p className="dialog-description">{group.description}</p>}
+      {!group.isDefault && <ChangelistDescription className="dialog-description" value={group.description} fallback={t("noDescription")} />}
       {preflightReady && <dl className="dialog-facts"><dt>{t("submitTotalSize")}</dt><dd>{preflightSummary.totalSize.toLocaleString()} B</dd><dt>{t("submitJobs")}</dt><dd>{preflightSummary.jobs.length ? preflightSummary.jobs.join(", ") : "—"}</dd><dt>{t("submitJobStatus")}</dt><dd>{preflightSummary.jobDetails?.length ? preflightSummary.jobDetails.map(formatSubmitJob).join(", ") : "—"}</dd><dt>{t("submitStream")}</dt><dd>{preflightSummary.stream || "—"}</dd></dl>}
       {preflightReady && preflightSummary.warnings?.length ? <div className="submit-preflight-warning" role="status"><strong>{t("submitServerWarnings")}</strong><p>{t("submitServerWarningsBody")}</p>{preflightSummary.warnings.map((warning) => <small key={warning}>{warning}</small>)}</div> : null}
       {preflightIssues.length > 0 && <div className="submit-preflight-warning" role="alert"><strong>{t("submitPreflightFound")}</strong><p>{unresolved ? t("submitResolveRequiredBody") : t("submitPreflightContinue")}</p>{preflightIssues.map((issue) => <div className="submit-preflight-issue" key={`${issue.depotPath}-${issue.kind}`}><strong>{preflightIssueLabel(issue.kind, t)}</strong><span>{issue.depotPath}</span><small>{issue.detail}</small></div>)}</div>}
@@ -51,8 +52,7 @@ function preflightIssueLabel(kind: string, t: (key: TranslationKey) => string): 
 }
 
 export function DescriptionField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const { t } = useLocale();
-  return <label className="field"><span className="field-label">{t("descriptionLabel")}</span><textarea value={value} onChange={(event) => onChange(event.target.value)} maxLength={10_000} autoFocus /></label>;
+  return <ChangelistDescriptionEditor value={value} onChange={onChange} autoFocus />;
 }
 
 export function Fact({ label, value }: { label: string; value: string }) {

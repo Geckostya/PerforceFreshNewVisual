@@ -38,6 +38,7 @@ compact search/filter toolbar
 list/tree | persistent inspector
 ```
 
+- Resource headings do not repeat their context in an eyebrow such as `WORKSPACE`, `DEPOT`, or `STREAMS`; the title already names the screen.
 - The header contains only whole-view actions: Refresh, New, Preview Sync, and similar actions.
 - The toolbar contains search, scope, filters, sort, and view mode.
 - Selection changes the inspector without navigating to a pseudo-screen or causing a layout jump.
@@ -53,7 +54,7 @@ In a narrow window, panes may stack or the inspector may become a drawer, but th
 |---|---|---|
 | Connection | recent/favorite profiles and form | detect/test/login/open workspace; password in memory only |
 | Files / Local files | scoped workspace file tree, status filters | paths/status/size/changelist/history; sync/edit/add/ignore/delete/revert |
-| Files / Depot files | directories, depot files, and inactive local-only entries | bounded folder/file history and sync preview |
+| Files / Depot files | one lazy tree of depot roots, directories, and files | bounded inspector history, paged full history, and safe sync preview |
 | My Changes | pending changelists, opened and shelved sections | diff, reopen, shelve, unshelve, revert, submit |
 | Streams | stream tree with visibility and Unactual | parent/child graph and safe stream switching |
 | History | file revisions or submitted changes | preview/compare/export/annotate/undo |
@@ -127,7 +128,7 @@ Operations Center is the only UI progress/cancel/retry surface for one long oper
 
 After Cancel, the button immediately enters disabled `Cancelling…` state. The backend stops the corresponding CLI process and publishes a terminal event; only then does the UI show persistent `Cancelled`, clear active state, and refresh the feature workspace. The panel is constrained to available window height, and its operation list scrolls internally.
 
-While sync is active, the top heading row beside `WORKSPACE` shows a spinner, byte-based progress bar, processed/remaining files, ETA, and current file. The row spans the full width to the right edge above the title/action row; a long path is not narrowed by the action group or allowed to shift it. Final `totalFileCount`/`totalFileSize` come from tagged output of the already-running `p4 sync`, so a separate preview does not delay retrieval. After the main transfer, the same location briefly shows the check for remaining writable conflicts. This is a global indicator; cancel/retry and full diagnostics remain in Operations Center.
+While sync is active, the stable Files subheader below the title/action row shows a spinner, byte-based progress bar, processed/remaining files, ETA, and current file on the left; the `Local files` / `Depot files` switch remains pinned on the right. The status text truncates inside a reserved middle column, and the progress track has fixed width, so changing paths and counters cannot move either the track or the source switch. Final `totalFileCount`/`totalFileSize` come from tagged output of the already-running `p4 sync`, so a separate preview does not delay retrieval. After the main transfer, the same location briefly shows the check for remaining writable conflicts. Other resource screens show a transient status strip only while a sync or post-check is active; cancel/retry and full diagnostics remain in Operations Center.
 
 - Show operation kind, scope, status, processed count, current path, and a safe diagnostics summary.
 - In Operations Center, counters and ETA are separate from the current path. A long path occupies up to two lines and is fully available through a tooltip; long diagnostics scroll inside the card without expanding the popup.
@@ -152,6 +153,7 @@ While sync is active, the top heading row beside `WORKSPACE` shows a spinner, by
 - An ordinary icon receives the `ui-icon` class (18×18 px, stroke 1.8). Navigation, file type/status, and other semantic roles may refine size through an existing shared selector in `src/app/app.css`, but do not create a feature-local scale.
 - A decorative icon has `aria-hidden="true"`. An icon-only button retains localized `aria-label` and `title`; meaningful status remains available through text or `aria-label` and is never encoded by an icon alone.
 - Build hierarchy with spacing, typography, and borders; color only supplements label/icon/status text.
+- Selection and active controls use the shared accent in every resource screen. Depot identity uses the depot accent only on depot icons, type badges, and metadata; success, warning/ignored/locked, and danger/delete/error states use their semantic tokens. Do not introduce feature-local near-duplicate blues, greens, oranges, or reds.
 - Controls are compact and stable; long paths are visually truncated but fully available through inspector/title/copy.
 - Motion is brief and disabled under `prefers-reduced-motion`.
 - English and Russian must fit without language-specific layout.
@@ -174,8 +176,11 @@ Semantic CSS tokens in `src/index.css` are the only source of sizes. Feature com
 - Spacing uses a 4 px grid: 4, 8, 12, 16, 24, 32 px. An arbitrary intermediate value is allowed only for geometric icon or hairline alignment.
 - Adjacent pointer targets are at least 32 px; the absolute accessibility floor is 24×24 CSS px.
 - Files and folders within one tree are variants of the same row: identical row height, padding, primary/caption type, hover/focus/selection. Disclosure, icon, status, and allowed actions may differ.
+- Selectable list and tree rows use the shared `SelectableRow` / `SelectableSurface` / `TreeItemRow` primitives from `src/shared/ItemList.tsx`. Feature code supplies domain content and actions without rebuilding selected-state classes, ARIA selection, disclosure controls, indentation, or primary/caption markup.
 - Do not create density by shrinking text. Use truncation with full-value access, wrapping, internal scroll, or responsive stacking for long content.
 - History and diagnostics use Body for meaningful content and Caption for author, changelist, time, and technical details.
+- Every submitted-changelist history surface uses the shared `ChangelistHistory` panel/row from `src/shared`: a fixed CL column, bold description, and user/client/date metadata based on Depot Files `Recent activity`. Feature code supplies selection, open, context-menu, paging, and empty-state behavior without recreating row markup or feature-local history styles.
+- Changelist descriptions use the shared safe Markdown renderer in pending, shelf, revision-history, and submitted-detail surfaces. Changelist description editors use its shared live-preview field. Only HTTP(S) links are actionable, and they open in the system browser rather than navigating the application WebView.
 
 The rationale and original-state audit are in [`research/UI_STYLE_RESEARCH.md`](research/UI_STYLE_RESEARCH.md).
 

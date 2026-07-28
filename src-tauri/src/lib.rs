@@ -9,6 +9,7 @@ mod settings;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(operations::OperationRegistry::default())
         .manage(commands::WorkspaceRootRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -33,6 +34,7 @@ pub fn run() {
             commands::rename_workspace,
             commands::list_streams,
             commands::switch_stream,
+            commands::list_depots,
             commands::list_depot_directories,
             commands::list_depot_files,
             commands::list_pending_changes,

@@ -23,6 +23,7 @@ The same depot path in the local list and shelf still represents two versions. T
 
 - A list of pending changelists for the selected workspace, including Default.
 - Explicit indicators: number, description, local-file count, shelf presence, and date.
+- Every pending, shelved, and submitted changelist surface renders descriptions as safe Markdown through one shared frontend component. Create, edit, and Default-submit description fields use the matching shared editor with a live preview. Raw HTML and non-HTTP(S) links are ignored; web links open in the system browser.
 - Two independent sections inside the selected changelist: `Opened files` and `Shelved files`.
 - Lazy shelf loading for the selected changelist, avoiding up to 200 `p4 files` requests on every refresh.
 - The selected file shows depot path, action, revision, type, and `LOCAL`/`SHELF` source.

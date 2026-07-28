@@ -1,4 +1,5 @@
 import type { OpenedFile, PendingChange, ShelvedFile, SubmitPreflightIssue, SubmitPreflightJob } from "../../shared/models";
+import { markdownToPlainText } from "../../shared/ChangelistDescription";
 
 export interface ChangeGroup extends PendingChange {
   files: OpenedFile[];
@@ -100,7 +101,7 @@ export function changeOptionLabel(
   noDescriptionLabel: string,
 ): string {
   if (group.isDefault) return defaultLabel;
-  return `CL ${group.id} · ${group.description.trim() || noDescriptionLabel}`;
+  return `CL ${group.id} · ${markdownToPlainText(group.description) || noDescriptionLabel}`;
 }
 
 export const CHANGE_DRAG_TYPE = "application/x-p4fnv-change-file";

@@ -121,6 +121,15 @@ export interface WorkspaceUpdateInput { name: string; root: string; stream?: str
 export interface WorkspaceCreateInput { name: string; root: string; stream?: string; description: string; }
 
 export interface DepotDirectory { path: string; }
+export interface DepotSummary {
+  name: string;
+  path: string;
+  depotType: string;
+  description: string;
+  date?: string;
+  map?: string;
+  streamDepth?: string;
+}
 export interface DepotFile {
   depotPath: string;
   revision?: string;

@@ -31,13 +31,16 @@ import {
   unshelveFiles,
 } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
+import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { DiffViewer } from "../../shared/DiffViewer";
+import { ItemRowCopy, SelectableRow, SelectableSurface } from "../../shared/ItemList";
 import { startObservedOperation } from "../../shared/operations";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, View } from "../../shared/View";
 import { SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
 import { partitionArchived } from "../../shared/localArchive";
 import { useArchiveDragDrop } from "../../shared/useArchiveDragDrop";
 import { useLocalArchive } from "../../shared/useLocalArchive";
+import { useContextMenu } from "../../shared/useContextMenu";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
 import type {
   ConnectionInput,
@@ -94,17 +97,13 @@ type DialogName =
   | "move-files"
   | "unshelve-conflicts"
   | "delete-change";
-type MenuState = { kind: "opened" | "shelved"; depotPath: string; x: number; y: number; change: string } | {
+type MenuTarget = { kind: "opened" | "shelved"; depotPath: string; change: string } | {
   kind: "change";
-  x: number;
-  y: number;
   change: string;
   depotPath: string;
 } | {
   kind: "section";
   section: "opened" | "shelved";
-  x: number;
-  y: number;
   change: string;
 };
 
@@ -158,7 +157,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   const [conflictSelection, setConflictSelection] = useState<string[]>([]);
   const conflictAnchor = useRef<string | undefined>(undefined);
   const [conflictMenu, setConflictMenu] = useState<{ x: number; y: number }>();
-  const [menu, setMenu] = useState<MenuState>();
+  const changeMenu = useContextMenu<MenuTarget>();
   const [changeQuery, setChangeQuery] = useState("");
   const [unactualOpen, setUnactualOpen] = useState(true);
   const { archivedIds: archivedChanges, setArchived } = useLocalArchive(
@@ -450,9 +449,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     void saveRevertPreference(value).catch((reason) => setError(normalizeAppError(reason)));
   }
 
-  function openMenu(event: React.MouseEvent | React.KeyboardEvent, next: MenuState) {
-    event.preventDefault();
-    event.stopPropagation();
+  function openMenu(event: React.MouseEvent | React.KeyboardEvent, next: MenuTarget) {
     if (next.change !== selectedChange) {
       setSelectedChange(next.change);
       fileSelection.clear();
@@ -470,13 +467,10 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       const file = currentShelfFiles.find((item) => item.depotPath === next.depotPath);
       if (file) selectShelved(file);
     }
-    const target = event.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
-    const x = "clientX" in event && event.clientX > 0 ? event.clientX : rect.left;
-    const y = "clientY" in event && event.clientY > 0 ? event.clientY : rect.bottom;
-    setMenu({ ...next, x, y });
+    changeMenu.open(event, next);
   }
 
+  const menu = changeMenu.menu?.target;
   const contextGroup = menu ? groups.find((group) => group.id === menu.change) : undefined;
   const visibleGroups = filterChangeGroups(groups, changeQuery, currentGroup.id);
   const partitionedGroups = partitionArchived(visibleGroups, archivedChanges, (group) => group.id);
@@ -502,16 +496,19 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   const renderChange = (group: (typeof groups)[number]) => (
-    <button
-      type="button"
+    <SelectableSurface
+      selected={selectedChanges.includes(group.id)}
       draggable={!group.isDefault}
       title={!group.isDefault ? t("unactualDragHint") : undefined}
-      className={`change-item${selectedChanges.includes(group.id) ? " selected" : ""}`}
+      aria-label={`${group.isDefault ? t("defaultChangelist") : `CL ${group.id} · ${group.description || t("noDescription")}`} · ${group.files.length} ${t("localFilesCount")}`}
+      className="change-item"
       key={group.id}
-      aria-pressed={selectedChanges.includes(group.id)}
       onClick={(event) => selectChange(group.id, event)}
-      onContextMenu={(event) => openMenu(event, { kind: "change", change: group.id, depotPath: "", x: 0, y: 0 })}
-      onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) { event.preventDefault(); openMenu(event, { kind: "change", change: group.id, depotPath: "", x: 0, y: 0 }); } }}
+      onContextMenu={(event) => openMenu(event, { kind: "change", change: group.id, depotPath: "" })}
+      onKeyDown={(event) => {
+        if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, { kind: "change", change: group.id, depotPath: "" });
+        else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectChange(group.id); }
+      }}
       onDragOver={(event) => dragDrop.allowDrop(event, { kind: "changelist", change: group.id })}
       onDrop={(event) => void handleDrop(event, { kind: "changelist", change: group.id })}
       onDragStart={(event) => {
@@ -523,18 +520,17 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       onDragEnd={archiveDragDrop.endDrag}
     >
       <span className="change-title-row">
-        <span className="change-title">{group.isDefault ? t("defaultChangelist") : group.description || t("noDescription")}</span>
+        {group.isDefault ? <span className="change-title">{t("defaultChangelist")}</span> : <ChangelistDescription className="change-title" value={group.description} fallback={t("noDescription")} compact />}
         {group.isShelved && <span className="shelf-badge">{t("shelvedBadge")}</span>}
       </span>
-      {!group.isDefault && <span className="change-description">CL {group.id}</span>}
+      {!group.isDefault && <span className="change-description changelist-number">CL {group.id}</span>}
       <span className="change-meta">{group.files.length} {t("localFilesCount")}{group.isShelved ? ` · ${t("hasShelf")}` : ""}{group.time ? ` · ${formatTime(group.time, language)}` : ""}</span>
-    </button>
+    </SelectableSurface>
   );
 
   return (
     <View
       id="changes-title"
-      eyebrow={t("workspaceEyebrow")}
       title={t("myChanges")}
       subtitle={info.clientRoot || info.clientStream || connection.client}
       error={error}
@@ -551,8 +547,8 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     >
       <div className="change-toolbar">
         <div>
-          <strong>{currentGroup.isDefault ? t("defaultChangelist") : `CL ${currentGroup.id}`}</strong>
-          <span>{currentGroup.description || t("noDescription")}</span>
+          <strong className={currentGroup.isDefault ? undefined : "changelist-number"}>{currentGroup.isDefault ? t("defaultChangelist") : `CL ${currentGroup.id}`}</strong>
+          <ChangelistDescription value={currentGroup.description} fallback={t("noDescription")} compact />
         </div>
         <div className="change-toolbar-actions">
           <button className="secondary-button" type="button" onClick={() => { setDescription(""); setDialog("create"); }}>
@@ -587,32 +583,31 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
 
         <section className="file-column" aria-label={t("changeContentsLabel")}>
           <div className="file-section" onDragOver={(event) => dragDrop.allowDrop(event, { kind: "changelist", change: currentGroup.id })} onDrop={(event) => void handleDrop(event, { kind: "changelist", change: currentGroup.id })}>
-            <div className="column-heading section-heading" onContextMenu={(event) => { if (currentGroup.files.length > 0) openMenu(event, { kind: "section", section: "opened", change: currentGroup.id, x: 0, y: 0 }); }}><strong>{t("openedFilesLabel")}</strong><span>{openedSelection.length > 0 ? `${openedSelection.length} / ` : ""}{currentGroup.files.length}</span></div>
+            <div className="column-heading section-heading" onContextMenu={(event) => { if (currentGroup.files.length > 0) openMenu(event, { kind: "section", section: "opened", change: currentGroup.id }); }}><strong>{t("openedFilesLabel")}</strong><span>{openedSelection.length > 0 ? `${openedSelection.length} / ` : ""}{currentGroup.files.length}</span></div>
             {state === "loading" && changes.length === 0 && files.length === 0
               ? <EmptyState title={t("loadingChanges")} body={t("loadingChangesBody")} />
               : currentGroup.files.length === 0
                 ? <CompactEmpty text={t("emptyChange")} />
                 : <div className="file-list">{currentGroup.files.map((file) => (
-                  <button
-                    type="button"
+                  <SelectableRow
+                    selected={openedSelection.includes(file.depotPath)}
                     draggable
-                    className={`file-item${openedSelection.includes(file.depotPath) ? " selected" : ""}`}
+                    className="file-item"
                     key={file.depotPath}
                     onClick={(event) => selectOpened(file, event)}
-                    onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) { event.preventDefault(); openMenu(event, { kind: "opened", change: currentGroup.id, depotPath: file.depotPath, x: 0, y: 0 }); } }}
+                    onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, { kind: "opened", change: currentGroup.id, depotPath: file.depotPath }); }}
                     onDragStart={(event) => dragDrop.beginDrag(event, { kind: "opened", depotPaths: openedSelection.includes(file.depotPath) ? openedSelection : [file.depotPath], sourceChange: file.change })}
                     onDragEnd={dragDrop.endDrag}
-                    onContextMenu={(event) => openMenu(event, { kind: "opened", change: currentGroup.id, depotPath: file.depotPath, x: 0, y: 0 })}
+                    onContextMenu={(event) => openMenu(event, { kind: "opened", change: currentGroup.id, depotPath: file.depotPath })}
                   >
                     <span className={`action-badge action-${file.action}`}>{file.action}</span>
-                    <span className="file-name">{fileName(file.depotPath)}</span>
-                    <span className="file-path">{parentPath(file.depotPath)}</span>
-                  </button>
+                    <ItemRowCopy primary={fileName(file.depotPath)} secondary={parentPath(file.depotPath)} />
+                  </SelectableRow>
                 ))}</div>}
           </div>
 
           <div className={`file-section shelf-section${currentGroup.isDefault ? " disabled" : ""}`} onDragOver={(event) => dragDrop.allowDrop(event, { kind: "shelf", change: currentGroup.id })} onDrop={(event) => void handleDrop(event, { kind: "shelf", change: currentGroup.id })}>
-            <div className="column-heading section-heading" onContextMenu={(event) => { if (currentShelfFiles.length > 0) openMenu(event, { kind: "section", section: "shelved", change: currentGroup.id, x: 0, y: 0 }); }}><strong>{t("shelvedFilesLabel")}</strong><span>{shelvedSelection.length > 0 ? `${shelvedSelection.length} / ` : ""}{currentShelfFiles.length}</span></div>
+            <div className="column-heading section-heading" onContextMenu={(event) => { if (currentShelfFiles.length > 0) openMenu(event, { kind: "section", section: "shelved", change: currentGroup.id }); }}><strong>{t("shelvedFilesLabel")}</strong><span>{shelvedSelection.length > 0 ? `${shelvedSelection.length} / ` : ""}{currentShelfFiles.length}</span></div>
             {currentGroup.isDefault
               ? <CompactEmpty text={t("shelfNeedsNumbered")} />
               : shelfLoading
@@ -620,21 +615,20 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
                 : currentShelfFiles.length === 0
                   ? <CompactEmpty text={t("emptyShelfDrop")} />
                   : <div className="file-list">{currentShelfFiles.map((file) => (
-                    <button
-                      type="button"
+                    <SelectableRow
+                      selected={shelvedSelection.includes(file.depotPath)}
                       draggable
-                      className={`file-item shelf-file${shelvedSelection.includes(file.depotPath) ? " selected" : ""}`}
+                      className="file-item shelf-file"
                       key={file.depotPath}
                       onClick={(event) => selectShelved(file, event)}
-                      onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) { event.preventDefault(); openMenu(event, { kind: "shelved", change: currentGroup.id, depotPath: file.depotPath, x: 0, y: 0 }); } }}
+                      onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, { kind: "shelved", change: currentGroup.id, depotPath: file.depotPath }); }}
                       onDragStart={(event) => dragDrop.beginDrag(event, { kind: "shelved", depotPaths: shelvedSelection.includes(file.depotPath) ? shelvedSelection : [file.depotPath], sourceChange: currentGroup.id })}
                       onDragEnd={dragDrop.endDrag}
-                      onContextMenu={(event) => openMenu(event, { kind: "shelved", change: currentGroup.id, depotPath: file.depotPath, x: 0, y: 0 })}
+                      onContextMenu={(event) => openMenu(event, { kind: "shelved", change: currentGroup.id, depotPath: file.depotPath })}
                     >
                       <span className={`action-badge action-${file.action}`}>{file.action}</span>
-                      <span className="file-name">{fileName(file.depotPath)}</span>
-                      <span className="file-path">{parentPath(file.depotPath)}</span>
-                    </button>
+                      <ItemRowCopy primary={fileName(file.depotPath)} secondary={parentPath(file.depotPath)} />
+                    </SelectableRow>
                   ))}</div>}
           </div>
         </section>
@@ -678,7 +672,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
         </aside>
       </div>
 
-      {menu && <ContextMenu x={menu.x} y={menu.y} onSelect={() => setMenu(undefined)}>
+      {menu && changeMenu.menu && <ContextMenu x={changeMenu.menu.x} y={changeMenu.menu.y} onSelect={changeMenu.close}>
         {menu.kind === "change" && contextGroup && <>
           {contextGroup.id !== "default" && <MenuButton onClick={() => { setDescription(contextGroup.description); setDialog("edit"); }}>{t("editChangelist")}</MenuButton>}
           {contextGroup.id !== "default" && <MenuButton onClick={() => toggleUnactual(contextGroup.id)}>{archivedChanges.includes(contextGroup.id) ? t("restoreFromUnactual") : t("moveToUnactual")}</MenuButton>}
@@ -749,10 +743,10 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
 
       {dialog === "unshelve-conflicts" && <ActionDialog title={t("unshelveConflictsTitle")} confirmLabel={actionRunning ? t("unshelving") : t("continueUnshelve")} busy={actionRunning} onClose={() => setDialog(undefined)} onConfirm={() => void continueUnshelve()}>
         <p>{t("unshelveConflictsBody")}</p>
-        <div className="conflict-list">{unshelveConflicts.map((conflict) => <button
-          type="button"
+        <div className="conflict-list">{unshelveConflicts.map((conflict) => <SelectableRow
+          selected={conflictSelection.includes(conflict.depotPath)}
           key={conflict.depotPath}
-          className={`conflict-item${conflictSelection.includes(conflict.depotPath) ? " selected" : ""}`}
+          className="conflict-item"
           onClick={(event) => {
             const next = updateSelection(unshelveConflicts.map((item) => item.depotPath), conflictSelection, conflict.depotPath, conflictAnchor.current, selectionMode(event));
             conflictAnchor.current = next.anchor;
@@ -763,7 +757,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
             if (!conflictSelection.includes(conflict.depotPath)) setConflictSelection([conflict.depotPath]);
             setConflictMenu({ x: event.clientX, y: event.clientY });
           }}
-        ><span><strong>{fileName(conflict.depotPath)}</strong><small>{conflict.localPath}</small></span><em>{overwriteConflicts.includes(conflict.depotPath) ? t("overwriteFromShelf") : t("skipFile")}</em></button>)}</div>
+        ><ItemRowCopy primary={fileName(conflict.depotPath)} secondary={conflict.localPath} /><em>{overwriteConflicts.includes(conflict.depotPath) ? t("overwriteFromShelf") : t("skipFile")}</em></SelectableRow>)}</div>
         <p className="dialog-description">{t("overwriteWarning")}</p>
       </ActionDialog>}
 

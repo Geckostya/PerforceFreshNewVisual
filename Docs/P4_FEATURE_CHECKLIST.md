@@ -35,7 +35,7 @@ An item becomes `[x]` when:
 | Submit | `[~]` P0 | local, shelf and local+shelf strategies; preflight; recovery/compensation; local submit events | richer trigger diagnostics, shelf-preserving operations in common operation protocol, unknown-result recovery UI |
 | Revert | `[x]` P0 | selected, unchanged and full CL with server preview; explicit delete-added-files setting | partial-selection compensation is optional expansion |
 | Resolve | `[~]` P0 | unresolved detection, submit gate, preview, keep workspace/accept server/auto-safe/auto-merge | three-way editor, binary/move/filetype/stream-spec resolve |
-| Depot | `[~]` P0 | source switch, scoped dirs/files, deleted toggle, breadcrumbs, blue depot/local-only disabled presentation, bounded folder/file history and sync preview | depot roots/types, lazy recursive tree, mapping navigation, server pagination |
+| Depot | `[~]` P0 | source switch, real depot roots/types/metadata, lazy recursive directory overview, scoped dirs/files, deleted toggle, breadcrumbs, blue depot/local-only disabled presentation, bounded folder/file history and sync preview | mapping navigation, server pagination |
 | History | `[~]` P0 | scoped submitted list/details/jobs/files, filelog, preview/single export, safe exact-revision changelist export, compare, workspace diff, annotate, undo preview/apply | cursor/server filters, range/folder compare, rename history, Revision Graph |
 | Diff | `[~]` P0 | shared bounded unified/split viewer, line numbers, hunk navigation, whitespace modes, binary state, patch export | chunked large text, syntax/word highlight, image/binary preview, external tools |
 | Operations/errors | `[~]` P0 | app-level sync/submit events, cancel, bounded history/log, explicit sync retry, core error kinds | all long operations, generic partial recovery, stale/offline mode, timeout/capability errors |
@@ -57,7 +57,7 @@ Complex changelist, shelf, DnD, and submit semantics are defined in [`CHANGELIST
 
 ### Workspace/Depot correctness
 
-- [ ] Depot roots/types and a lazy bounded tree with permission/maxresults states.
+- [x] Depot roots/types and a lazy bounded tree with permission/maxresults states.
 - [ ] Depot ↔ client ↔ local mapping navigation through server `where`; an unmapped path receives no false local path.
 - [ ] Reconcile classifies add/edit/delete/move/ignored/unsafe and rechecks stale previews.
 - [ ] Edit/add/delete/move preflight shows mapping, have/head, collisions, other-open/lock, and destination changelist.

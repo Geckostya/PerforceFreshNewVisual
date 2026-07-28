@@ -1,4 +1,8 @@
-import type { UnshelvePreview } from "../../shared/models";
+import type { PendingChange, UnshelvePreview } from "../../shared/models";
+
+export function nextShelfSelection(shelves: PendingChange[], current: string | undefined): string | undefined {
+  return shelves.some((shelf) => shelf.id === current) ? current : shelves[0]?.id;
+}
 
 export function splitUnshelvePaths(
   selected: string[],

@@ -3,15 +3,15 @@ use crate::{
     models::{
         AnnotationLine, AppError, AppSettings, ChangeExportResult, CliLogEntry, ConnectionInput,
         CreateChangeInput, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
-        DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix,
-        Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationEvent, OperationEventKind,
-        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
-        ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput,
-        SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
-        ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
-        SubmittedChangeDetail, SwitchStreamInput, SyncPreview, TrustEntry, UndoPreviewItem,
-        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
-        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
+        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationEvent,
+        OperationEventKind, P4Detection, P4Info, PendingChange, PreviewUnshelveInput,
+        ReconcileItem, ReopenInput, ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem,
+        SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput,
+        ShelveInput, ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
+        SubmitPreflightSummary, SubmittedChangeDetail, SwitchStreamInput, SyncPreview, TrustEntry,
+        UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile,
+        WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{OperationHandle, OperationRegistry, wait_for_process},
     p4, settings,
@@ -315,6 +315,13 @@ pub async fn list_depot_directories(
     scope: String,
 ) -> Result<Vec<DepotDirectory>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_depot_directories(&input, &scope))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn list_depots(input: ConnectionInput) -> Result<Vec<DepotSummary>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::list_depots(&input))
         .await
         .map_err(task_error)?
 }

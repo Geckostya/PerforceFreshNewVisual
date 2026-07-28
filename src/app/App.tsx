@@ -1,13 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Archive, ClipboardList, EyeOff, FolderTree, GitBranch, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
-import { ChangesView } from "../features/changes/ChangesView";
-import { WorkspaceView } from "../features/workspace/WorkspaceView";
-import { HistoryView } from "../features/history/HistoryView";
-import { DepotView } from "../features/depot/DepotView";
-import { JobsView } from "../features/jobs/JobsView";
-import { LabelsView } from "../features/labels/LabelsView";
-import { ShelvesView } from "../features/shelves/ShelvesView";
-import { StreamsView } from "../features/streams/StreamsView";
 import { ConnectionScreen, type ConnectedSession } from "../features/connection/ConnectionScreen";
 import { clearCliLog, listWorkspaces, loadLocales, loadSettings, logout, normalizeAppError, openWorkspace } from "../shared/api";
 import { CliLogCenter } from "../shared/CliLogCenter";
@@ -20,6 +12,15 @@ import "./app.css";
 import { classifyGoTo } from "./goTo";
 import { CommandPalette } from "./CommandPalette";
 import { ActionDialog } from "../shared/View";
+
+const ChangesView = lazy(() => import("../features/changes/ChangesView").then((module) => ({ default: module.ChangesView })));
+const WorkspaceView = lazy(() => import("../features/workspace/WorkspaceView").then((module) => ({ default: module.WorkspaceView })));
+const HistoryView = lazy(() => import("../features/history/HistoryView").then((module) => ({ default: module.HistoryView })));
+const DepotView = lazy(() => import("../features/depot/DepotView").then((module) => ({ default: module.DepotView })));
+const JobsView = lazy(() => import("../features/jobs/JobsView").then((module) => ({ default: module.JobsView })));
+const LabelsView = lazy(() => import("../features/labels/LabelsView").then((module) => ({ default: module.LabelsView })));
+const ShelvesView = lazy(() => import("../features/shelves/ShelvesView").then((module) => ({ default: module.ShelvesView })));
+const StreamsView = lazy(() => import("../features/streams/StreamsView").then((module) => ({ default: module.StreamsView })));
 
 export function App() {
   return <LocaleProvider><AppContent /></LocaleProvider>;
@@ -197,10 +198,12 @@ function AppContent() {
           <div><div className="sidebar-controls"><button type="button" title={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} aria-label={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} onClick={() => setSidebar((state) => state === "compact" ? "expanded" : "compact")}><NavIcon name={sidebar === "compact" ? "expand" : "collapse"} /></button><button type="button" title={t("hideSidebar")} aria-label={t("hideSidebar")} onClick={() => setSidebar("hidden")}><NavIcon name="hide" /></button></div><div className="workspace-identity"><span>{t("workspaceLabel")}</span><strong>{session.connection.client}</strong><small>{session.info.clientStream || session.info.clientRoot}</small></div></div>
         </aside>}
         <main className="workspace-main">
-          <div className="workspace-view-host" hidden={view !== "workspace" || filesSource !== "local"}>
-            <WorkspaceView connection={session.connection} info={session.info} initialScope={workspaceScope} sourceControl={<FilesSourceControl source="local" setSource={setFilesSource} />} onDeleted={exitWorkspace} onRenamed={(name) => setSession((current) => current ? { ...current, connection: { ...current.connection, client: name }, info: { ...current.info, clientName: name } } : current)} />
-          </div>
-          {view === "changes" ? <ChangesView connection={session.connection} info={session.info} onFileCountChange={handleFileCount} initialChange={changeTarget} /> : view === "workspace" ? filesSource === "depot" ? <DepotView connection={session.connection} initialScope={depotScope} sourceControl={<FilesSourceControl source="depot" setSource={setFilesSource} />} /> : null : view === "streams" ? <StreamsView connection={session.connection} currentStream={session.info.clientStream} onSwitched={(info) => setSession((current) => current ? { ...current, info } : current)} /> : view === "history" ? <HistoryView connection={session.connection} /> : view === "jobs" ? <JobsView connection={session.connection} initialSearch={jobSearch} /> : view === "labels" ? <LabelsView connection={session.connection} initialSearch={labelSearch} /> : <ShelvesView connection={session.connection} />}
+          <Suspense fallback={<div className="compact-empty" role="status">{t("loadingFiles")}</div>}>
+            <div className="workspace-view-host" hidden={view !== "workspace" || filesSource !== "local"}>
+              <WorkspaceView connection={session.connection} info={session.info} initialScope={workspaceScope} sourceControl={<FilesSourceControl source="local" setSource={setFilesSource} />} onDeleted={exitWorkspace} onRenamed={(name) => setSession((current) => current ? { ...current, connection: { ...current.connection, client: name }, info: { ...current.info, clientName: name } } : current)} />
+            </div>
+            {view === "changes" ? <ChangesView connection={session.connection} info={session.info} onFileCountChange={handleFileCount} initialChange={changeTarget} /> : view === "workspace" ? filesSource === "depot" ? <DepotView connection={session.connection} initialScope={depotScope} sourceControl={<FilesSourceControl source="depot" setSource={setFilesSource} />} /> : null : view === "streams" ? <StreamsView connection={session.connection} currentStream={session.info.clientStream} onSwitched={(info) => setSession((current) => current ? { ...current, info } : current)} /> : view === "history" ? <HistoryView connection={session.connection} /> : view === "jobs" ? <JobsView connection={session.connection} initialSearch={jobSearch} /> : view === "labels" ? <LabelsView connection={session.connection} initialSearch={labelSearch} /> : <ShelvesView connection={session.connection} />}
+          </Suspense>
         </main>
       </div>
       <CliLogCenter onOpenChange={setCliLogOpen} />
@@ -213,7 +216,7 @@ function AppContent() {
 
 function FilesSourceControl({ source, setSource }: { source: "local" | "depot"; setSource: (source: "local" | "depot") => void }) {
   const { t } = useLocale();
-  return <div className="segmented-control" role="tablist" aria-label={t("filesSource")}><button type="button" role="tab" aria-selected={source === "local"} className={source === "local" ? "active" : ""} onClick={() => setSource("local")}>{t("localFiles")}</button><button type="button" role="tab" aria-selected={source === "depot"} className={source === "depot" ? "active" : ""} onClick={() => setSource("depot")}>{t("depotFiles")}</button></div>;
+  return <div className="segmented-control files-source-control" role="tablist" aria-label={t("filesSource")}><button data-agent-id="files-source-local" type="button" role="tab" aria-selected={source === "local"} className={source === "local" ? "active" : ""} onClick={() => setSource("local")}>{t("localFiles")}</button><button data-agent-id="files-source-depot" type="button" role="tab" aria-selected={source === "depot"} className={source === "depot" ? "active" : ""} onClick={() => setSource("depot")}>{t("depotFiles")}</button></div>;
 }
 
 function NavIcon({ name }: { name: "menu" | "files" | "changes" | "streams" | "shelves" | "jobs" | "expand" | "collapse" | "hide" }) {

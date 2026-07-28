@@ -48,14 +48,19 @@ P4FNV/
 │  │  ├─ jobs/                  # jobs and fixes
 │  │  └─ labels/                # labels and sync preview
 │  ├─ shared/
+│  │  ├─ ItemList.tsx           # shared selectable/list/tree row behavior and markup
+│  │  ├─ ChangelistDescription.tsx # safe Markdown display/editor for changelist descriptions
 │  │  ├─ api.ts                 # typed Tauri invoke/event calls
 │  │  ├─ i18n.tsx               # pack loading, fallback, and current UI language
 │  │  ├─ models.ts              # DTOs genuinely shared by multiple features
 │  │  ├─ operations.ts          # shared subscription and long-operation model
+│  │  ├─ ChangelistHistory.tsx  # shared submitted-changelist history panel and rows
 │  │  ├─ localArchive.ts        # scoped cosmetic Unactual IDs and validated DnD payload
 │  │  ├─ useLocalArchive.ts      # shared lifecycle for persistent Unactual state
 │  │  ├─ useArchiveDragDrop.ts  # shared WebView-safe DnD between actual/Unactual
 │  │  ├─ selection.ts            # shared selection and keyboard-interaction rules
+│  │  ├─ useMultiSelection.ts     # shared state/anchor lifecycle for list multiselect
+│  │  ├─ useContextMenu.ts        # shared pointer/keyboard context-menu positioning
 │  │  ├─ SafeSync.tsx            # shared safe-sync post-check, preview, and conflict UI
 │  │  ├─ OperationsCenter.tsx   # the only progress/cancel/retry surface
 │  │  ├─ uiSnapshot.ts          # opt-in DOM snapshot and allow-listed agent actions
@@ -70,6 +75,8 @@ P4FNV/
 │  │  ├─ lib.rs                 # Tauri setup, commands, and managed state
 │  │  ├─ p4.rs                  # allowed domain operations and parsers
 │  │  ├─ p4/
+│  │  │  ├─ jobs.rs             # jobs/fixes operations and parsers
+│  │  │  ├─ labels.rs           # labels operations and parsers
 │  │  │  ├─ runner.rs           # process boundary, JSON Lines, errors, CLI log
 │  │  │  └─ validation.rs       # shared validation of P4 identifiers and form values
 │  │  ├─ commands.rs            # allowed UI operations
@@ -121,6 +128,8 @@ Current split:
 src-tauri/src/
 ├─ p4.rs                # validated Perforce operations and DTO parsers
 ├─ p4/
+│  ├─ jobs.rs           # jobs/fixes operations and parsers
+│  ├─ labels.rs         # labels operations and parsers
 │  ├─ runner.rs         # executable/process/JSON/error/log boundary
 │  └─ validation.rs     # shared trust-boundary validation for P4 operations
 ├─ commands.rs          # allow-listed Tauri IPC
@@ -129,7 +138,7 @@ src-tauri/src/
 └─ locales.rs
 ```
 
-The next split of `p4.rs` or `commands.rs` follows a complete user domain (`changes`, `history`, `integration`) when the corresponding vertical slice exists. `runner.rs` must not know about submit/unshelve/revert and does not expose universal command execution to the frontend.
+Further splits of `p4.rs` or `commands.rs` follow a complete user domain (`changes`, `history`, `integration`) when the corresponding vertical slice exists. `runner.rs` must not know about submit/unshelve/revert and does not expose universal command execution to the frontend.
 
 Do not create a trait with one implementation, a repository/service/controller for every entity, or a separate crate before a second real implementation or independent reuse exists.
 
@@ -149,6 +158,7 @@ React feature -> shared/api.ts -> specific Tauri command
 ```
 
 - Frontend features do not import each other. The `app` layer or a small shared module assembles a cross-feature workflow.
+- Feature screens are loaded lazily by the app shell; the default Files screen preserves its mounted state after the first load.
 - `shared` imports nothing from `features`.
 - A Rust command handler knows the user intent; a `p4.rs` domain function knows the safe Perforce command and converts DTOs; `p4/runner.rs` knows only the process, JSON Lines, diagnostics, and CLI log.
 - The frontend never passes an arbitrary command line, executable name, or environment variables.

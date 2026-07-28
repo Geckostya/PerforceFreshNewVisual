@@ -18,8 +18,12 @@
   --accent: #4b65d5;
   --accent-hover: #3f57c1;
   --accent-soft: #e8ebfb;
+  --depot-accent: #3979a8;
+  --depot-soft: #e5f0f7;
   --success: #267a55;
   --success-soft: #e4f2e9;
+  --warning: #99651f;
+  --warning-soft: #f5ecdc;
   --danger: #b64343;
   --danger-soft: #f8e8e7;
   --focus: #637be6;
@@ -101,8 +105,12 @@ summary {
     --accent: #8c9df0;
     --accent-hover: #a0aff8;
     --accent-soft: #2b345e;
+    --depot-accent: #72b4e4;
+    --depot-soft: #19354a;
     --success: #72c69c;
     --success-soft: #1d3a2d;
+    --warning: #e0ad5f;
+    --warning-soft: #3d301e;
     --danger: #ec8e8e;
     --danger-soft: #462728;
     --focus: #9cacfa;

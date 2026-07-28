@@ -12,17 +12,26 @@ use serde_json::{Map, Value};
 
 use crate::models::{
     AnnotationLine, AppError, ChangeExportResult, CliLogLevel, ConnectionInput, DepotDirectory,
-    DepotFile, DiffMode, ErrorKind, FileDiff, FileRevision, Fix, Job, Label, LoginStatus,
-    OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
+    DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
+    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
     RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamSummary, SubmitMode, SubmitOutcome,
     SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmittedChangeDetail,
     SubmittedFile, SyncPreview, SyncPreviewItem, TrustEntry, UndoPreviewItem, UnshelveConflict,
     UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
 };
 
+mod jobs;
+mod labels;
 mod runner;
 mod validation;
 
+use jobs::parse_fixes;
+#[cfg(test)]
+use jobs::parse_jobs;
+pub use jobs::{fix_job, list_fixes, list_jobs};
+pub use labels::list_labels;
+#[cfg(test)]
+use labels::parse_labels;
 use runner::*;
 pub use runner::{clear_cli_log, cli_log};
 use validation::*;
@@ -473,7 +482,13 @@ pub fn list_depot_directories(
     validate_depot_path(scope)?;
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "dirs", scope]);
-    parse_depot_directories(&run_json(&path, &mut command)?)
+    parse_depot_directories(&run_json_allowing_empty_match(&path, &mut command)?)
+}
+
+pub fn list_depots(input: &ConnectionInput) -> Result<Vec<DepotSummary>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "depots"]);
+    parse_depots(&run_json(&path, &mut command)?)
 }
 
 pub fn list_depot_files(
@@ -484,7 +499,7 @@ pub fn list_depot_files(
     validate_depot_path(scope)?;
     let (path, mut command) = configured_command(input)?;
     command.args(depot_file_arguments(scope, include_deleted));
-    parse_depot_files(&run_json(&path, &mut command)?)
+    parse_depot_files(&run_json_allowing_empty_match(&path, &mut command)?)
 }
 
 fn depot_file_arguments(scope: &str, include_deleted: bool) -> Vec<String> {
@@ -622,76 +637,6 @@ pub fn undo_change(
     command.arg(spec);
     run_json(&path, &mut command)?;
     Ok(())
-}
-
-pub fn list_jobs(input: &ConnectionInput, search: Option<&str>) -> Result<Vec<Job>, AppError> {
-    required_client(input)?;
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "jobs", "-l", "-m", MAX_RECORDS]);
-    if let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) {
-        if search.contains(['\r', '\n']) {
-            return Err(AppError::new(
-                ErrorKind::CommandFailed,
-                "Некорректный job search.",
-            ));
-        }
-        command.args(["-e", search]);
-    }
-    parse_jobs(&run_json(&path, &mut command)?)
-}
-
-pub fn list_labels(input: &ConnectionInput, search: Option<&str>) -> Result<Vec<Label>, AppError> {
-    required_client(input)?;
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "labels", "-t", "-m", MAX_RECORDS]);
-    if let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) {
-        if search.contains(['\r', '\n']) {
-            return Err(AppError::new(
-                ErrorKind::CommandFailed,
-                "Некорректный label search.",
-            ));
-        }
-        command.args(["-E", search]);
-    }
-    parse_labels(&run_json(&path, &mut command)?)
-}
-
-pub fn list_fixes(input: &ConnectionInput, job: &str) -> Result<Vec<Fix>, AppError> {
-    required_client(input)?;
-    if job.trim().is_empty() || job.contains(['\r', '\n']) {
-        return Err(AppError::new(
-            ErrorKind::CommandFailed,
-            "Некорректный job id.",
-        ));
-    }
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "fixes", "-m", MAX_RECORDS, "-j", job.trim()]);
-    parse_fixes(&run_json(&path, &mut command)?)
-}
-
-pub fn fix_job(
-    input: &ConnectionInput,
-    change: &str,
-    job: &str,
-    remove: bool,
-) -> Result<Vec<Fix>, AppError> {
-    validate_numbered_change(change)?;
-    let job = validate_form_value(job.trim(), "job")?;
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "fix"]);
-    if remove {
-        command.arg("-d");
-    }
-    command.args(["-c", change, job]);
-    run_json(&path, &mut command)?;
-    list_fixes_for_change(input, change)
-}
-
-fn list_fixes_for_change(input: &ConnectionInput, change: &str) -> Result<Vec<Fix>, AppError> {
-    validate_numbered_change(change)?;
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "fixes", "-c", change]);
-    parse_fixes(&run_json(&path, &mut command)?)
 }
 
 pub fn list_shelved_changes(input: &ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
@@ -3093,6 +3038,29 @@ fn parse_depot_directories(
         .collect()
 }
 
+fn parse_depots(records: &[Map<String, Value>]) -> Result<Vec<DepotSummary>, AppError> {
+    records
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .map(|record| {
+            let name = required_field(record, &["name", "Depot", "depot"], "depot name")?;
+            Ok(DepotSummary {
+                path: format!("//{name}"),
+                name,
+                depot_type: optional_field(record, &["type", "Type"])
+                    .unwrap_or_else(|| "local".to_owned()),
+                description: optional_field(record, &["desc", "description", "Description"])
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+                date: optional_field(record, &["time", "date", "Date"]),
+                map: optional_field(record, &["map", "Map"]),
+                stream_depth: optional_field(record, &["streamDepth", "StreamDepth"]),
+            })
+        })
+        .collect()
+}
+
 fn parse_depot_files(records: &[Map<String, Value>]) -> Result<Vec<DepotFile>, AppError> {
     records
         .iter()
@@ -3121,59 +3089,6 @@ fn parse_trust_entries(text: &str) -> Vec<TrustEntry> {
             Some(TrustEntry {
                 server: server.to_owned(),
                 fingerprint,
-            })
-        })
-        .collect()
-}
-
-fn parse_jobs(records: &[Map<String, Value>]) -> Result<Vec<Job>, AppError> {
-    records
-        .iter()
-        .filter(|record| !is_message_record(record))
-        .map(|record| {
-            Ok(Job {
-                id: required_field(record, &["job", "Job"], "job id")?,
-                status: optional_field(record, &["status", "Status"]),
-                user: optional_field(record, &["user", "User"]),
-                date: optional_field(record, &["date", "Date"]),
-                description: optional_field(record, &["description", "Description"])
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned(),
-            })
-        })
-        .collect()
-}
-
-fn parse_labels(records: &[Map<String, Value>]) -> Result<Vec<Label>, AppError> {
-    records
-        .iter()
-        .filter(|record| !is_message_record(record))
-        .map(|record| {
-            Ok(Label {
-                name: required_field(record, &["label", "Label"], "label name")?,
-                owner: optional_field(record, &["Owner", "owner"]),
-                update: optional_field(record, &["Update", "update"]),
-                description: optional_field(record, &["Description", "desc"])
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned(),
-            })
-        })
-        .collect()
-}
-
-fn parse_fixes(records: &[Map<String, Value>]) -> Result<Vec<Fix>, AppError> {
-    records
-        .iter()
-        .filter(|record| !is_message_record(record))
-        .map(|record| {
-            Ok(Fix {
-                job: required_field(record, &["job", "Job"], "job id")?,
-                change: required_field(record, &["change", "Change"], "fix changelist")?,
-                date: optional_field(record, &["date", "Date"]),
-                user: optional_field(record, &["user", "User"]),
-                status: optional_field(record, &["status", "Status"]),
             })
         })
         .collect()
@@ -3871,6 +3786,20 @@ mod tests {
 
     #[test]
     fn parses_depot_directories_and_head_file_metadata() {
+        let depots = parse_depots(
+            &parse_json_lines(
+                r#"{"name":"Acme","time":"1764000000","type":"stream","map":"Acme/...","desc":"Product streams","streamDepth":"3"}
+{"name":"Shared","type":"local","map":"Shared/..."}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(depots[0].path, "//Acme");
+        assert_eq!(depots[0].depot_type, "stream");
+        assert_eq!(depots[0].description, "Product streams");
+        assert_eq!(depots[0].stream_depth.as_deref(), Some("3"));
+        assert_eq!(depots[1].depot_type, "local");
+
         let directories = parse_depot_directories(
             &parse_json_lines(
                 r#"{"dir":"//Acme/main/src"}

@@ -6,9 +6,11 @@ import { partitionArchived } from "../../shared/localArchive";
 import { useArchiveDragDrop } from "../../shared/useArchiveDragDrop";
 import { useLocalArchive } from "../../shared/useLocalArchive";
 import type { AppError, ConnectionInput, P4Info, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
+import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/ItemList";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, MenuButton, View } from "../../shared/View";
+import { useContextMenu } from "../../shared/useContextMenu";
 import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
 import { loadStreamPreferences, saveStreamPreferences, streamPreferencesStorageKey, type StreamPreferences } from "./streamPreferences";
 
@@ -28,7 +30,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
   const [downloadNow, setDownloadNow] = useState(false);
   const [syncPreview, setSyncPreview] = useState<SyncPreview>();
   const [syncAcknowledged, setSyncAcknowledged] = useState(false);
-  const [menu, setMenu] = useState<{ stream: StreamSummary; x: number; y: number }>();
+  const streamMenu = useContextMenu<StreamSummary>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError>();
   const [notice, setNotice] = useState("");
@@ -79,15 +81,16 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
   const graph = useMemo(() => layoutStreamGraph(streams.filter((stream) => visible.has(stream.path))), [streams, visible]);
   const graphByPath = new Map(graph.nodes.map((node) => [node.stream.path, node]));
   const selectedStream = selectedPaths.length === 1 ? streams.find((stream) => stream.path === selectedPaths[0]) : undefined;
+  const menu = streamMenu.menu?.target;
   const menuSelection = menu
-    ? (selectedPaths.includes(menu.stream.path) ? selectedPaths : [menu.stream.path])
-      .filter((path) => archivedIds.includes(path) === archivedIds.includes(menu.stream.path))
+    ? (selectedPaths.includes(menu.path) ? selectedPaths : [menu.path])
+      .filter((path) => archivedIds.includes(path) === archivedIds.includes(menu.path))
     : [];
   const orderedPaths = useMemo(
     () => [...flattenStreamForest(currentForest, collapsedPaths), ...flattenStreamForest(archivedForest, collapsedPaths)].map((stream) => stream.path),
     [currentForest, archivedForest, collapsedPaths],
   );
-  const menuDescendants = menu ? streamDescendantPaths(streams, menu.stream.path) : [];
+  const menuDescendants = menu ? streamDescendantPaths(streams, menu.path) : [];
 
   useEffect(() => {
     if (selectionAnchor.current && !orderedPaths.includes(selectionAnchor.current)) {
@@ -139,15 +142,8 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
   }
 
   function openMenu(event: React.MouseEvent | React.KeyboardEvent, stream: StreamSummary) {
-    event.preventDefault();
-    event.stopPropagation();
     if (!selectedPaths.includes(stream.path)) selectStream(stream.path);
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    setMenu({
-      stream,
-      x: "clientX" in event && event.clientX > 0 ? event.clientX : rect.left,
-      y: "clientY" in event && event.clientY > 0 ? event.clientY : rect.bottom,
-    });
+    streamMenu.open(event, stream);
   }
 
   function beginSwitch(stream: StreamSummary) {
@@ -193,9 +189,12 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     {nodes.map((node) => {
       const collapsed = collapsedPaths.has(node.stream.path);
       return <li key={node.stream.path}>
-      <div
-        className={`stream-tree-row${selectedPaths.includes(node.stream.path) ? " selected" : ""}${node.stream.path === currentStream ? " current" : ""}`}
-        role="treeitem" aria-selected={selectedPaths.includes(node.stream.path)} aria-expanded={node.children.length > 0 ? !collapsed : undefined} tabIndex={0}
+      <SelectableSurface
+        selected={selectedPaths.includes(node.stream.path)}
+        selectionRole="treeitem"
+        className={`stream-tree-row tree-item-row${node.stream.path === currentStream ? " current" : ""}`}
+        aria-expanded={node.children.length > 0 ? !collapsed : undefined}
+        aria-label={`${node.stream.name} · ${node.stream.streamType}${node.stream.path === currentStream ? ` · ${t("currentStream")}` : ""}`}
         draggable title={t("unactualDragHint")}
         onClick={(event) => selectStream(node.stream.path, event)} onDoubleClick={() => beginSwitch(node.stream)}
         onContextMenu={(event) => openMenu(event, node.stream)}
@@ -211,9 +210,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
           if (event.key === "Enter") beginSwitch(node.stream);
           if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, node.stream);
         }}>
-        {node.children.length > 0
-          ? <button className="stream-branch-toggle" type="button" aria-label={`${t(collapsed ? "expandStreamBranch" : "collapseStreamBranch")}: ${node.stream.path}`} aria-expanded={!collapsed} onClick={(event) => { event.stopPropagation(); toggleCollapsed(node.stream.path); }} onDoubleClick={(event) => event.stopPropagation()}>{collapsed ? <ChevronRight className="ui-icon" aria-hidden="true" /> : <ChevronDown className="ui-icon" aria-hidden="true" />}</button>
-          : <span className="stream-branch-spacer" aria-hidden="true" />}
+        <TreeDisclosure expanded={!collapsed} label={`${t(collapsed ? "expandStreamBranch" : "collapseStreamBranch")}: ${node.stream.path}`} onToggle={node.children.length > 0 ? () => toggleCollapsed(node.stream.path) : undefined} />
         <input
           type="checkbox"
           checked={visible.has(node.stream.path)}
@@ -224,14 +221,14 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
           aria-label={`${t("showStreamOnGraph")}: ${node.stream.path}`}
         />
         <span className={`stream-type-dot ${streamTypeClass(node.stream.streamType)}`} aria-hidden="true" />
-        <span><strong>{node.stream.name}</strong><small>{node.stream.streamType}{node.stream.path === currentStream ? ` · ${t("currentStream")}` : ""}</small></span>
-      </div>
+        <ItemRowCopy primary={node.stream.name} secondary={<>{node.stream.streamType}{node.stream.path === currentStream ? ` · ${t("currentStream")}` : ""}</>} />
+      </SelectableSurface>
       {node.children.length > 0 && !collapsed && renderTree(node.children, archived)}
     </li>;
     })}
   </ul>;
 
-  return <View id="streams-title" eyebrow={t("streamsEyebrow")} title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<button className="secondary-button" type="button" onClick={() => void load()} disabled={busy}>{busy ? t("loadingStreams") : t("refresh")}</button>}>
+  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<button className="secondary-button" type="button" onClick={() => void load()} disabled={busy}>{busy ? t("loadingStreams") : t("refresh")}</button>}>
     <div className="streams-workbench">
       <aside className="streams-tree-pane">
         <div className="column-heading">
@@ -271,16 +268,16 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
       </section>
     </div>
 
-    {menu && <ContextMenu x={menu.x} y={menu.y} onSelect={() => setMenu(undefined)}>
-      <MenuButton disabled={selectedPaths.length !== 1 || menu.stream.path === currentStream} onClick={() => beginSwitch(menu.stream)}>{t("switchToStream")}</MenuButton>
+    {menu && streamMenu.menu && <ContextMenu x={streamMenu.menu.x} y={streamMenu.menu.y} onSelect={streamMenu.close}>
+      <MenuButton disabled={selectedPaths.length !== 1 || menu.path === currentStream} onClick={() => beginSwitch(menu)}>{t("switchToStream")}</MenuButton>
       <MenuButton onClick={() => {
-        const paths = selectedPaths.includes(menu.stream.path) ? selectedPaths : [menu.stream.path];
+        const paths = selectedPaths.includes(menu.path) ? selectedPaths : [menu.path];
         const show = paths.some((path) => !visible.has(path));
         setPathsVisible(paths, show);
-      }}>{(selectedPaths.includes(menu.stream.path) ? selectedPaths : [menu.stream.path]).every((path) => visible.has(path)) ? t("hideFromGraph") : t("showOnGraph")}</MenuButton>
+      }}>{(selectedPaths.includes(menu.path) ? selectedPaths : [menu.path]).every((path) => visible.has(path)) ? t("hideFromGraph") : t("showOnGraph")}</MenuButton>
       <MenuButton disabled={menuDescendants.length === 0} onClick={() => setPathsVisible(menuDescendants, true)}>{t("showChildStreams")}</MenuButton>
       <MenuButton disabled={menuDescendants.length === 0} onClick={() => setPathsVisible(menuDescendants, false)}>{t("hideChildStreams")}</MenuButton>
-      <MenuButton onClick={() => setUnactual(menuSelection, !archivedIds.includes(menu.stream.path))}>{archivedIds.includes(menu.stream.path) ? t("restoreFromUnactual") : t("moveToUnactual")}</MenuButton>
+      <MenuButton onClick={() => setUnactual(menuSelection, !archivedIds.includes(menu.path))}>{archivedIds.includes(menu.path) ? t("restoreFromUnactual") : t("moveToUnactual")}</MenuButton>
       <MenuButton disabled={menuDescendants.length === 0} onClick={() => setUnactual(menuDescendants, true)}>{t("moveChildStreamsToUnactual")}</MenuButton>
       <MenuButton disabled={menuDescendants.length === 0} onClick={() => setUnactual(menuDescendants, false)}>{t("restoreChildStreamsFromUnactual")}</MenuButton>
     </ContextMenu>}

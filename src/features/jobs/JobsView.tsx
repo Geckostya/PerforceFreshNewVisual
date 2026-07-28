@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fixJob, listFixes, listJobs, normalizeAppError, unfixJob } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
+import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, Fix, Job } from "../../shared/models";
 import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
 
@@ -59,7 +60,6 @@ export function JobsView({ connection, initialSearch }: { connection: Connection
 
   return <View
     id="jobs-title"
-    eyebrow={t("jobsEyebrow")}
     title={t("jobsTitle")}
     subtitle={t("jobsBody")}
     error={error}
@@ -72,17 +72,17 @@ export function JobsView({ connection, initialSearch }: { connection: Connection
     <div className="resource-workbench">
       <div className="resource-list">
         <div className="column-heading"><strong>{t("jobsTitle")}</strong><span>{visibleJobs.length}</span></div>
-        {visibleJobs.length ? visibleJobs.map((job) => <button className={`resource-row${selectedJob === job.id ? " selected" : ""}`} type="button" key={job.id} onClick={() => void inspectJob(job.id)}>
-          <span><strong>{job.id}</strong><small>{[job.status, job.user, job.date].filter(Boolean).join(" · ") || "—"}</small></span>
+        {visibleJobs.length ? visibleJobs.map((job) => <SelectableRow selected={selectedJob === job.id} className="resource-row" key={job.id} onClick={() => void inspectJob(job.id)}>
+          <ItemRowCopy primary={job.id} secondary={[job.status, job.user, job.date].filter(Boolean).join(" · ") || "—"} />
           <span>{job.description || t("jobNoDescription")}</span>
-        </button>) : <CompactEmpty text={t("jobsEmpty")} />}
+        </SelectableRow>) : <CompactEmpty text={t("jobsEmpty")} />}
       </div>
       <aside className="resource-inspector">
         <div className="column-heading"><strong>{t("jobFixes")}</strong><span>{selectedJob || "—"}</span></div>
         {!selectedJob ? <EmptyState title={t("jobsTitle")} body={t("jobsBody")} /> : <div className="inspector-content">
           <div><h2>{selectedJob}</h2><button className="primary-button" type="button" onClick={() => setDialog({ kind: "attach", change: "" })} disabled={fixActionBusy}>{t("attachJob")}</button></div>
           {fixesBusy ? <CompactEmpty text={t("loadingFixes")} /> : fixes.length ? fixes.map((fix) => <div className="resource-detail-row" key={`${fix.job}-${fix.change}`}>
-            <span><strong>CL {fix.change}</strong><small>{[fix.status, fix.user, fix.date].filter(Boolean).join(" · ") || "—"}</small></span>
+            <span><strong className="changelist-number">CL {fix.change}</strong><small>{[fix.status, fix.user, fix.date].filter(Boolean).join(" · ") || "—"}</small></span>
             <button className="text-button" type="button" onClick={() => setDialog({ kind: "detach", change: fix.change })} disabled={fixActionBusy}>{t("detachJob")}</button>
           </div>) : <CompactEmpty text={t("jobNoFixes")} />}
         </div>}

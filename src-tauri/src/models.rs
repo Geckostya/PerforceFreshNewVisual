@@ -251,6 +251,18 @@ pub struct DepotDirectory {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DepotSummary {
+    pub name: String,
+    pub path: String,
+    pub depot_type: String,
+    pub description: String,
+    pub date: Option<String>,
+    pub map: Option<String>,
+    pub stream_depth: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DepotFile {
     pub depot_path: String,
     pub revision: Option<String>,

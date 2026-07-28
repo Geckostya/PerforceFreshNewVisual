@@ -31,6 +31,7 @@ import type {
   WorkspaceUpdateInput,
   DepotDirectory,
   DepotFile,
+  DepotSummary,
   TrustEntry,
   SyncPreview,
   WorkspaceFile,
@@ -142,6 +143,10 @@ export async function switchStream(connection: ConnectionInput, stream: string, 
 
 export async function listDepotDirectories(input: ConnectionInput, scope: string): Promise<DepotDirectory[]> {
   return invoke<DepotDirectory[]>("list_depot_directories", { input, scope });
+}
+
+export async function listDepots(input: ConnectionInput): Promise<DepotSummary[]> {
+  return invoke<DepotSummary[]>("list_depots", { input });
 }
 
 export async function listDepotFiles(input: ConnectionInput, scope: string, includeDeleted = false): Promise<DepotFile[]> {

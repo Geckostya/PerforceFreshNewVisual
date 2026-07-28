@@ -4,12 +4,12 @@ import { useLocale } from "./i18n";
 import type { AppError } from "./models";
 import { formatEta, operationProgress, useActiveOperation } from "./operations";
 
-export function View({ id, eyebrow, title, subtitle, actions, operationLabel, error, notice, onDismissNotice, className = "", children }: {
+export function View({ id, title, subtitle, actions, statusBarActions, operationLabel, error, notice, onDismissNotice, className = "", children }: {
   id: string;
-  eyebrow: string;
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  statusBarActions?: ReactNode;
   operationLabel?: string;
   error?: AppError;
   notice?: string;
@@ -32,12 +32,25 @@ export function View({ id, eyebrow, title, subtitle, actions, operationLabel, er
     progress?.etaSeconds !== undefined ? formatEta(progress.etaSeconds) : undefined,
     activeSync.currentPath?.split("/").at(-1),
   ].filter(Boolean).join(" · ");
+  const operationStatus = activeSync ? <span className={`workspace-operation-status${progress?.ratio !== undefined ? " has-progress" : ""}`} role="status" title={activeSync.scope}>
+    <span className="folder-loading-indicator" aria-hidden="true" />
+    <span className="workspace-operation-copy">{t("updatingProject")} · {syncSummary}</span>
+    {progress?.ratio !== undefined && <span className="workspace-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}
+  </span> : operationLabel ? <span className="workspace-operation-status" role="status">
+    <span className="folder-loading-indicator" aria-hidden="true" />
+    <span className="workspace-operation-copy">{operationLabel}</span>
+  </span> : null;
   return <section className={`resource-view ${className}`.trim()} aria-labelledby={id}>
-    <div className="view-heading">
-      <p className="eyebrow"><span>{eyebrow}</span>{activeSync ? <span className="workspace-operation-status" role="status" title={activeSync.scope}><span className="folder-loading-indicator" aria-hidden="true" /><span className="workspace-operation-copy">{t("updatingProject")} · {syncSummary}</span>{progress?.ratio !== undefined && <span className="workspace-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}</span> : operationLabel ? <span className="workspace-operation-status" role="status"><span className="folder-loading-indicator" aria-hidden="true" /><span className="workspace-operation-copy">{operationLabel}</span></span> : null}</p>
-      <div className="view-title"><h1 id={id}>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>
-      {actions && <div className="view-actions">{actions}</div>}
-    </div>
+    <header className="view-header">
+      <div className="view-heading">
+        <div className="view-title"><h1 id={id}>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>
+        {actions && <div className="view-actions">{actions}</div>}
+      </div>
+      {statusBarActions ? <div className="view-status-bar" data-agent-id="files-status-bar">
+        <div className="view-status-slot">{operationStatus}</div>
+        <div className="view-status-actions">{statusBarActions}</div>
+      </div> : operationStatus && <div className="view-operation-strip">{operationStatus}</div>}
+    </header>
     {error && <ErrorBanner error={error} />}
     {notice && <Notice text={notice} onDismiss={onDismissNotice} />}
     {children}
@@ -62,7 +75,7 @@ export function CompactEmpty({ text }: { text: string }) {
   return <div className="compact-empty">{text}</div>;
 }
 
-export function Modal({ title, busy, wide, onClose, children }: { title: string; busy: boolean; wide?: boolean; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, busy, wide, onClose, children }: { title: ReactNode; busy: boolean; wide?: boolean; onClose: () => void; children: ReactNode }) {
   const { t } = useLocale();
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) onClose(); };

@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Ban, CheckCircle2, ChevronRight, CircleAlert, FileCode2, FileImage, FileText, LoaderCircle, LockKeyhole, Minus, Pencil, Plus, Users, type LucideIcon } from "lucide-react";
+import { Activity, Ban, CheckCircle2, CircleAlert, Download, FileCode2, FileImage, Files, FileText, Filter, Folder, GitCommitHorizontal, HardDrive, History, List, ListTree, LoaderCircle, LockKeyhole, Minus, Pencil, Plus, RefreshCw, ScanSearch, Search, Settings2, SlidersHorizontal, Users, type LucideIcon } from "lucide-react";
 import { addFiles, createWorkspace, deleteFiles, deleteLocalFile, deleteWorkspace, editFiles, fileHistory, ignoreLocalFile, inspectWorkspace, listLocalWorkspaceDirectory, listOpenedFiles, listPendingChanges, listSubmittedChanges, listWorkspaceFiles, lockFiles, moveFile, normalizeAppError, previewReconcile, previewResolve, previewRevertSelected, reconcileFiles, renameWorkspace, resolveFiles, revealPath, revertFiles, unlockFiles, updateWorkspace } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
 import type { AppError, ConnectionInput, FileRevision, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem, WorkspaceFile, WorkspaceSpec } from "../../shared/models";
 import { SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
+import { ChangelistHistory } from "../../shared/ChangelistHistory";
+import { ChangelistDescription } from "../../shared/ChangelistDescription";
+import { ItemRowCopy, SelectableRow, SelectableSurface, TreeItemRow } from "../../shared/ItemList";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
+import { useContextMenu } from "../../shared/useContextMenu";
 import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
 import { buildWorkspaceTree, filterWorkspaceFiles, formatWorkspaceHistoryTime, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
@@ -46,7 +50,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [historyBusy, setHistoryBusy] = useState(false);
   const [revertPreviewItems, setRevertPreviewItems] = useState<RevertPreviewItem[]>();
   const [deleteLocalPath, setDeleteLocalPath] = useState<string>();
-  const [menu, setMenu] = useState<{ file: WorkspaceFile; paths: string[]; x: number; y: number }>();
+  const workspaceMenu = useContextMenu<{ file: WorkspaceFile; paths: string[] }>();
   const selectionAnchor = useRef<string | undefined>(undefined);
   const [filter, setFilter] = useState<WorkspaceFilter>("all");
   const [viewMode, setViewMode] = useState<"list" | "tree">("tree");
@@ -409,13 +413,10 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   }
 
   function openFileMenu(event: React.MouseEvent | React.KeyboardEvent, file: WorkspaceFile) {
-    event.preventDefault();
-    event.stopPropagation();
     const paths = selected.includes(file.depotPath) ? selected : [file.depotPath];
     if (!selected.includes(file.depotPath)) setSelected(paths);
     setSelectedFolders([]);
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    setMenu({ file, paths, x: "clientX" in event && event.clientX > 0 ? event.clientX : rect.left, y: "clientY" in event && event.clientY > 0 ? event.clientY : rect.bottom });
+    workspaceMenu.open(event, { file, paths });
   }
 
   const selectedFiles = files.filter((file) => selected.includes(file.depotPath));
@@ -463,37 +464,65 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     applyTreeSelection(`folder:${folder.path}`, event);
   }
 
-  const renderFile = (file: WorkspaceFile) => {
+  const renderFile = (file: WorkspaceFile, depth = 0) => {
     const statuses = workspaceStatus(file);
     const statusText = file.statusPending ? t("workspaceStatusLoading") : statuses.map((status) => t(`workspaceStatus_${status}` as never)).join(" · ") || t("workspaceStatusClean");
     const title = `${file.depotPath}\n${t("workspaceStatus")}: ${statusText}\n${t("fileSize")}: ${file.fileSize === undefined ? "—" : formatBytes(file.fileSize)}\n${t("changelistLabel")}: ${file.change || "default"}`;
     const FileIcon = fileIcon(file.depotPath);
-    return <button type="button" role="treeitem" title={title} aria-selected={selected.includes(file.depotPath)} data-agent-ignored={file.ignored} className={`workspace-file-row${selected.includes(file.depotPath) ? " selected" : ""}${file.ignored ? " ignored" : ""}`} key={file.depotPath} onClick={(event) => selectFile(file, event)} onContextMenu={(event) => openFileMenu(event, file)} onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openFileMenu(event, file); }}>
-      <FileIcon className="file-tree-icon" aria-hidden="true" />
-      <span><strong>{file.depotPath.split("/").at(-1) || file.depotPath}</strong><small>{file.localPath || file.clientPath || file.depotPath} · {statusText}</small></span>
-      <span className="file-status-markers" aria-label={statusText}>{statusMarkers(file).map(({ icon: StatusIcon, status, className }) => <span title={status === "clean" ? t("workspaceStatusClean") : status === "loading" ? t("workspaceStatusLoading") : t(`workspaceStatus_${status}` as never)} className={className} key={status}><StatusIcon aria-hidden="true" /></span>)}</span>
-      <span className="revision-cell">{file.haveRevision || "—"} / {file.headRevision || "—"}</span>
-    </button>;
+    return <TreeItemRow
+      key={file.depotPath}
+      depth={depth}
+      selected={selected.includes(file.depotPath)}
+      className={file.ignored ? "ignored" : ""}
+      selectClassName="workspace-file-row"
+      agentId={`workspace-file:${file.depotPath}`}
+      agentIgnored={file.ignored}
+      icon={<FileIcon className="file-tree-icon" aria-hidden="true" />}
+      primary={file.depotPath.split("/").at(-1) || file.depotPath}
+      secondary={<>{file.localPath || file.clientPath || file.depotPath} · {statusText}</>}
+      trailing={<><span className="file-status-markers" aria-label={statusText}>{statusMarkers(file).map(({ icon: StatusIcon, status, className }) => <span title={status === "clean" ? t("workspaceStatusClean") : status === "loading" ? t("workspaceStatusLoading") : t(`workspaceStatus_${status}` as never)} className={className} key={status}><StatusIcon aria-hidden="true" /></span>)}</span><span className="revision-cell">{file.haveRevision || "—"} / {file.headRevision || "—"}</span></>}
+      selectProps={{ title, onClick: (event) => selectFile(file, event), onContextMenu: (event) => openFileMenu(event, file), onKeyDown: (event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openFileMenu(event, file); } }}
+    />;
   };
 
-  const renderTree = (folders: WorkspaceTreeFolder[]) => folders.map((folder) => {
+  function setFolderOpen(folder: WorkspaceTreeFolder, nextOpen: boolean) {
+    if (nextOpen && lazyRoot.current) void loadDirectory(folder.path);
+    setCollapsedFolders((current) => {
+      const next = new Set(current);
+      if (nextOpen) next.delete(folder.path); else next.add(folder.path);
+      return next;
+    });
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      if (nextOpen) next.add(folder.path); else next.delete(folder.path);
+      return next;
+    });
+  }
+
+  const renderTree = (folders: WorkspaceTreeFolder[], depth = 0): ReactNode => folders.map((folder) => {
     const isRoot = folder.path.slice(2).split("/").filter(Boolean).length === 1;
     const open = !collapsedFolders.has(folder.path) && (isRoot || expandedFolders.has(folder.path));
     const ignored = folderIsIgnored(folder);
-    return <details className={`workspace-tree-folder${selectedFolders.includes(folder.path) ? " selected" : ""}${ignored ? " ignored" : ""}`} key={folder.path} open={open} onToggle={(event) => {
-      const nextOpen = event.currentTarget.open;
-      if (nextOpen && lazyRoot.current) void loadDirectory(folder.path);
-      setCollapsedFolders((current) => {
-        const next = new Set(current);
-        if (nextOpen) next.delete(folder.path); else next.add(folder.path);
-        return next;
-      });
-      setExpandedFolders((current) => {
-        const next = new Set(current);
-        if (nextOpen) next.add(folder.path); else next.delete(folder.path);
-        return next;
-      });
-    }} aria-busy={folder.loading}><summary role="treeitem" aria-label={ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name} aria-selected={selectedFolders.includes(folder.path)} aria-expanded={open} aria-busy={folder.loading} data-agent-id={`workspace-folder:${folder.path}`} data-agent-ignored={ignored} onClick={(event) => selectFolder(folder, event)}><ChevronRight className="folder-icon" aria-hidden="true" /><strong>{folder.name}</strong><span className="folder-summary-meta">{folder.loading ? <span className="folder-loading-indicator" role="status" aria-label={t("folderLoading")} title={t("folderLoading")} /> : null}<small>{folder.loaded ? folderFileCount(folder) : "…"}</small></span></summary>{open && <div role="group">{renderTree(folder.folders)}{folder.files.map(renderFile)}</div>}</details>;
+    const knownEmpty = folder.loaded && folder.folders.length + folder.files.length === 0;
+    const FolderIcon = isRoot ? HardDrive : Folder;
+    return <div className="workspace-tree-node" key={folder.path}>
+      <TreeItemRow
+        depth={depth}
+        selected={selectedFolders.includes(folder.path)}
+        busy={folder.loading}
+        className={ignored ? "ignored" : ""}
+        selectClassName="workspace-folder-select"
+        disclosure={!knownEmpty ? { agentId: `workspace-folder-toggle:${folder.path}`, expanded: open, loading: folder.loading, label: t(open ? "depotOverviewCollapse" : "depotOverviewExpand"), onToggle: () => setFolderOpen(folder, !open) } : undefined}
+        agentId={`workspace-folder:${folder.path}`}
+        agentIgnored={ignored}
+        icon={<FolderIcon className="ui-icon" aria-hidden="true" />}
+        primary={folder.name}
+        secondary={folder.path}
+        trailing={<span className="folder-summary-meta"><small>{folder.loaded ? folderFileCount(folder) : "…"}</small></span>}
+        selectProps={{ "aria-label": ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name, onClick: (event) => selectFolder(folder, event), onDoubleClick: () => setFolderOpen(folder, !open) }}
+      />
+      {open && <div role="group">{renderTree(folder.folders, depth + 1)}{folder.files.map((file) => renderFile(file, depth + 1))}</div>}
+    </div>;
   });
 
   useEffect(() => {
@@ -520,54 +549,78 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     return () => { active = false; };
   }, [connection, selectedFile, selectedFolder, selectedHistoryPath]);
 
+  const menu = workspaceMenu.menu?.target;
   const menuFiles = menu ? files.filter((file) => menu.paths.includes(file.depotPath)) : [];
   const menuChange = menuFiles[0]?.change || "default";
   const menuCanRevert = menuFiles.length > 0 && menuFiles.every((file) => Boolean(file.action) && (file.change || "default") === menuChange);
   const menuCanResolve = menuFiles.length > 0 && menuFiles.every((file) => file.unresolved);
+  const selectedCount = selected.length + selectedFolders.length;
+  const selectedKind = selectedFile ? t("workspaceInspectorFile") : selectedFolder ? t("workspaceInspectorFolder") : t("workspaceInspectorSelection");
+  const selectedTitle = selectedFile?.depotPath.split("/").at(-1)
+    || selectedFolder?.split("/").filter(Boolean).at(-1)
+    || (selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : `${selected.length} ${t("filesSelected")}`);
+  const selectedPath = selectedFile?.localPath || selectedFile?.clientPath || selectedFile?.depotPath || selectedFolder;
+  const SelectedIcon = selectedFile ? fileIcon(selectedFile.depotPath) : selectedFolder ? Folder : Files;
 
   return <View
     id="workspace-files-title"
-    eyebrow={t("workspaceEyebrow")}
     title={t("filesTitle")}
     subtitle={`${info.clientRoot || connection.client} · ${t("workspaceFilesBody")}`}
     error={error}
     notice={notice}
     operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
     onDismissNotice={() => setNotice("")}
-    actions={<>{sourceControl}<button className="secondary-button" type="button" onClick={() => void openWorkspaceSettings()} disabled={busy}>{t("workspaceSpec")}</button><button className="secondary-button" type="button" onClick={() => void showReconcilePreview()} disabled={busy}>{t("reconcile")}</button><button className="secondary-button" type="button" onClick={() => void refreshLoadedDirectories()} disabled={busy}>{busy ? t("updatingFileStatuses") : t("refresh")}</button><button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start([scope])} disabled={busy || safeSync.phase !== "idle"}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button></>}
+    actions={<><button className="secondary-button button-with-icon" type="button" onClick={() => void openWorkspaceSettings()} disabled={busy}><Settings2 className="ui-icon" aria-hidden="true" />{t("workspaceSpec")}</button><button className="secondary-button button-with-icon" type="button" onClick={() => void showReconcilePreview()} disabled={busy}><ScanSearch className="ui-icon" aria-hidden="true" />{t("reconcile")}</button><button className="secondary-button button-with-icon" type="button" onClick={() => void refreshLoadedDirectories()} disabled={busy}><RefreshCw className={`ui-icon${busy ? " icon-spin" : ""}`} aria-hidden="true" />{busy ? t("updatingFileStatuses") : t("refresh")}</button><button className="primary-button button-with-icon update-project-button" type="button" onClick={() => void safeSync.start([scope])} disabled={busy || safeSync.phase !== "idle"}><Download className="ui-icon" aria-hidden="true" />{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button></>}
+    statusBarActions={sourceControl}
   >
-    <details className="files-options">
-      <summary><strong>{t("filesSearchAndFilters")}</strong><span>{t(filtersActive ? "filesFiltersActive" : "filesFiltersOptional")}</span></summary>
-      <div className="resource-toolbar">
-        <label className="field"><span className="field-label">{t("fileScope")}</span><input value={scope} placeholder={t("fileScopePlaceholder")} onChange={(event) => setScope(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void load(scope); }} /><small>{t("fileScopeHelp")}</small></label>
-        <button className="secondary-button apply-scope-button" type="button" onClick={() => void load(scope)} disabled={busy}>{t("applyScope")}</button>
-        <label className="field"><span className="field-label">{t("workspaceSearch")}</span><input value={query} placeholder={t("workspaceSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} /><small>{t("workspaceSearchHelp")}</small></label>
-        <label className="field"><span className="field-label">{t("workspaceFilter")}</span><select value={filter} onChange={(event) => setFilter(event.target.value as WorkspaceFilter)}><option value="all">{t("workspaceFilterAll")}</option><option value="opened">{t("workspaceFilterOpened")}</option><option value="outdated">{t("workspaceFilterOutdated")}</option><option value="unresolved">{t("workspaceFilterUnresolved")}</option><option value="otherOpen">{t("workspaceFilterOtherOpen")}</option><option value="locked">{t("workspaceFilterLocked")}</option><option value="unmapped">{t("workspaceFilterUnmapped")}</option><option value="untracked">{t("workspaceFilterUntracked")}</option></select></label>
-        <label className="field compact-field"><span className="field-label">{t("workspaceViewMode")}</span><select value={viewMode} onChange={(event) => {
-          const next = event.target.value as "list" | "tree";
-          setViewMode(next);
-          if (next === "list") setSelectedFolders([]);
-        }}><option value="list">{t("workspaceViewList")}</option><option value="tree">{t("workspaceViewTree")}</option></select></label>
+    <details className="files-options workspace-options">
+      <summary><span className="workspace-options-title"><SlidersHorizontal className="ui-icon" aria-hidden="true" /><strong>{t("filesSearchAndFilters")}</strong></span><span>{t(filtersActive ? "filesFiltersActive" : "filesFiltersOptional")}</span></summary>
+      <div className="workspace-overview-toolbar">
+        <label className="workspace-toolbar-input" title={t("fileScopeHelp")}><HardDrive aria-hidden="true" /><span className="sr-only">{t("fileScope")}</span><input aria-label={t("fileScope")} value={scope} placeholder={t("fileScopePlaceholder")} onChange={(event) => setScope(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void load(scope); }} /></label>
+        <button className="secondary-button button-with-icon" type="button" onClick={() => void load(scope)} disabled={busy}><Search className="ui-icon" aria-hidden="true" />{t("applyScope")}</button>
+        <label className="workspace-toolbar-input workspace-search-input" title={t("workspaceSearchHelp")}><Search aria-hidden="true" /><span className="sr-only">{t("workspaceSearch")}</span><input aria-label={t("workspaceSearch")} value={query} placeholder={t("workspaceSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} /></label>
+        <label className="workspace-toolbar-select"><Filter aria-hidden="true" /><span className="sr-only">{t("workspaceFilter")}</span><select aria-label={t("workspaceFilter")} value={filter} onChange={(event) => setFilter(event.target.value as WorkspaceFilter)}><option value="all">{t("workspaceFilterAll")}</option><option value="opened">{t("workspaceFilterOpened")}</option><option value="outdated">{t("workspaceFilterOutdated")}</option><option value="unresolved">{t("workspaceFilterUnresolved")}</option><option value="otherOpen">{t("workspaceFilterOtherOpen")}</option><option value="locked">{t("workspaceFilterLocked")}</option><option value="unmapped">{t("workspaceFilterUnmapped")}</option><option value="untracked">{t("workspaceFilterUntracked")}</option></select></label>
+        <div className="workspace-view-toggle" role="group" aria-label={t("workspaceViewMode")}>
+          <button type="button" className={viewMode === "list" ? "active" : ""} aria-pressed={viewMode === "list"} onClick={() => { setViewMode("list"); setSelectedFolders([]); }}><List aria-hidden="true" /><span>{t("workspaceViewList")}</span></button>
+          <button type="button" className={viewMode === "tree" ? "active" : ""} aria-pressed={viewMode === "tree"} onClick={() => setViewMode("tree")}><ListTree aria-hidden="true" /><span>{t("workspaceViewTree")}</span></button>
+        </div>
       </div>
     </details>
     <div className="resource-workbench workspace-workbench">
       <div className="resource-list workspace-resource-list" role="list">
         <div className="column-heading"><strong>{t("workspaceFiles")}</strong><span>{selected.length > 0 ? `${selected.length} / ` : ""}{visibleFiles.length}</span></div>
-        {viewMode === "tree" && tree.length > 0 ? <div className="workspace-file-tree" role="tree">{renderTree(tree)}</div> : busy && files.length === 0 ? <CompactEmpty text={t("loadingFiles")} /> : files.length === 0 ? <CompactEmpty text={t("workspaceNoFiles")} /> : visibleFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFilterMatches")} /> : visibleFiles.map(renderFile)}
+        {viewMode === "tree" && tree.length > 0 ? <div className="workspace-file-tree" role="tree">{renderTree(tree)}</div> : busy && files.length === 0 ? <CompactEmpty text={t("loadingFiles")} /> : files.length === 0 ? <CompactEmpty text={t("workspaceNoFiles")} /> : visibleFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFilterMatches")} /> : visibleFiles.map((file) => renderFile(file))}
       </div>
-      <aside className="resource-inspector">
-        <div className="column-heading"><strong>{t("fileDetailsLabel")}</strong><span>{selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : selected.length}</span></div>
-        {!selected.length && !selectedFolders.length ? <EmptyState title={t("selectWorkspaceFile")} body={t("selectWorkspaceFileBody")} /> : <div className="inspector-content">
-          <div><h2>{selectedFolder || (selectedFolders.length ? `${selectedFolders.length} ${t("foldersSelected")}` : selectedFile?.depotPath || `${selected.length} ${t("filesSelected")}`)}</h2></div>
-          {selectedSyncScopes.length > 0 && <div className="inspector-actions history-update-action"><button className="primary-button" type="button" onClick={() => void safeSync.start(selectedSyncScopes)} disabled={busy || safeSync.phase !== "idle"}>{t("updateSelected")}</button>{historySelection && <small>{historySelection.revision ? `#${historySelection.revision}` : `CL ${historySelection.change}`}</small>}</div>}
-          {selectedFile && <dl className="file-facts"><dt>{t("actionLabel")}</dt><dd>{selectedFile.action || "—"}</dd><dt>{t("revisionLabel")}</dt><dd>{selectedFile.haveRevision || "—"} / {selectedFile.headRevision || "—"}</dd><dt>{t("workspaceStatus")}</dt><dd>{selectedFile.statusPending ? t("workspaceStatusLoading") : workspaceStatus(selectedFile).map((status) => t(`workspaceStatus_${status}` as never)).join(" · ") || t("workspaceStatusClean")}</dd></dl>}
+      <aside className="resource-inspector workspace-inspector">
+        {!selectedCount ? <EmptyState title={t("selectWorkspaceFile")} body={t("selectWorkspaceFileBody")} /> : <div className="workspace-inspector-content">
+          <div className="workspace-inspector-heading">
+            <div><span className="workspace-inspector-kind"><SelectedIcon className="ui-icon" aria-hidden="true" />{selectedKind}</span><h2>{selectedTitle}</h2>{selectedPath && <p title={selectedPath}>{selectedPath}</p>}</div>
+            {selectedSyncScopes.length > 0 && <div className="workspace-inspector-actions"><button className="primary-button button-with-icon" type="button" onClick={() => void safeSync.start(selectedSyncScopes)} disabled={busy || safeSync.phase !== "idle"}><Download className="ui-icon" aria-hidden="true" />{t("updateSelected")}</button>{historySelection && <small>{historySelection.revision ? `#${historySelection.revision}` : <span className="changelist-number">CL {historySelection.change}</span>}</small>}</div>}
+          </div>
+          {selectedFile && <dl className="workspace-inspector-facts">
+            <div><Pencil aria-hidden="true" /><dt>{t("actionLabel")}</dt><dd>{selectedFile.action || "—"}</dd></div>
+            <div><History aria-hidden="true" /><dt>{t("revisionLabel")}</dt><dd>{selectedFile.haveRevision || "—"} / {selectedFile.headRevision || "—"}</dd></div>
+            <div><Activity aria-hidden="true" /><dt>{t("workspaceStatus")}</dt><dd title={selectedFile.statusPending ? t("workspaceStatusLoading") : workspaceStatus(selectedFile).map((status) => t(`workspaceStatus_${status}` as never)).join(" · ") || t("workspaceStatusClean")}>{selectedFile.statusPending ? t("workspaceStatusLoading") : workspaceStatus(selectedFile).map((status) => t(`workspaceStatus_${status}` as never)).join(" · ") || t("workspaceStatusClean")}</dd></div>
+            <div><GitCommitHorizontal aria-hidden="true" /><dt>{t("changelistLabel")}</dt><dd className={selectedFile.change && selectedFile.change !== "default" ? "changelist-number" : undefined}>{selectedFile.change || "default"}</dd></div>
+          </dl>}
           {selected.length > 0 && <label className="field"><span className="field-label">{t("destinationChangelist")}</span><input value={change} onChange={(event) => setChange(event.target.value)} /></label>}
-          <section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <button type="button" aria-pressed={historySelection?.revision === revision.revision} data-agent-id={`workspace-history:${revision.change}:${revision.revision}`} className={`history-compact-row${historySelection?.revision === revision.revision ? " selected" : ""}`} key={revision.revision} onClick={() => setHistorySelection({ change: revision.change, revision: revision.revision })} onDoubleClick={() => revision.change && setHistoryChange(revision.change)} onKeyDown={(event) => { if (event.key === "Enter" && revision.change) { event.preventDefault(); setHistoryChange(revision.change); } }}><strong>{revision.description?.trim() || t("noDescription")}</strong><span>{[`CL ${revision.change || "—"}`, revision.user, revision.client, formatWorkspaceHistoryTime(revision.time, language)].filter(Boolean).join(" · ")}</span><small>#{revision.revision} · {revision.action || "—"}</small></button>) : folderHistory.length ? folderHistory.map((changeItem) => <button type="button" aria-pressed={historySelection?.change === changeItem.id} data-agent-id={`workspace-history:${changeItem.id}`} className={`history-compact-row${historySelection?.change === changeItem.id ? " selected" : ""}`} key={changeItem.id} onClick={() => setHistorySelection({ change: changeItem.id })} onDoubleClick={() => setHistoryChange(changeItem.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setHistoryChange(changeItem.id); } }}><strong>{changeItem.description || t("noDescription")}</strong><span>{[`CL ${changeItem.id}`, changeItem.user, changeItem.client, formatWorkspaceHistoryTime(changeItem.time, language)].filter(Boolean).join(" · ")}</span></button>) : <CompactEmpty text={t("depotNoHistory")} />}</section>
+          {selectedFolder ? <ChangelistHistory
+            className="fill"
+            title={t("selectedHistory")}
+            summary={folderHistory.length}
+            items={folderHistory}
+            busy={historyBusy}
+            emptyText={t("depotNoHistory")}
+            selectedId={historySelection?.change}
+            agentId={(changeItem) => `workspace-history:${changeItem.id}`}
+            onSelect={(changeItem) => setHistorySelection({ change: changeItem.id })}
+            onOpen={(changeItem) => setHistoryChange(changeItem.id)}
+          /> : <section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <SelectableSurface selected={historySelection?.revision === revision.revision} data-agent-id={`workspace-history:${revision.change}:${revision.revision}`} className="history-compact-row" key={revision.revision} onClick={() => setHistorySelection({ change: revision.change, revision: revision.revision })} onDoubleClick={() => revision.change && setHistoryChange(revision.change)} onKeyDown={(event) => { if (event.key === "Enter" && revision.change) { event.preventDefault(); setHistoryChange(revision.change); } }}><ChangelistDescription value={revision.description} fallback={t("noDescription")} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span>{[revision.user, revision.client, formatWorkspaceHistoryTime(revision.time, language)].filter(Boolean).map((value) => ` · ${value}`)}</span><small>#{revision.revision} · {revision.action || "—"}</small></SelectableSurface>) : <CompactEmpty text={t("depotNoHistory")} />}</section>}
         </div>}
       </aside>
     </div>
 
-    {menu && <ContextMenu x={menu.x} y={menu.y} onSelect={() => setMenu(undefined)}>
+    {menu && workspaceMenu.menu && <ContextMenu x={workspaceMenu.menu.x} y={workspaceMenu.menu.y} onSelect={workspaceMenu.close}>
       <MenuButton onClick={() => void safeSync.start(menu.paths)}>{t("updateSelected")}</MenuButton>
       {menu.paths.length === 1 && <MenuButton onClick={() => void copyPath(menu.file.depotPath)}>{t("copyDepotPath")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void copyPath(menu.file.localPath!)}>{t("copyLocalPath")}</MenuButton>}
@@ -589,7 +642,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
 
     <SafeSyncConflictDialog sync={safeSync} />
 
-    {reconcileCandidates && <ActionDialog title={t("reconcilePreviewTitle")} confirmLabel={t("applyReconcile")} busy={busy} confirmDisabled={!reconcileSelected.length} onClose={() => setReconcileCandidates(undefined)} onConfirm={() => void applyReconcile()}><p>{t("reconcilePreviewBody")}</p><div className="resource-detail-list">{reconcileCandidates.length ? reconcileCandidates.map((item) => <button type="button" className={`resource-entry preview-select${reconcileSelected.some((selectedItem) => selectedItem.depotPath === item.depotPath) ? " selected" : ""}`} key={`${item.depotPath}-${item.action}`} onClick={() => setReconcileSelected((current) => current.some((selectedItem) => selectedItem.depotPath === item.depotPath) ? current.filter((selectedItem) => selectedItem.depotPath !== item.depotPath) : [...current, item])}><strong>{item.depotPath}</strong><small>{item.action}{item.localPath ? ` · ${item.localPath}` : ""}</small></button>) : <CompactEmpty text={t("noReconcileChanges")} />}</div></ActionDialog>}
+    {reconcileCandidates && <ActionDialog title={t("reconcilePreviewTitle")} confirmLabel={t("applyReconcile")} busy={busy} confirmDisabled={!reconcileSelected.length} onClose={() => setReconcileCandidates(undefined)} onConfirm={() => void applyReconcile()}><p>{t("reconcilePreviewBody")}</p><div className="resource-detail-list">{reconcileCandidates.length ? reconcileCandidates.map((item) => <SelectableRow selected={reconcileSelected.some((selectedItem) => selectedItem.depotPath === item.depotPath)} className="resource-entry preview-select" key={`${item.depotPath}-${item.action}`} onClick={() => setReconcileSelected((current) => current.some((selectedItem) => selectedItem.depotPath === item.depotPath) ? current.filter((selectedItem) => selectedItem.depotPath !== item.depotPath) : [...current, item])}><ItemRowCopy primary={item.depotPath} secondary={<>{item.action}{item.localPath ? ` · ${item.localPath}` : ""}</>} /></SelectableRow>) : <CompactEmpty text={t("noReconcileChanges")} />}</div></ActionDialog>}
 
     {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length} onClose={() => { setPendingResolveMode(undefined); setPendingResolvePaths([]); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={item.depotPath}><span><strong>{item.depotPath}</strong><small>{item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
 

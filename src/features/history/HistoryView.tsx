@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react";
 import { annotateFile, describeChange, diffRevisionWorkspace, diffRevisions, fileHistory, listSubmittedChanges, normalizeAppError, printRevision, saveRevision } from "../../shared/api";
+import { ChangelistHistory } from "../../shared/ChangelistHistory";
+import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { DiffViewer } from "../../shared/DiffViewer";
 import { useLocale } from "../../shared/i18n";
+import { SelectableSurface } from "../../shared/ItemList";
 import type { AnnotationLine, AppError, ConnectionInput, DiffMode, FileDiff, FileRevision, PendingChange, SubmittedChangeDetail } from "../../shared/models";
 import { PathActions } from "../../shared/PathActions";
 import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
@@ -113,7 +116,6 @@ export function HistoryView({ connection }: { connection: ConnectionInput }) {
 
   return <View
     id="history-title"
-    eyebrow={t("historyEyebrow")}
     title={mode === "file" ? t("fileHistory") : t("submittedHistory")}
     subtitle={mode === "file" ? t("fileHistoryBody") : t("submittedHistoryBody")}
     error={error}
@@ -139,15 +141,21 @@ export function HistoryView({ connection }: { connection: ConnectionInput }) {
       <div className="resource-list">
         <div className="column-heading"><strong>{mode === "file" ? t("fileHistory") : t("submittedHistory")}</strong><span>{mode === "file" ? revisions.length : visibleSubmitted.length}</span></div>
         {mode === "file" ? <>
-          {revisions.length ? revisions.map((revision) => <button type="button" className={`resource-row history-row${selected.includes(revision.revision) ? " selected" : ""}`} key={revision.revision} onClick={() => toggleRevision(revision.revision)}><span><strong>#{revision.revision} · {revision.action || t("unknownAction")}</strong><small>{revision.user} · CL {revision.change || "—"}{revision.time ? ` · ${revision.time}` : ""}</small></span><span>{revision.description || ""}{revision.labels.length ? ` · ${revision.labels.join(", ")}` : ""}</span></button>) : <CompactEmpty text={t("historyEmpty")} />}
+          {revisions.length ? revisions.map((revision) => <SelectableSurface selected={selected.includes(revision.revision)} className="resource-row history-row" key={revision.revision} onClick={() => toggleRevision(revision.revision)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleRevision(revision.revision); } }}><span><strong>#{revision.revision} · {revision.action || t("unknownAction")}</strong><small>{revision.user} · <span className="changelist-number">CL {revision.change || "—"}</span>{revision.time ? ` · ${revision.time}` : ""}</small></span><span><ChangelistDescription value={revision.description} compact />{revision.labels.length ? ` · ${revision.labels.join(", ")}` : ""}</span></SelectableSurface>) : <CompactEmpty text={t("historyEmpty")} />}
           {revisions.length === fileHistoryLimit && fileHistoryLimit < 5000 && <button className="load-more" type="button" onClick={() => void loadHistory(fileHistoryLimit + 100, false)} disabled={busy}>{t("loadMoreHistory")}</button>}
-        </> : <>
-          {submitted.length === 0 ? <CompactEmpty text={t("submittedEmpty")} /> : visibleSubmitted.length === 0 ? <CompactEmpty text={t("historyFilterEmpty")} /> : visibleSubmitted.map((change) => <button type="button" className={`resource-row history-row${selectedChange === change.id ? " selected" : ""}`} key={change.id} onClick={() => void selectSubmitted(change.id)}><span><strong>CL {change.id} · {change.user}</strong><small>{change.client}{change.time ? ` · ${change.time}` : ""}</small></span><span>{change.description}</span></button>)}
-          {submitted.length === historyLimit && historyLimit < 5000 && <button className="load-more" type="button" onClick={() => void loadSubmitted(historyLimit + 100, false)} disabled={busy}>{t("loadMoreHistory")}</button>}
-        </>}
+        </> : <ChangelistHistory
+          className="embedded history-submitted-list"
+          items={visibleSubmitted}
+          busy={busy}
+          emptyText={submitted.length === 0 ? t("submittedEmpty") : t("historyFilterEmpty")}
+          selectedId={selectedChange}
+          agentId={(change) => `submitted-history:${change.id}`}
+          onSelect={(change) => void selectSubmitted(change.id)}
+          footer={submitted.length === historyLimit && historyLimit < 5000 ? <button className="load-more" type="button" onClick={() => void loadSubmitted(historyLimit + 100, false)} disabled={busy}>{t("loadMoreHistory")}</button> : undefined}
+        />}
       </div>
       <aside className="resource-inspector">
-        <div className="column-heading"><strong>{mode === "file" ? t("revisionActions") : t("changeDetails")}</strong><span>{mode === "file" ? selected.length : selectedChange || "—"}</span></div>
+        <div className="column-heading"><strong>{mode === "file" ? t("revisionActions") : t("changeDetails")}</strong><span className={mode === "changes" && selectedChange ? "changelist-number" : undefined}>{mode === "file" ? selected.length : selectedChange || "—"}</span></div>
         {mode === "file" ? <div className="inspector-content">
           {selected.length === 0 ? <EmptyState title={t("selectRevision")} body={t("previewSelectedRevision")} /> : <>
             <p>{selected.length === 2 ? t("compareSelectedRevisions") : t("previewSelectedRevision")}</p>
@@ -155,9 +163,9 @@ export function HistoryView({ connection }: { connection: ConnectionInput }) {
             <div className="inspector-actions"><button className="primary-button" type="button" disabled={!selectedRevision || busy} onClick={() => selectedRevision && void runPreview(() => printRevision(connection, path.trim(), selectedRevision.revision), `${path.trim()}#${selectedRevision.revision}`)}>{t("previewRevision")}</button><button className="secondary-button" type="button" disabled={!selectedRevision || busy} onClick={() => setOutputPath("")}>{t("saveRevision")}</button><button className="secondary-button" type="button" disabled={selected.length !== 2 || busy} onClick={() => void runPreview(() => diffRevisions(connection, path.trim(), selected[0], selected[1], diffMode), `${path.trim()}#${selected[0]} ↔ #${selected[1]}`)}>{t("compareRevisions")}</button><button className="secondary-button" type="button" disabled={!selectedRevision || !previousRevision(selectedRevision.revision) || busy} onClick={() => selectedRevision && void runPreview(() => diffRevisions(connection, path.trim(), previousRevision(selectedRevision.revision)!, selectedRevision.revision, diffMode), path.trim())}>{t("comparePreviousRevision")}</button><button className="secondary-button" type="button" disabled={!selectedRevision || busy} onClick={() => selectedRevision && void runPreview(() => diffRevisionWorkspace(connection, path.trim(), selectedRevision.revision, diffMode), `${path.trim()}#${selectedRevision.revision} ↔ workspace`)}>{t("compareWorkspace")}</button><button className="secondary-button" type="button" disabled={!path.trim() || busy} onClick={() => void loadAnnotations()}>{t("annotateFile")}</button></div>
           </>}
           {diff && <div className="history-diff"><h2>{diffTitle}</h2><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}
-          {annotations.length > 0 && <div className="history-diff annotation-view"><h2>{t("annotationTitle")}</h2>{annotations.map((line, index) => <div className="preview-row" key={`${line.change}-${index}`}><span>{line.change}</span><small>{[line.user, line.date].filter(Boolean).join(" · ")}</small><code>{line.text || " "}</code></div>)}</div>}
+          {annotations.length > 0 && <div className="history-diff annotation-view"><h2>{t("annotationTitle")}</h2>{annotations.map((line, index) => <div className="preview-row" key={`${line.change}-${index}`}><span className="changelist-number">{line.change}</span><small>{[line.user, line.date].filter(Boolean).join(" · ")}</small><code>{line.text || " "}</code></div>)}</div>}
         </div> : !changeDetail ? <EmptyState title={t("changeDetails")} body={t("selectSubmitted")} /> : <div className="inspector-content">
-          <div><h2>CL {changeDetail.id}</h2><p>{changeDetail.description}</p></div>
+          <div><h2 className="changelist-number">CL {changeDetail.id}</h2><ChangelistDescription value={changeDetail.description} fallback={t("noDescription")} /></div>
           <dl className="file-facts"><dt>{t("factUser")}</dt><dd>{changeDetail.user}</dd><dt>{t("workspaceLabel")}</dt><dd>{changeDetail.client}</dd><dt>{t("jobsLabel")}</dt><dd>{changeDetail.jobs.length ? changeDetail.jobs.join(", ") : "—"}</dd><dt>{t("filesLabel")}</dt><dd>{changeDetail.files.length}</dd></dl>
           <div className="resource-detail-list">{changeDetail.files.map((file) => { const previous = previousRevision(file.revision); return <div className="resource-detail-row" key={`${file.depotPath}-${file.revision}`}><span><strong>{file.depotPath}</strong><small>{file.action}{file.revision ? ` · #${file.revision}` : ""}</small></span><button className="text-button" type="button" onClick={() => previous && void runPreview(() => diffRevisions(connection, file.depotPath, previous, file.revision!, diffMode), `${file.depotPath}#${previous} ↔ #${file.revision}`)} disabled={!previous || busy}>{t("previewFileDiff")}</button></div>; })}</div>
           {diff && <div className="history-diff"><h2>{diffTitle}</h2><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}

@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { describeChange, diffRevisions, normalizeAppError, saveChangeFiles, saveRevision } from "../../shared/api";
 import { DiffViewer } from "../../shared/DiffViewer";
+import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { useLocale } from "../../shared/i18n";
+import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, FileDiff, SubmittedChangeDetail, SubmittedFile } from "../../shared/models";
-import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
+import { isContextMenuShortcut } from "../../shared/selection";
 import { CompactEmpty, ContextMenu, ErrorBanner, MenuButton, Modal, Notice } from "../../shared/View";
+import { useContextMenu } from "../../shared/useContextMenu";
+import { useMultiSelection } from "../../shared/useMultiSelection";
 import { canDiffSubmittedFile, canDownloadSubmittedFile, formatWorkspaceHistoryTime, previousWorkspaceRevision } from "./workspace";
 
 type SaveTarget = "all" | SubmittedFile;
@@ -12,8 +16,7 @@ type SaveTarget = "all" | SubmittedFile;
 export function ChangeHistoryDialog({ connection, change, onClose }: { connection: ConnectionInput; change: string; onClose: () => void }) {
   const { t, language } = useLocale();
   const [detail, setDetail] = useState<SubmittedChangeDetail>();
-  const [selected, setSelected] = useState<string[]>([]);
-  const [menu, setMenu] = useState<{ file: SubmittedFile; paths: string[]; x: number; y: number }>();
+  const fileMenu = useContextMenu<{ file: SubmittedFile; paths: string[] }>();
   const [diff, setDiff] = useState<FileDiff>();
   const [diffTitle, setDiffTitle] = useState("");
   const [saveTarget, setSaveTarget] = useState<SaveTarget>();
@@ -21,10 +24,14 @@ export function ChangeHistoryDialog({ connection, change, onClose }: { connectio
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<AppError>();
   const [notice, setNotice] = useState("");
-  const selectionAnchor = useRef<string | undefined>(undefined);
+  const fileSelection = useMultiSelection(detail?.files.map((file) => file.depotPath) || []);
+  const selected = fileSelection.selected;
 
   useEffect(() => {
     let active = true;
+    setDetail(undefined);
+    fileSelection.clear();
+    fileMenu.close();
     setBusy(true);
     setError(undefined);
     void describeChange(connection, change)
@@ -35,25 +42,13 @@ export function ChangeHistoryDialog({ connection, change, onClose }: { connectio
   }, [change, connection]);
 
   function selectFile(file: SubmittedFile, event: React.MouseEvent) {
-    if (!detail) return;
-    const order = detail.files.map((item) => item.depotPath);
-    const next = updateSelection(order, selected, file.depotPath, selectionAnchor.current, selectionMode(event));
-    selectionAnchor.current = next.anchor;
-    setSelected(next.selected);
+    fileSelection.select(file.depotPath, event);
   }
 
   function openMenu(event: React.MouseEvent | React.KeyboardEvent, file: SubmittedFile) {
-    event.preventDefault();
-    event.stopPropagation();
     const paths = selected.includes(file.depotPath) ? selected : [file.depotPath];
-    if (!selected.includes(file.depotPath)) setSelected(paths);
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    setMenu({
-      file,
-      paths,
-      x: "clientX" in event && event.clientX > 0 ? event.clientX : rect.left,
-      y: "clientY" in event && event.clientY > 0 ? event.clientY : rect.bottom,
-    });
+    if (!selected.includes(file.depotPath)) fileSelection.replace(paths);
+    fileMenu.open(event, { file, paths });
   }
 
   async function showDiff(file: SubmittedFile) {
@@ -95,26 +90,26 @@ export function ChangeHistoryDialog({ connection, change, onClose }: { connectio
   }
 
   const printableCount = detail?.files.filter(canDownloadSubmittedFile).length || 0;
+  const menu = fileMenu.menu?.target;
   const singleMenuFile = menu?.paths.length === 1 ? menu.file : undefined;
 
-  return <Modal title={`${t("changeDetails")} · CL ${change}`} busy={busy} wide onClose={onClose}>
+  return <Modal title={<>{t("changeDetails")} · <span className="changelist-number">CL {change}</span></>} busy={busy} wide onClose={onClose}>
     <div className="dialog-body change-history-dialog">
       {error && <ErrorBanner error={error} />}
       {notice && <Notice text={notice} onDismiss={() => setNotice("")} />}
       {!detail ? <CompactEmpty text={busy ? t("loadingHistory") : t("submittedEmpty")} /> : <>
-        <div><strong>{detail.description || t("noDescription")}</strong><small className="change-history-meta">{[detail.user, detail.client, formatWorkspaceHistoryTime(detail.time, language)].filter(Boolean).join(" · ")}</small></div>
+        <div><ChangelistDescription value={detail.description} fallback={t("noDescription")} /><small className="change-history-meta">{[detail.user, detail.client, formatWorkspaceHistoryTime(detail.time, language)].filter(Boolean).join(" · ")}</small></div>
         <div className="column-heading"><strong>{t("filesLabel")}</strong><span>{selected.length ? `${selected.length} / ` : ""}{detail.files.length}</span></div>
         <div className="change-history-files" role="listbox" aria-multiselectable="true">
-          {detail.files.map((file) => <button
-            type="button"
-            role="option"
-            aria-selected={selected.includes(file.depotPath)}
-            className={`change-history-file${selected.includes(file.depotPath) ? " selected" : ""}`}
+          {detail.files.map((file) => <SelectableRow
+            selected={selected.includes(file.depotPath)}
+            selectionRole="option"
+            className="change-history-file"
             key={file.depotPath}
             onClick={(event) => selectFile(file, event)}
             onContextMenu={(event) => openMenu(event, file)}
             onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, file); }}
-          ><span><strong>{file.depotPath.split("/").at(-1) || file.depotPath}</strong><small>{file.depotPath}</small></span><span><strong>{file.action || "—"}</strong><small>{file.revision ? `#${file.revision}` : "—"}{file.fileType ? ` · ${file.fileType}` : ""}</small></span></button>)}
+          ><ItemRowCopy primary={file.depotPath.split("/").at(-1) || file.depotPath} secondary={file.depotPath} /><ItemRowCopy primary={file.action || "—"} secondary={<>{file.revision ? `#${file.revision}` : "—"}{file.fileType ? ` · ${file.fileType}` : ""}</>} /></SelectableRow>)}
         </div>
         {diff && <div className="history-diff"><h2>{diffTitle}</h2><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}
         {saveTarget && <div className="inline-preview"><p>{saveTarget === "all" ? t("saveChangeFilesBody") : `${saveTarget.depotPath}#${saveTarget.revision}`}</p><label className="field"><span className="field-label">{saveTarget === "all" ? t("saveChangeDirectoryPrompt") : t("saveRevisionPathPrompt")}</span><input autoFocus value={outputPath} onChange={(event) => setOutputPath(event.target.value)} /></label></div>}
@@ -123,7 +118,7 @@ export function ChangeHistoryDialog({ connection, change, onClose }: { connectio
     <div className="dialog-actions">
       {saveTarget ? <><button className="secondary-button" type="button" onClick={() => setSaveTarget(undefined)} disabled={busy}>{t("cancel")}</button><button className="primary-button" type="button" onClick={() => void save()} disabled={busy || !outputPath.trim()}>{saveTarget === "all" ? t("saveChangeFiles") : t("saveRevision")}</button></> : <><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("close")}</button><button className="primary-button" type="button" onClick={() => requestSave("all")} disabled={busy || printableCount === 0}>{t("saveChangeFiles")}</button></>}
     </div>
-    {menu && <ContextMenu x={menu.x} y={menu.y} onSelect={() => setMenu(undefined)}>
+    {menu && fileMenu.menu && <ContextMenu x={fileMenu.menu.x} y={fileMenu.menu.y} onSelect={fileMenu.close}>
       {singleMenuFile ? <>
         <MenuButton disabled={!canDiffSubmittedFile(singleMenuFile) || busy} onClick={() => void showDiff(singleMenuFile)}>{t("previewFileDiff")}</MenuButton>
         <MenuButton disabled={!canDownloadSubmittedFile(singleMenuFile) || busy} onClick={() => requestSave(singleMenuFile)}>{t("saveRevision")}</MenuButton>

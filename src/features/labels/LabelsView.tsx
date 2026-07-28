@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { listDepotFiles, listLabels, normalizeAppError, previewSync } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
+import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, DepotFile, Label, SyncPreview } from "../../shared/models";
 import { SafeSyncConflictDialog, SyncPreviewDetails, useSafeSync } from "../../shared/SafeSync";
 import { CompactEmpty, EmptyState, View } from "../../shared/View";
@@ -69,7 +70,6 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
 
   return <View
     id="labels-title"
-    eyebrow={t("labelsEyebrow")}
     title={t("labelsTitle")}
     subtitle={t("labelsBody")}
     error={error}
@@ -85,10 +85,10 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
     <div className="resource-workbench">
       <div className="resource-list">
         <div className="column-heading"><strong>{t("labelsTitle")}</strong><span>{visibleLabels.length}</span></div>
-        {visibleLabels.length ? visibleLabels.map((label) => <button className={`resource-row${selectedLabel?.name === label.name ? " selected" : ""}`} type="button" key={label.name} onClick={() => void inspectLabel(label)}>
-          <span><strong>{label.name}</strong><small>{[label.owner, label.update].filter(Boolean).join(" · ") || "—"}</small></span>
+        {visibleLabels.length ? visibleLabels.map((label) => <SelectableRow selected={selectedLabel?.name === label.name} className="resource-row" key={label.name} onClick={() => void inspectLabel(label)}>
+          <ItemRowCopy primary={label.name} secondary={[label.owner, label.update].filter(Boolean).join(" · ") || "—"} />
           <span>{label.description || t("labelNoDescription")}</span>
-        </button>) : <CompactEmpty text={t("labelsEmpty")} />}
+        </SelectableRow>) : <CompactEmpty text={t("labelsEmpty")} />}
       </div>
       <aside className="resource-inspector">
         <div className="column-heading"><strong>{t("labelDetails")}</strong><span>{selectedLabel?.name || "—"}</span></div>

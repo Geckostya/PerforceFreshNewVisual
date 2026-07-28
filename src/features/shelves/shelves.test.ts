@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { canApplyUnshelve, splitUnshelvePaths } from "./shelves";
+import { canApplyUnshelve, nextShelfSelection, splitUnshelvePaths } from "./shelves";
 
 describe("shelf unshelve safety", () => {
+  it("does not retain a shelf selection from another workspace", () => {
+    const shelves = [
+      { id: "20", description: "new", user: "alex", client: "main" },
+      { id: "10", description: "old", user: "alex", client: "main" },
+    ];
+    expect(nextShelfSelection(shelves, "10")).toBe("10");
+    expect(nextShelfSelection(shelves, "999")).toBe("20");
+    expect(nextShelfSelection([], "999")).toBeUndefined();
+  });
+
   it("keeps conflicts skipped unless each overwrite is explicit", () => {
     const preview = { conflicts: [{ depotPath: "//main/a", localPath: "C:/a" }] };
     expect(canApplyUnshelve(undefined, ["//main/a"])).toBe(false);
