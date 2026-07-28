@@ -9,7 +9,7 @@
 - Node `24.16.0` from `.node-version`.
 - Rust `1.97.1` with rustfmt/Clippy from `rust-toolchain.toml`.
 
-In the current workspace, Node, Rust, and the npm cache live in the ignored `.toolchain` directory. A global Tauri CLI, pnpm/yarn, C++ P4API, Docker, and a local P4 Server are not needed for an ordinary build.
+The repository supports pinned local Node, Rust, and npm cache content in the ignored `.toolchain` directory. A global Tauri CLI, pnpm/yarn, C++ P4API, Docker, and a local P4 Server are not needed for an ordinary build.
 
 ## Activation and dependency installation
 
@@ -114,5 +114,3 @@ If the `.exe` is locked, first verify the process path and terminate only the `p
 ## Version updates
 
 Update Node/Rust/Tauri in a dedicated change together with version files, the lockfile, and the full gate. Do not use a floating `latest`. Build the Tauri desktop bundle on each OS's native runner; cross-compilation is not a project goal.
-
-The initial setup history and installer links are preserved in [`research/TOOLCHAIN_BOOTSTRAP.md`](research/TOOLCHAIN_BOOTSTRAP.md).

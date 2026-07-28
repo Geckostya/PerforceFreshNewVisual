@@ -12,9 +12,9 @@ Work from repository evidence and load project context progressively.
 1. Locate the root containing `src-tauri/tauri.conf.json`, `src/`, and `Docs/`.
 2. Read `Docs/README.md`, then read only the living contracts routed to the current task. Do not preload every contract.
 3. Read the relevant implementation and tests before editing. Preserve unrelated and uncommitted user changes.
-4. For changes to skills, `AGENTS.md`, or documentation structure, also read `Docs/DOCUMENTATION_POLICY.md`.
+4. For changes to documentation, skills, `AGENTS.md`, feature status, or a documented contract, also read `Docs/DOCUMENTATION_POLICY.md`.
 
-Repository documents and code are fresher than chat memory. Files under `Docs/research` are historical sources; read them only when the task needs decision history or cited research.
+Repository documents and code are fresher than chat memory. Files under `Docs/research` are optional references; read them only for a relevant command map or verification matrix.
 
 Communicate with the user in the language of their latest request unless they ask otherwise. Keep project documentation and code comments in English regardless of the conversation language.
 
@@ -31,11 +31,12 @@ Communicate with the user in the language of their latest request unless they as
 - Codex Desktop plugin installation, `p4fnv_agent_plugin` discovery, or MCP startup diagnostics: `Docs/CODEX_MCP_SETUP.md`.
 - Native UI verification or snapshot/MCP bridge: `Docs/AGENT_DEVELOPMENT.md`.
 - Windows/macOS/Linux boundaries: `Docs/PORTABILITY.md`.
-- Files/My Changes/Streams UX rework acceptance: `Docs/UX_REWORK_TASK.md` only while working on that rework.
+- Documentation creation, cleanup, ownership, size, or feature closeout: `Docs/DOCUMENTATION_POLICY.md`.
 
 ## Implement safely
 
 - Build complete vertical slices through typed frontend models/API, narrow Tauri commands, validated Rust operations, UI state, localization, tests, and the owning document as applicable.
+- During feature closeout, replace obsolete statements in the owning contract and update the area checklist only when readiness changed. Do not add task plans, progress logs, implementation snapshots, or facts already evident from code/tests.
 - Keep P4 command construction and validation in Rust. Pass arguments directly to `Command`; never interpolate through a shell.
 - Treat the P4 Server as source of truth. Refresh affected state after mutations and report partial results or compensation honestly.
 - Use server-backed preview and a non-destructive default for destructive, overwrite, submit, integrate, resolve, and sync-risk flows.
@@ -51,4 +52,4 @@ For uncertain Helix Core semantics or destructive flags, use current official Pe
 - Run focused checks during development and the gate required by `AGENTS.md` and `Docs/TOOLCHAIN.md` before handoff.
 - For UI or bridge changes, follow `Docs/AGENT_DEVELOPMENT.md` through `p4fnv_agent_plugin`. If the namespace is missing, follow `Docs/CODEX_MCP_SETUP.md`; do not substitute web-only verification for Tauri behavior.
 - Rebuild and report the standard shipping artifact when the request changes application behavior and a safe build is possible.
-- Update only the documents that own changed contracts or feature status. Do not duplicate their details in this skill.
+- When documentation changed, verify relative links, the `Docs/README.md` index, and the size limits in `Docs/DOCUMENTATION_POLICY.md`.

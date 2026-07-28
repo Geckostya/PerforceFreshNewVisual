@@ -1,12 +1,8 @@
-# Research
+# Research references
 
-This directory contains the original research, historical snapshots, and extended catalogs from which the living development documents were derived.
+This directory contains only compact references that remain useful across feature work. They do not own current behavior or status; use the living contracts indexed by [`Docs/README.md`](../README.md).
 
-Files in this directory are not the current implementation contract. Use documents from the [`Docs`](../README.md) root for development.
+- [`P4_CAPABILITY_REFERENCE.md`](P4_CAPABILITY_REFERENCE.md) — workflow-to-command map and compatibility gates.
+- [`P4_VERIFICATION_SCENARIOS.md`](P4_VERIFICATION_SCENARIOS.md) — reusable disposable-server, failure-injection, and native-UI cases.
 
-- `PERFORCE_CLIENT_CONTEXT.md` — original context and early project decisions.
-- `ARCHITECTURE_SNAPSHOT.md` — extended architecture and product snapshot before condensation.
-- `UI_UX_RESEARCH.md` — competitive analysis, original full UI/UX specification, and sources.
-- `P4_FEATURE_CATALOG_AND_STORIES.md` — complete capability catalog, user stories, CLI matrices, and sources.
-- `TOOLCHAIN_BOOTSTRAP.md` — snapshot of the initial Windows toolchain setup.
-- `CODEX_MCP_DESKTOP_INTEGRATION.md` — investigation history, version-specific Desktop behavior, and the extended MCP diagnostic ladder.
+Do not store investigation logs, task plans, machine snapshots, copied upstream manuals, or superseded specifications here. Promote durable conclusions to the owning contract and rely on Git history for the rest.

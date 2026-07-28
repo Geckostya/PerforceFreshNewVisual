@@ -25,7 +25,7 @@ Structured `elements` includes `ignored` for Files rows representing files and f
 
 ## Transport and security boundary
 
-The low-level snapshot transport is enabled only by an absolute `P4FNV_UI_SNAPSHOT_PATH`. The frontend eventfully writes the timestamp, URL, viewport, active element, form state, and sanitized `body.outerHTML` through an allow-listed Tauri command. Password values are replaced with `[redacted]`, `value` attributes are removed, and snapshot size is limited to 8 MiB. Without the environment variable, the transport is completely disabled; there is no listener or HTTP port.
+The low-level snapshot transport is enabled only by an absolute `P4FNV_UI_SNAPSHOT_PATH`. The frontend writes the timestamp, URL, viewport, active element, form state, and sanitized `body.outerHTML` through an allow-listed Tauri command. Password values are replaced with `[redacted]`, `value` attributes are removed, and snapshot size is limited to 8 MiB. Without the environment variable, the transport is completely disabled; there is no listener or HTTP port.
 
 The MCP adds exact `P4FNV_AGENT_COMMAND_PATH`, `P4FNV_AGENT_RESPONSE_PATH`, and a random `P4FNV_AGENT_TOKEN`. Rust accepts no more than 64 KiB and verifies the token, request ID, expected `stateVersion`, and the `ui.click`/`ui.input`/`ui.key`/`ui.focus` allow list. Arbitrary selectors, JavaScript, Tauri invoke, filesystem, shell, and `p4` commands are unsupported.
 

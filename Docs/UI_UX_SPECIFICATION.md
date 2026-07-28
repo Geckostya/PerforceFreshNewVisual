@@ -1,204 +1,113 @@
 # P4FNV UI/UX contract
 
-This document contains only implementation and acceptance rules. Competitive analysis, original wireframes, narrative flows, and sources are preserved in [`research/UI_UX_RESEARCH.md`](research/UI_UX_RESEARCH.md).
+This living contract owns shared layout, interaction, accessibility, visual language, and visual QA. Files/safe sync belong to [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md), changes/shelves to [`CHANGELIST_REQUIREMENTS.md`](CHANGELIST_REQUIREMENTS.md), and readiness to [`P4_FEATURE_CHECKLIST.md`](P4_FEATURE_CHECKLIST.md).
 
-## Base model
+## Interaction model
 
-P4FNV presents intent and consequences, not a collection of CLI flags. The primary flow for any complex operation is:
+P4FNV presents intent and consequences, not CLI flags. A complex operation follows one path:
 
-1. Select an object or scope.
+1. Select an object or exact scope.
 2. Obtain a server-backed preview.
 3. Show source, target, affected items, and risk.
-4. Start the action with a button that names the concrete outcome.
-5. For a long operation, close the dialog and hand progress/cancel to Operations Center.
+4. Start with a button naming the outcome.
+5. Move long-running progress/cancel to Operations Center.
 6. Reread server state after the terminal result.
 
-Do not create a staging area, false Git commit graph, or universal Undo action. Get Revision changes workspace content; `p4 undo` creates new opened changes. They are different commands.
+Do not invent a staging area, false Git commit graph, or universal Undo. Get Revision changes workspace content; `p4 undo` creates new opened work.
 
-## Application shell
+## Shell and resource screens
 
-Persistent shell:
+The persistent shell exposes server/user/workspace context, Go To, language, Sign out, Close workspace, the main navigation, and non-overlapping Operations/CLI diagnostics. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation and Go To focus, not a hidden catalog of feature actions.
 
-- header: user, workspace, a Go To control understandable from placeholder and tooltip, language, Sign out, and Close workspace;
-- sidebar: compact by default, expanded with labels, or fully hidden;
-- sidebar order: Files, My Changes, Streams, separator, Shelves, Jobs;
-- main surface: current resource screen;
-- bottom-right: Operations Center and CLI diagnostics without overlap;
-- command palette: navigation and Go To focus, not a hidden home for every feature action.
-
-Server/user/workspace context must remain available. Changing workspace is explicit; Close workspace returns to connections without logout and is clearly distinct from Sign out, which revokes the current p4 ticket.
-
-## Resource screen
-
-MyChanges is the structural reference:
+Resource screens share this structure:
 
 ```text
-page heading + view-level actions
-compact search/filter toolbar
-list/tree | persistent inspector
+heading + whole-view actions
+compact search/filter/sort/view toolbar
+list or tree | persistent inspector
 ```
 
-- Resource headings do not repeat their context in an eyebrow such as `WORKSPACE`, `DEPOT`, or `STREAMS`; the title already names the screen.
-- The header contains only whole-view actions: Refresh, New, Preview Sync, and similar actions.
-- The toolbar contains search, scope, filters, sort, and view mode.
-- Selection changes the inspector without navigating to a pseudo-screen or causing a layout jump.
-- The inspector contains metadata, preview, and actions for the selected object.
-- The primary action exists in one main location. The context menu is an accelerator, not the only path.
-- Empty/loading/error/permission/stale/partial states use the same structure as data.
+- Do not repeat the screen name in an eyebrow.
+- Selection updates the inspector without pseudo-navigation or layout jumps.
+- Put metadata, preview, and selected-object actions in the inspector; keep one main location for the primary action.
+- Context menus accelerate visible workflows and never become their only access path.
+- Loading, empty, error, permission, stale, and partial states keep the same layout.
+- Long panes scroll internally. At minimum window size, stack panes or use a drawer without hiding the full path or primary action.
 
-In a narrow window, panes may stack or the inspector may become a drawer, but the action and full path must not disappear. The Tauri config defines the minimum window size, which is verified during visual QA.
-
-## Screen contracts
-
-| Screen | Primary list | Inspector / primary action |
-|---|---|---|
-| Connection | recent/favorite profiles and form | detect/test/login/open workspace; password in memory only |
-| Files / Local files | scoped workspace file tree, status filters | paths/status/size/changelist/history; sync/edit/add/ignore/delete/revert |
-| Files / Depot files | one lazy tree of depot roots, directories, and files | bounded inspector history, paged full history, and safe sync preview |
-| My Changes | pending changelists, opened and shelved sections | diff, reopen, shelve, unshelve, revert, submit |
-| Streams | stream tree with visibility and Unactual | parent/child graph and safe stream switching |
-| History | file revisions or submitted changes | preview/compare/export/annotate/undo |
-| Shelves | server shelves | files, target changelist, unshelve/reshelve/export |
-| Jobs | bounded jobs | fixes, explicit attach/detach |
-| Labels | bounded labels | metadata/files and sync preview |
-
-History and Labels remain available through Go To/command palette without occupying the main sidebar. Integration and full Resolve do not appear in navigation/actions before a working backend flow exists.
-
-### Files
-
-The end-to-end UI, Local Files cache, history, and safe-sync contract is in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md). The shared resource-screen, selection, dialog, feedback, visual-language, and accessibility rules in this document apply to Files without repetition.
-
-### Unactual
-
-- In My Changes, a numbered changelist can be moved locally into the collapsible bottom Unactual section and restored through the context menu or by dragging a row between sections.
-- Changelist rows support single, Ctrl/Cmd-toggle, and Shift-range selection; movement to/from Unactual applies to the whole selected group from the same section.
-- When Actual and Unactual lists in My Changes or Streams do not fit vertically, the entire column scrolls; sections retain their content height and never overlap.
-- Streams uses the same classification for a stream path; movement is available through the context menu and drag-and-drop, including a selected group of streams from one section. The object remains fully functional; only its UI position changes.
-- The section drop target occupies all remaining Unactual space. Archiving a parent cascades to descendants; ordinary restore returns only selected paths, while separate context commands operate on all descendants.
-- State is stored locally per server/user/workspace, does not change Helix Core, and is cleaned for vanished objects. Default changelist cannot be archived.
+History and Labels remain reachable through Go To/command palette without main-sidebar entries. Do not expose Integration or full Resolve before an end-to-end backend workflow exists.
 
 ### Streams
 
-- The left pane shows a bounded parent/child tree and visibility checkbox; the right shows a graph of enabled streams only. Text marks the current stream; color and a label mark type.
-- The tree supports single, Ctrl/Cmd-toggle, and Shift-range multi-select. The top panel contains `Show selected` / `Hide selected`; `Show all` and `Hide all` change the whole set. A stream checkbox within a selection applies the action to the whole selection. Disabling a parent cascades through its subtree; enabling changes only the parent. Separate context commands show or hide all descendants. A partially visible subtree uses an indeterminate checkbox.
-- Branches with child streams have a separate caret and `aria-expanded`; collapsed children disappear only from the tree and range-selection order, without changing graph visibility or selection state.
-- Graph visibility, collapsed branches, and Unactual expansion are stored locally per server/user/workspace and restored between sessions.
-- SVG preserves a fixed maximum node size with few streams; the current stream has a distinct fill and border in addition to its text label.
-- Double-click, Enter, or the context menu opens the switch dialog. It independently selects a local strategy (`Shelve`/`Keep`) and content strategy (`Download now`/`Keep as is`).
-- `Shelve` saves and reverts numbered changelists before switching; `p4 switch` handles Default work. `Keep` changes the client stream without immediately changing files. `Download now` after switching starts a sync preview and requires acknowledgment for writable modified files.
-- After confirmed preview, `Download now` passes scopes to the shared safe-sync controller. Changing streams immediately invalidates the hidden Local Files tree, so returning to Files cannot show the previous stream's mapping.
+- Show a bounded parent/child tree with visibility controls and a fixed-node-size graph. Text identifies current stream and type; color only supplements it.
+- Selection and visibility are separate. Group visibility actions apply to the selection; disabling a parent cascades, enabling changes only that parent, and mixed descendants produce an indeterminate state.
+- Collapse changes tree presentation and range order, not selection or graph visibility. Visibility, collapse, and `Unactual` presentation persist per server/user/workspace without changing Helix Core.
+- Moving a parent to `Unactual` includes descendants; ordinary restore affects only selected paths. Explicit descendant commands exist and stale paths are cleaned after a successful read.
+- Stream switching chooses independent local (`Shelve`/`Keep`) and content (`Download now`/`Keep as is`) strategies. Download uses safe sync, and a successful switch invalidates hidden Local Files state.
 
 ## Selection, keyboard, and drag-and-drop
 
-File lists support:
+Comparable lists use the same rules: click selects one, Ctrl/Cmd+click toggles, Shift+click selects a contiguous range, and a batch action covers the full selection. Refresh retains existing IDs and removes stale ones. Workspace selection may contain files and folders together.
 
-- click — single selection;
-- Ctrl/Cmd+click — toggle;
-- Shift+click — contiguous range;
-- batch action over the whole selection;
-- preserving existing IDs after refresh and removing stale selection.
-
-These rules are identical for opened/shelved files in My Changes, files and folders in the workspace tree, changelists, Streams, and files in the selected shelf. One workspace-tree selection may contain files and folders simultaneously; no separate always-toggle mode is used for a similar list.
-
-Drag-and-drop always has a button/context-menu equivalent. The cursor reflects semantics: reopen and movement to/from Unactual are moves; shelve/unshelve are copies. Invalid/external payloads are ignored; Default Shelf and Default changelist in Unactual reject drops.
+Drag-and-drop distinguishes move from copy, ignores external or malformed payloads, and always has a button/context-menu equivalent. Feature-specific targets remain in the owning workflow contract.
 
 Mandatory keyboard paths:
 
-- `Ctrl/Cmd+K` — command palette;
-- `Ctrl/Cmd+L` — Go To;
-- `Ctrl/Cmd+1..5` — Files, My Changes, Streams, Shelves, and Jobs;
-- `ContextMenu` or `Shift+F10` — context menu for the focused row;
-- `Escape` — close a safe modal/menu;
-- Tab/Shift+Tab — predictable focus order.
+- `Ctrl/Cmd+K` command palette and `Ctrl/Cmd+L` Go To;
+- `Ctrl/Cmd+1..5` Files, My Changes, Streams, Shelves, and Jobs;
+- `ContextMenu` or `Shift+F10` for a focused row;
+- `Escape` for a safely closable menu/dialog;
+- predictable Tab/Shift+Tab order and focus restoration.
 
-No action may be drag-only, hover-only, or color-only.
+No action is drag-only, hover-only, or color-only.
 
-## Dialogs and destructive actions
+## Dialogs, operations, and errors
 
-- Use shared `Modal`/`ActionDialog`; browser-native `prompt` and `confirm` are prohibited.
-- The title and primary button name the outcome: `Delete shelf`, `Revert 8 files`, not `OK`.
-- The dialog shows scope and consequences; a dangerous default is not selected automatically.
-- While a mutation runs, repeated submit and Escape closing are disabled.
-- Enable force/overwrite separately for specific files; the safe default is Skip/Cancel.
-- A disabled control must have a visible nearby reason or accessible tooltip/help text.
+- Use shared modal/action-dialog primitives, never browser `prompt` or `confirm`.
+- Titles and buttons name the result (`Delete shelf`, `Revert 8 files`), show scope and consequences, and default destructive/overwrite choices to Cancel or Skip.
+- While a mutation runs, block duplicate submission and unsafe Escape closing. Explain disabled controls nearby or through accessible help.
+- Operations Center is the sole progress/cancel/retry surface for one long operation. A feature may show a compact transient status, but not a second operation controller.
+- Cancelling disables the action immediately; persistent `Cancelled` appears only after the backend publishes the terminal event and the feature refreshes.
+- Show kind, scope, status, processed count, current path, and bounded diagnostics. Do not invent totals, percentage, or ETA.
+- Cancel is not rollback. Retry only an idempotent read or a newly confirmed mutation; never retry an unknown result automatically.
+- Errors state what did not happen, why, and the safe next action. Warnings/errors remain in the bounded CLI log until viewed or cleared.
 
-## Operations and feedback
+Files-specific progress, writable conflicts, and retry scope are in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
 
-Operations Center is the only UI progress/cancel/retry surface for one long operation. A feature does not render a duplicate progress block.
+## Diff and content preview
 
-After Cancel, the button immediately enters disabled `Cancelling…` state. The backend stops the corresponding CLI process and publishes a terminal event; only then does the UI show persistent `Cancelled`, clear active state, and refresh the feature workspace. The panel is constrained to available window height, and its operation list scrolls internally.
+- Text diff supports unified/split modes, line numbers, hunk navigation, and visible whitespace modes.
+- Show size limits and truncation; do not decode binary content as text.
+- Revision and shelf preview is read-only and does not alter have/workspace state.
+- Export writes to a selected new destination without implicit overwrite.
+- Folder/changelist comparisons summarize object changes rather than pretending to be one text diff.
 
-While sync is active, the stable Files subheader below the title/action row shows a spinner, byte-based progress bar, processed/remaining files, ETA, and current file on the left; the `Local files` / `Depot files` switch remains pinned on the right. The status text truncates inside a reserved middle column, and the progress track has fixed width, so changing paths and counters cannot move either the track or the source switch. Final `totalFileCount`/`totalFileSize` come from tagged output of the already-running `p4 sync`, so a separate preview does not delay retrieval. After the main transfer, the same location briefly shows the check for remaining writable conflicts. Other resource screens show a transient status strip only while a sync or post-check is active; cancel/retry and full diagnostics remain in Operations Center.
+## Visual system
 
-- Show operation kind, scope, status, processed count, current path, and a safe diagnostics summary.
-- In Operations Center, counters and ETA are separate from the current path. A long path occupies up to two lines and is fully available through a tooltip; long diagnostics scroll inside the card without expanding the popup.
-- Do not invent a percentage or ETA without server data.
-- Cancel means stopping the process, not rollback.
-- Retry is allowed only for an idempotent read/sync or a new explicitly confirmed flow; sync repeats with the exact original file/folder scopes. While sync is active, other Update/Retry actions do not start a parallel process.
-- Success may be a transient toast; warnings/errors remain in the bounded CLI log until viewed or cleared.
-- An error answers what was not done, why, and what is safe to do next. When overwrite was not confirmed completely, the entire explicitly selected set preserves its Overwrite decisions for a safe idempotent retry: an empty have list without confirmed physical replacement does not hide the file.
+Use the tokens in `src/index.css` and shared selectors in `src/app/app.css`; do not add a feature-local theme or scale. Import named `lucide-react` icons rather than copied paths, emoji, Unicode symbols, or icon fonts. Decorative icons are hidden from assistive technology; icon-only controls retain localized `aria-label` and `title`.
 
-## Diff and preview
-
-- Text diff: unified/split, line numbers, hunk navigation, and clearly visible whitespace mode.
-- Show limits/truncation to the user; do not decode binary content as text.
-- Previewing a revision/shelf does not change have/workspace state.
-- Export writes only to a selected new path without implicit overwrite.
-- File, folder, and changelist summaries do not pretend to be one text diff when different object types changed.
-
-## Visual language
-
-- Use tokens and existing selectors in `src/app/app.css`; do not add a competing local theme.
-- UI icons come from the pinned `lucide-react` dependency. Use named imports of specific icons so Vite includes only used SVGs in the bundle; do not hand-copy `path`, use an icon font, emoji, or textual Unicode symbols as icons.
-- An ordinary icon receives the `ui-icon` class (18×18 px, stroke 1.8). Navigation, file type/status, and other semantic roles may refine size through an existing shared selector in `src/app/app.css`, but do not create a feature-local scale.
-- A decorative icon has `aria-hidden="true"`. An icon-only button retains localized `aria-label` and `title`; meaningful status remains available through text or `aria-label` and is never encoded by an icon alone.
-- Build hierarchy with spacing, typography, and borders; color only supplements label/icon/status text.
-- Selection and active controls use the shared accent in every resource screen. Depot identity uses the depot accent only on depot icons, type badges, and metadata; success, warning/ignored/locked, and danger/delete/error states use their semantic tokens. Do not introduce feature-local near-duplicate blues, greens, oranges, or reds.
-- Controls are compact and stable; long paths are visually truncated but fully available through inspector/title/copy.
-- Motion is brief and disabled under `prefers-reduced-motion`.
-- English and Russian must fit without language-specific layout.
-
-### Size system
-
-Semantic CSS tokens in `src/index.css` are the only source of sizes. Feature components do not create their own scale.
-
-| Role | Token / value | Use |
+| Role | Size | Use |
 |---|---|---|
-| Caption | 12/16 px | secondary metadata, timestamps, hints |
-| Body | 14/20 px | primary text, list/tree rows, fields, actions |
+| Caption | 12/16 px | metadata, timestamps, hints |
+| Body | 14/20 px | rows, fields, actions |
 | Subtitle | 16/22 px | inspector/dialog/section headings |
-| Title | 20/28 px | resource-screen headings |
-| Display | 28/36 px | large connection-screen heading only |
-| Compact/default control | 32/36 px | toolbar/context controls and ordinary forms |
-| Single/two-line row | 44/52 px | rows with one or two text levels |
+| Title | 20/28 px | screen headings |
+| Display | 28/36 px | connection heading only |
+| Control | 32/36 px | compact/default controls |
+| Row | 44/52 px | one/two text lines |
 
-- Readable text is at least 12 px. Use 10 px only for short optional badges/status markers, never for history, paths, descriptions, timestamps, or actions.
-- Spacing uses a 4 px grid: 4, 8, 12, 16, 24, 32 px. An arbitrary intermediate value is allowed only for geometric icon or hairline alignment.
-- Adjacent pointer targets are at least 32 px; the absolute accessibility floor is 24×24 CSS px.
-- Files and folders within one tree are variants of the same row: identical row height, padding, primary/caption type, hover/focus/selection. Disclosure, icon, status, and allowed actions may differ.
-- Selectable list and tree rows use the shared `SelectableRow` / `SelectableSurface` / `TreeItemRow` primitives from `src/shared/ItemList.tsx`. Feature code supplies domain content and actions without rebuilding selected-state classes, ARIA selection, disclosure controls, indentation, or primary/caption markup.
-- Do not create density by shrinking text. Use truncation with full-value access, wrapping, internal scroll, or responsive stacking for long content.
-- History and diagnostics use Body for meaningful content and Caption for author, changelist, time, and technical details.
-- Every submitted-changelist history surface uses the shared `ChangelistHistory` panel/row from `src/shared`: a fixed CL column, bold description, and user/client/date metadata based on Depot Files `Recent activity`. Feature code supplies selection, open, context-menu, paging, and empty-state behavior without recreating row markup or feature-local history styles.
-- Changelist descriptions use the shared safe Markdown renderer in pending, shelf, revision-history, and submitted-detail surfaces. Changelist description editors use its shared live-preview field. Only HTTP(S) links are actionable, and they open in the system browser rather than navigating the application WebView.
+- Readable text is at least 12 px; 10 px is limited to optional short badges.
+- Use the 4 px spacing grid: 4, 8, 12, 16, 24, and 32 px. Adjacent targets are at least 32 px; the absolute accessibility floor is 24×24 CSS px.
+- Files and folders in one tree share geometry and typography. Use shared selectable row/tree primitives rather than rebuilding ARIA, disclosure, indentation, and selection styles.
+- Hierarchy comes from spacing, type, and borders. Semantic color supplements a label/icon and uses existing tokens.
+- Truncate long paths only when the full value remains available in inspector, tooltip, or Copy.
+- Motion is brief and disabled under `prefers-reduced-motion`; English and Russian use the same layout.
+- Reuse the shared submitted-changelist history and safe Markdown description components instead of feature-local variants. Only HTTP(S) description links are actionable and open outside the WebView.
 
-The rationale and original-state audit are in [`research/UI_STYLE_RESEARCH.md`](research/UI_STYLE_RESEARCH.md).
+## Accessibility, scale, and completion
 
-## Accessibility and performance
+- Use semantic controls and list/tree/table roles with visible focus. Expose selection, expansion, busy, error, and terminal operation state to assistive technology.
+- Keep queries scoped and bounded. Use pagination/incremental loading; add virtualization only after measurement and without breaking selection or accessibility.
+- Show local loading feedback after 300 ms; move long work to Operations Center.
+- Verify keyboard-only use, Windows Narrator for key flows, English/Russian, long content, minimum window size, and 100/125/200% scale.
 
-- Semantic `button`, `input`, `label`, and `table/list/tree` roles; visible focus.
-- Selection, expanded, busy, error, and operation result are available to assistive technology.
-- Verify keyboard-only use, Windows Narrator for key flows, and 200% scale.
-- Server queries are always scoped/bounded. `//...` without a limit, debounce/cancel, or user intent is prohibited.
-- Large lists receive pagination/incremental loading; virtualization is added after measurement and must not break selection/accessibility.
-- Show a local loading state after 300 ms of reading; long work moves to Operations Center.
-- The resource workbench occupies all available window height; a long tree or inspector scrolls inside its panel instead of shrinking the screen to content height.
-
-## UI Definition of Done
-
-- The flow works through UI → Rust → `p4` → refresh, not visually only.
-- A frequent action is visible; a rare/destructive action is available through inspector/context menu with confirmation.
-- Loading, empty, long text/path, permission error, partial result, and repeated refresh are verified.
-- A keyboard equivalent and correct focus restoration after a dialog exist.
-- Every new string is present in complete English/Russian packs.
-- Visual QA is complete in English/Russian at 100/125/200%, the minimum window, and light/dark themes when themes are supported.
+A UI flow is complete only when UI → Rust → `p4` → refresh works, frequent and destructive actions have appropriate access and confirmation, empty/loading/error/partial states are covered, focus is restored, every string exists in complete English/Russian packs, and native visual QA passes for supported themes and scales.
