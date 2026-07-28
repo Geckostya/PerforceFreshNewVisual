@@ -39,7 +39,12 @@ p4 -V
 ```powershell
 npm run dev       # Tauri application
 npm run dev:web   # Vite UI only; Tauri IPC is unavailable
+npm run build:fast # Standalone debug executable for local iteration
 ```
+
+The default development profile keeps line tables for useful panic backtraces but omits full dependency debug information. This reduces Rust code generation, link time, and `target` size. Use the opt-in `debugging` Cargo profile when full native debugger information is required. `build:fast` is not a shipping build and does not replace the release gate below.
+
+Windows debug builds use the `rust-lld` linker bundled with the pinned Rust toolchain. Release builds use the same linker and remain fully optimized; run the complete gate after toolchain or native dependency changes.
 
 For low-level read-only diagnostics of the snapshot bridge without MCP, set an absolute path before launch:
 
