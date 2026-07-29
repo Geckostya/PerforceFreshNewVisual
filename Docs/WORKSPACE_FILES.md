@@ -18,9 +18,13 @@ Local and Depot sources share row hierarchy, selection, search/filter, inspector
 - history is paged without prepending rows and displacing the reader; opening a change shows all affected files;
 - exact file, folder-at-change, label, and stream-follow-up downloads enter the same safe-sync flow.
 
+Depot/client/local identity is resolved only through a bounded batch `p4 where` command. Its DTO keeps the caller's order, distinguishes mapped, excluded, and unmapped results, and carries server diagnostics/partial state. Copy and cross-source navigation actions appear only for identities returned by the server; an unmapped or excluded depot path never receives an invented local path.
+
 `Update selected` is the visible primary file action. Copy/reveal/edit/add/ignore/mark-delete/rename/lock/unlock/resolve/revert/delete-local live in the inspector or context menu when valid. Local deletion is always confirmed. `Save all revisions` writes exact available revisions to a new directory, preserves depot hierarchy, skips deletions, and reports partial results.
 
-Reconcile preview is a cancellable long operation. While scanning a scope it reports the real candidate count and current path without inventing a percentage. Applying a reviewed selection first revalidates every selected path, then resets to a distinct apply phase and reports opened files against the selected-file total. Cancellation terminates the current `p4` child; opened items become a typed partial result with a Workspace recovery action because cancellation does not revert them.
+Reconcile preview is a cancellable long operation. While scanning a scope it reports the real candidate count and current path without inventing a percentage. The result groups add, edit, delete, move, ignored, and unsafe candidates from server records; ignored and unsafe items are not selected and cannot be applied. Each item carries a stable identity, mapping state, reasons, local size/mtime, and one token for the complete scoped preview.
+
+Apply accepts an explicit selected item set, scope, and token. Before starting the mutation, Rust repeats the complete scoped preview (including ignored candidates), mapping lookup, and local metadata read. Any action, mapping, ignore, move-pair, path, or disk-metadata difference rejects the whole request as stale with zero reconcile mutations. Applying never falls back to an unpreviewed `//...`. The apply phase reports opened files against the selected-file total. After a successful, failed, or cancelled terminal event, Files refreshes affected state. Cancellation terminates the current `p4` child; files opened before termination become a typed partial result with a Workspace recovery action because cancellation does not revert them.
 
 ## Local tree and cache
 

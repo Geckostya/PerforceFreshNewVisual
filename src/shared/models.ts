@@ -361,6 +361,21 @@ export interface WorkspaceLocalBatch {
   completedDirectories: string[];
 }
 
+export type WorkspaceMappingState = "mapped" | "unmapped" | "excluded";
+export interface WorkspaceMapping {
+  query: string;
+  state: WorkspaceMappingState;
+  depotPath?: string;
+  clientPath?: string;
+  localPath?: string;
+  diagnostics: string[];
+}
+export interface WorkspaceMappingBatch {
+  mappings: WorkspaceMapping[];
+  partial: boolean;
+  diagnostics: string[];
+}
+
 export interface UiControlSnapshot {
   index: number;
   tag: string;
@@ -447,7 +462,23 @@ export interface SyncPreviewItem {
 
 export interface SyncPreview { items: SyncPreviewItem[]; totalBytes: number; modifiedFiles: string[]; writableFiles: string[]; missingHaveFiles: string[]; }
 
-export interface ReconcileItem { depotPath: string; action: string; localPath?: string; }
+export type ReconcileAction = "add" | "edit" | "delete" | "move" | "unsafe";
+export interface ReconcileItem {
+  stableId: string;
+  previewToken: string;
+  depotPath: string;
+  action: ReconcileAction;
+  originalAction?: string;
+  clientPath?: string;
+  localPath?: string;
+  mappingState: WorkspaceMappingState;
+  ignored: boolean;
+  unsafeItem: boolean;
+  reasons: string[];
+  movePartner?: string;
+  localSize?: number;
+  localModified?: string;
+}
 
 export interface ResolvePreviewItem { depotPath: string; action: string; detail?: string; }
 

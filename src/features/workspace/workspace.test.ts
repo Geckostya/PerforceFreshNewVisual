@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { OpenedFile, PendingChange, WorkspaceFile } from "../../shared/models";
-import { buildWorkspaceTree, canDiffSubmittedFile, canDownloadSubmittedFile, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
+import type { OpenedFile, PendingChange, ReconcileItem, WorkspaceFile } from "../../shared/models";
+import { buildWorkspaceTree, canDiffSubmittedFile, canDownloadSubmittedFile, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, toggleReconcileSelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
 
 const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   depotPath: "//Acme/main/a.txt",
@@ -11,6 +11,18 @@ const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   unresolved: false,
   untracked: false,
   ignored: false,
+  ...overrides,
+});
+
+const reconcileItem = (overrides: Partial<ReconcileItem>): ReconcileItem => ({
+  stableId: "//Acme/main/a.txt\0edit",
+  previewToken: "reconcile-v1-test",
+  depotPath: "//Acme/main/a.txt",
+  action: "edit",
+  mappingState: "mapped",
+  ignored: false,
+  unsafeItem: false,
+  reasons: [],
   ...overrides,
 });
 
@@ -194,5 +206,19 @@ describe("workspace status filters", () => {
     expect(canDiffSubmittedFile({ depotPath: "//Acme/main/a.txt", action: "add", revision: "1" })).toBe(false);
     expect(canDownloadSubmittedFile({ depotPath: "//Acme/main/a.txt", action: "delete", revision: "5" })).toBe(false);
     expect(formatWorkspaceHistoryTime("not-a-time", "en")).toBe("not-a-time");
+  });
+
+  it("groups reconcile actions and defaults only safe visible candidates", () => {
+    const safe = reconcileItem({});
+    const ignored = reconcileItem({ stableId: "ignored", action: "add", ignored: true });
+    const unsafe = reconcileItem({ stableId: "unsafe", action: "unsafe", unsafeItem: true });
+    expect(groupReconcileItems([unsafe, safe, ignored]).map((group) => [group.action, group.items.length])).toEqual([
+      ["add", 1],
+      ["edit", 1],
+      ["unsafe", 1],
+    ]);
+    expect(defaultReconcileSelection([safe, ignored, unsafe])).toEqual([safe]);
+    expect(toggleReconcileSelection([safe], ignored)).toEqual([safe]);
+    expect(toggleReconcileSelection([safe], safe)).toEqual([]);
   });
 });

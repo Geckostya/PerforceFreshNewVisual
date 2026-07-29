@@ -13,8 +13,9 @@ use crate::{
         ShelveInput, ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
         SubmitPreflightSummary, SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput,
         SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput,
-        UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec,
-        WorkspaceSummary, WorkspaceUpdateInput,
+        UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
+        WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary,
+        WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -699,6 +700,16 @@ pub async fn list_workspace_files(
     })
     .await
     .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn map_workspace_paths(
+    input: ConnectionInput,
+    paths: Vec<String>,
+) -> Result<WorkspaceMappingBatch, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::map_workspace_paths(&input, &paths))
+        .await
+        .map_err(task_error)?
 }
 
 #[tauri::command]
@@ -1501,7 +1512,7 @@ fn run_reconcile_process(
                 let Some(item) = p4::parse_reconcile_output_record(&line) else {
                     continue;
                 };
-                if !seen.insert(item.depot_path.to_lowercase()) {
+                if !seen.insert(item.stable_id.clone()) {
                     continue;
                 }
                 let processed = context.processed_offset + seen.len() as u64;
@@ -1647,8 +1658,9 @@ pub async fn start_reconcile_preview(
     let app_for_run = app.clone();
     let registry_for_run = registry.inner().clone();
     let id_for_run = operation_id.clone();
+    let input_for_run = input.clone();
     thread::spawn(move || {
-        let result = run_reconcile_process(
+        let mut result = run_reconcile_process(
             path,
             command,
             &cancellation,
@@ -1664,6 +1676,16 @@ pub async fn start_reconcile_preview(
                 started_at_ms,
             },
         );
+        if result.success {
+            let items = std::mem::take(&mut result.items);
+            match p4::reconcile_preview_snapshot(&input_for_run, &scope, items) {
+                Ok(items) => result.items = items,
+                Err(error) => {
+                    result.success = false;
+                    result.message = Some(error.message);
+                }
+            }
+        }
         let kind = if result.cancelled {
             OperationEventKind::Cancelled
         } else if result.success {
@@ -1712,37 +1734,53 @@ pub async fn start_reconcile(
     registry: State<'_, OperationRegistry>,
     input: crate::models::ReconcileInput,
 ) -> Result<String, AppError> {
-    if input.depot_paths.is_empty() {
+    if input.items.is_empty() {
         return Err(AppError::new(
             ErrorKind::CommandFailed,
             "Select at least one reconcile candidate.",
         ));
     }
-    let preview_commands = input
-        .depot_paths
+    if input
+        .items
         .iter()
-        .map(|depot_path| {
-            p4::reconcile_command(
-                &input.connection,
-                None,
-                std::slice::from_ref(depot_path),
-                true,
-            )
-            .map(|(path, command)| (depot_path.clone(), path, command))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let (apply_path, apply_command) = p4::reconcile_command(
+        .any(|item| item.ignored || item.unsafe_item)
+    {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Ignored or unsafe reconcile candidates cannot be applied.",
+        ));
+    }
+    if input.preview_token.trim().is_empty()
+        || input
+            .items
+            .iter()
+            .any(|item| item.preview_token != input.preview_token)
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Reconcile preview is stale. Refresh the preview.",
+        ));
+    }
+    let depot_paths = input
+        .items
+        .iter()
+        .map(|item| item.depot_path.clone())
+        .collect::<Vec<_>>();
+    let preview_scope = input.preview_scope.trim().to_owned();
+    let (preview_path, preview_command) = p4::reconcile_command(
         &input.connection,
-        Some(&input.change),
-        &input.depot_paths,
-        false,
+        None,
+        std::slice::from_ref(&preview_scope),
+        true,
     )?;
+    let (apply_path, apply_command) =
+        p4::reconcile_command(&input.connection, Some(&input.change), &depot_paths, false)?;
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
     let started_at_ms = operation_started_at_ms();
-    let operation_scope = reconcile_scope(&input.depot_paths);
-    let total_files = input.depot_paths.len() as u64;
+    let operation_scope = reconcile_scope(&depot_paths);
+    let total_files = depot_paths.len() as u64;
     if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
@@ -1787,44 +1825,43 @@ pub async fn start_reconcile(
     let registry_for_run = registry.inner().clone();
     let id_for_run = operation_id.clone();
     thread::spawn(move || {
-        let mut checked = 0;
         let mut validation_message = None;
-        let mut validation_cancelled = false;
-        for (index, (depot_path, path, command)) in preview_commands.into_iter().enumerate() {
-            let preview = run_reconcile_process(
-                path,
-                command,
-                &cancellation,
-                &cancelled,
-                ReconcileProcessContext {
-                    app: app_for_run.clone(),
-                    operation_id: id_for_run.clone(),
-                    operation_kind: "reconcile",
-                    phase: "validate",
-                    scope: operation_scope.clone(),
-                    total_files: Some(total_files),
-                    processed_offset: index as u64,
-                    started_at_ms,
-                },
-            );
-            if preview.cancelled {
-                validation_cancelled = true;
-                break;
-            }
-            checked = index as u64 + 1;
-            if !preview.success {
-                validation_message = preview.message;
-                break;
-            }
-            if !preview
-                .items
-                .iter()
-                .any(|item| item.depot_path.eq_ignore_ascii_case(&depot_path))
-            {
-                validation_message = Some(format!(
-                    "Reconcile preview is stale. Refresh the preview before applying {depot_path}."
-                ));
-                break;
+        let preview = run_reconcile_process(
+            preview_path,
+            preview_command,
+            &cancellation,
+            &cancelled,
+            ReconcileProcessContext {
+                app: app_for_run.clone(),
+                operation_id: id_for_run.clone(),
+                operation_kind: "reconcile",
+                phase: "validate",
+                scope: operation_scope.clone(),
+                total_files: Some(total_files),
+                processed_offset: 0,
+                started_at_ms,
+            },
+        );
+        let validation_cancelled = preview.cancelled;
+        let checked = preview.processed.min(total_files);
+        if !preview.success {
+            validation_message = preview.message;
+        } else {
+            match p4::reconcile_preview_snapshot(&input.connection, &preview_scope, preview.items) {
+                Ok(fresh) => {
+                    let fresh_token = fresh.first().map(|item| item.preview_token.as_str());
+                    let exact_selection = input.items.iter().all(|selected| {
+                        fresh
+                            .iter()
+                            .find(|item| item.stable_id == selected.stable_id)
+                            .is_some_and(|item| item == selected)
+                    });
+                    if fresh_token != Some(input.preview_token.as_str()) || !exact_selection {
+                        validation_message =
+                            Some("Reconcile preview is stale. Refresh the preview before applying any files.".to_owned());
+                    }
+                }
+                Err(error) => validation_message = Some(error.message),
             }
         }
         if validation_cancelled || validation_message.is_some() {

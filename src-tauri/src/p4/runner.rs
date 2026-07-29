@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 use crate::models::{AppError, CliLogEntry, CliLogLevel, ConnectionInput, ErrorKind};
 
 const MAX_CLI_LOG_ENTRIES: usize = 500;
+type JsonDiagnosticOutput = (Vec<Map<String, Value>>, Vec<String>, bool);
 static CLI_LOG: OnceLock<Mutex<Vec<CliLogEntry>>> = OnceLock::new();
 static CLI_LOG_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -74,6 +75,56 @@ pub(super) fn run_json_probe(
         return Err(classified_command_error(combined_output(&output), &output));
     }
     Ok(records)
+}
+
+pub(super) fn run_json_collecting_diagnostics(
+    path: &Path,
+    command: &mut Command,
+) -> Result<JsonDiagnosticOutput, AppError> {
+    let output = command
+        .output()
+        .map_err(|error| launch_error(path, error))?;
+    let records = parse_json_lines(&String::from_utf8_lossy(&output.stdout))?;
+    log_record_messages(&records, true);
+    let diagnostics = records
+        .iter()
+        .filter(|record| {
+            record
+                .get("severity")
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
+                >= 2
+                || record
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|code| {
+                        code.eq_ignore_ascii_case("warning") || code.eq_ignore_ascii_case("error")
+                    })
+        })
+        .filter_map(|record| {
+            record
+                .get("data")
+                .or_else(|| record.get("fmt"))
+                .and_then(value_text)
+        })
+        .chain(
+            (!output.stderr.is_empty())
+                .then(|| String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+        )
+        .filter(|message| !message.is_empty())
+        .collect::<Vec<_>>();
+    let partial = !output.status.success()
+        || records.iter().any(|record| {
+            record
+                .get("severity")
+                .and_then(Value::as_i64)
+                .is_some_and(|severity| severity >= 3)
+                || record
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|code| code.eq_ignore_ascii_case("error"))
+        });
+    Ok((records, diagnostics, partial))
 }
 
 pub(super) fn run_json_with_stdin_allowing_empty_match(

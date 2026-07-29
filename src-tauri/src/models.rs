@@ -640,6 +640,38 @@ pub struct WorkspaceLocalBatch {
     pub completed_directories: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMappingState {
+    Mapped,
+    Unmapped,
+    Excluded,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMapping {
+    pub query: String,
+    pub state: WorkspaceMappingState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depot_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingBatch {
+    pub mappings: Vec<WorkspaceMapping>,
+    pub partial: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPreviewItem {
@@ -663,13 +695,30 @@ pub struct SyncPreview {
     pub missing_have_files: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconcileItem {
+    pub stable_id: String,
+    pub preview_token: String,
     pub depot_path: String,
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
+    pub mapping_state: WorkspaceMappingState,
+    pub ignored: bool,
+    pub unsafe_item: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub move_partner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_modified: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1052,6 +1101,8 @@ pub enum ResolveMode {
 pub struct ReconcileInput {
     pub connection: ConnectionInput,
     pub change: String,
+    pub preview_scope: String,
+    pub preview_token: String,
     #[serde(default)]
-    pub depot_paths: Vec<String>,
+    pub items: Vec<ReconcileItem>,
 }

@@ -18,7 +18,7 @@ Current status for connection, authentication, client specs, mapping, and worksp
 ## P0 gaps
 
 - [~] Complete client-spec inspection and validation for AltRoots, options, ChangeView, workspace type, and server binding.
-- [ ] Navigate Depot ↔ client ↔ local through server `where`; never invent a local path for an unmapped depot file.
+- [~] Navigate Depot ↔ client ↔ local through bounded server `where` results without inventing unmapped local paths; native matrix coverage is still required.
 - [ ] Provide a safe visual mapping editor for include/exclude/overlay/ditto entries without reimplementing server mapping semantics.
 - [ ] Add bounded workspace search/filter beyond the current list limit.
 

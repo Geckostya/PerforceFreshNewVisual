@@ -1,4 +1,4 @@
-import type { ConnectionInput, OpenedFile, PendingChange, SubmittedFile, WorkspaceFile } from "../../shared/models";
+import type { ConnectionInput, OpenedFile, PendingChange, ReconcileAction, ReconcileItem, SubmittedFile, WorkspaceFile } from "../../shared/models";
 
 export type WorkspaceFilter = "all" | "opened" | "outdated" | "unresolved" | "otherOpen" | "locked" | "unmapped" | "untracked";
 
@@ -390,4 +390,23 @@ export function workspaceStatus(file: WorkspaceFile): string[] {
   if (file.untracked) statuses.push("untracked");
   if (file.ignored) statuses.push("ignored");
   return statuses;
+}
+
+export const reconcileActionOrder: ReconcileAction[] = ["add", "edit", "delete", "move", "unsafe"];
+
+export function groupReconcileItems(items: ReconcileItem[]): { action: ReconcileAction; items: ReconcileItem[] }[] {
+  return reconcileActionOrder
+    .map((action) => ({ action, items: items.filter((item) => item.action === action) }))
+    .filter((group) => group.items.length > 0);
+}
+
+export function defaultReconcileSelection(items: ReconcileItem[]): ReconcileItem[] {
+  return items.filter((item) => !item.ignored && !item.unsafeItem && item.action !== "unsafe");
+}
+
+export function toggleReconcileSelection(current: ReconcileItem[], item: ReconcileItem): ReconcileItem[] {
+  if (item.ignored || item.unsafeItem || item.action === "unsafe") return current;
+  return current.some((selected) => selected.stableId === item.stableId)
+    ? current.filter((selected) => selected.stableId !== item.stableId)
+    : [...current, item];
 }

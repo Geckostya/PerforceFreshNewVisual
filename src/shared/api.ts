@@ -41,6 +41,8 @@ import type {
   SyncPreview,
   WorkspaceFile,
   WorkspaceLocalBatch,
+  WorkspaceMappingBatch,
+  ReconcileItem,
   ResolvePreviewItem,
   RevertPreviewItem,
   ResolveMode,
@@ -267,6 +269,10 @@ export async function listWorkspaceFiles(input: ConnectionInput, scope?: string,
   return invoke<WorkspaceFile[]>("list_workspace_files", { input, scope, includeUntracked });
 }
 
+export async function mapWorkspacePaths(input: ConnectionInput, paths: string[]): Promise<WorkspaceMappingBatch> {
+  return invoke<WorkspaceMappingBatch>("map_workspace_paths", { input, paths });
+}
+
 export async function listLocalWorkspaceDirectory(input: ConnectionInput, directory: string): Promise<WorkspaceLocalBatch> {
   return invoke<WorkspaceLocalBatch>("list_local_workspace_directory", { input, directory });
 }
@@ -327,8 +333,10 @@ export async function moveFile(connection: ConnectionInput, change: string, sour
   return invoke("move_file", { input: { connection, change, source, destination } });
 }
 
-export async function startReconcile(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<string> {
-  return invoke<string>("start_reconcile", { input: { connection, change, depotPaths } });
+export async function startReconcile(connection: ConnectionInput, change: string, previewScope: string, items: ReconcileItem[]): Promise<string> {
+  return invoke<string>("start_reconcile", {
+    input: { connection, change, previewScope, previewToken: items[0]?.previewToken || "", items },
+  });
 }
 
 export async function startReconcilePreview(input: ConnectionInput, scope?: string): Promise<string> {

@@ -6,6 +6,7 @@ use std::{
     process::Command,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     thread,
+    time::UNIX_EPOCH,
 };
 
 use serde_json::{Map, Value};
@@ -19,7 +20,8 @@ use crate::models::{
     SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
     SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SyncPreview, SyncPreviewItem,
     TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
-    WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
+    WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState,
+    WorkspaceSpec, WorkspaceSummary,
 };
 
 mod auth;
@@ -2156,11 +2158,138 @@ pub fn parse_reconcile_output_record(line: &str) -> Option<ReconcileItem> {
 }
 
 fn reconcile_item(record: &Map<String, Value>) -> Option<ReconcileItem> {
+    let original_action = field(record, &["action", "status"])?.to_lowercase();
+    let action = if original_action.contains("move") {
+        "move"
+    } else if original_action.contains("add") {
+        "add"
+    } else if original_action.contains("delete") || original_action.contains("remove") {
+        "delete"
+    } else if original_action.contains("edit") || original_action.contains("update") {
+        "edit"
+    } else {
+        "unsafe"
+    }
+    .to_owned();
+    let depot_path = field(record, &["depotFile", "clientFile"])?;
     Some(ReconcileItem {
-        depot_path: field(record, &["depotFile", "clientFile"])?,
-        action: field(record, &["action", "status"])?.to_lowercase(),
+        stable_id: format!("{depot_path}\0{original_action}"),
+        preview_token: String::new(),
+        depot_path,
+        action,
+        original_action: Some(original_action),
+        client_path: field(record, &["clientFile"]),
         local_path: field(record, &["path", "clientFile"]),
+        mapping_state: WorkspaceMappingState::Unmapped,
+        ignored: false,
+        unsafe_item: false,
+        reasons: Vec::new(),
+        move_partner: field(record, &["fromFile", "movedFile", "toFile"]),
+        local_size: None,
+        local_modified: None,
     })
+}
+
+fn reconcile_local_metadata(item: &mut ReconcileItem) {
+    let Some(path) = item.local_path.as_deref() else {
+        return;
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    item.local_size = Some(metadata.len());
+    item.local_modified = metadata.modified().ok().and_then(|modified| {
+        modified
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|duration| format!("{}.{:09}", duration.as_secs(), duration.subsec_nanos()))
+    });
+}
+
+fn reconcile_preview_token(scope: &str, items: &[ReconcileItem]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in scope
+        .bytes()
+        .chain(serde_json::to_vec(items).unwrap_or_default())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("reconcile-v1-{hash:016x}")
+}
+
+pub fn reconcile_preview_snapshot(
+    input: &ConnectionInput,
+    scope: &str,
+    visible_items: Vec<ReconcileItem>,
+) -> Result<Vec<ReconcileItem>, AppError> {
+    let all_items = preview_reconcile_internal(input, Some(scope), true)?;
+    let visible_ids = visible_items
+        .iter()
+        .map(|item| item.stable_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut items = visible_items;
+    for item in all_items {
+        if !items
+            .iter()
+            .any(|existing| existing.stable_id == item.stable_id)
+        {
+            items.push(item);
+        }
+    }
+    let queries = items
+        .iter()
+        .map(|item| item.depot_path.clone())
+        .collect::<Vec<_>>();
+    let mapping_batch = (!queries.is_empty())
+        .then(|| map_workspace_paths(input, &queries))
+        .transpose()?;
+    for (index, item) in items.iter_mut().enumerate() {
+        item.ignored = !visible_ids.contains(&item.stable_id);
+        if let Some(mapping) = mapping_batch
+            .as_ref()
+            .and_then(|batch| batch.mappings.get(index))
+        {
+            item.mapping_state = mapping.state.clone();
+            item.depot_path = mapping
+                .depot_path
+                .clone()
+                .unwrap_or_else(|| item.depot_path.clone());
+            item.client_path = mapping
+                .client_path
+                .clone()
+                .or_else(|| item.client_path.clone());
+            item.local_path = mapping
+                .local_path
+                .clone()
+                .or_else(|| item.local_path.clone());
+        }
+        if item.ignored {
+            item.reasons.push("ignored_by_p4ignore".to_owned());
+        }
+        match item.mapping_state {
+            WorkspaceMappingState::Mapped => {}
+            WorkspaceMappingState::Excluded => {
+                item.reasons.push("excluded_by_client_view".to_owned())
+            }
+            WorkspaceMappingState::Unmapped => item.reasons.push("not_mapped_by_server".to_owned()),
+        }
+        if item.action == "move" && item.move_partner.is_none() {
+            item.reasons.push("incomplete_move_pair".to_owned());
+        }
+        if item.action == "unsafe" {
+            item.reasons.push("unknown_reconcile_action".to_owned());
+        }
+        item.unsafe_item = item.action == "unsafe"
+            || !matches!(item.mapping_state, WorkspaceMappingState::Mapped)
+            || (item.action == "move" && item.move_partner.is_none());
+        reconcile_local_metadata(item);
+    }
+    let token = reconcile_preview_token(scope, &items);
+    for item in &mut items {
+        item.preview_token.clone_from(&token);
+    }
+    Ok(items)
 }
 
 pub fn move_file(
@@ -3248,6 +3377,95 @@ fn workspace_paths(
     Ok(parse_workspace_paths(&records))
 }
 
+pub fn map_workspace_paths(
+    input: &ConnectionInput,
+    queries: &[String],
+) -> Result<WorkspaceMappingBatch, AppError> {
+    required_client(input)?;
+    validate_mapping_queries(queries)?;
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "where"]);
+    command.args(queries);
+    let (records, diagnostics, partial) = run_json_collecting_diagnostics(&path, &mut command)?;
+    Ok(parse_workspace_mapping_batch(
+        queries,
+        &records,
+        diagnostics,
+        partial,
+    ))
+}
+
+fn mapping_path(value: Option<String>) -> (Option<String>, Option<char>) {
+    let Some(value) = value else {
+        return (None, None);
+    };
+    let marker = value
+        .chars()
+        .next()
+        .filter(|marker| matches!(marker, '-' | '+' | '&'));
+    let value = marker.map_or(value.clone(), |_| value[1..].to_owned());
+    ((!value.is_empty()).then_some(value), marker)
+}
+
+fn parse_workspace_mapping_batch(
+    queries: &[String],
+    records: &[Map<String, Value>],
+    diagnostics: Vec<String>,
+    partial: bool,
+) -> WorkspaceMappingBatch {
+    let mappings = queries
+        .iter()
+        .enumerate()
+        .map(|(index, query)| {
+            let Some(record) = records.get(index).filter(|record| {
+                record.contains_key("depotFile")
+                    || record.contains_key("clientFile")
+                    || record.contains_key("path")
+            }) else {
+                return WorkspaceMapping {
+                    query: query.clone(),
+                    state: WorkspaceMappingState::Unmapped,
+                    depot_path: None,
+                    client_path: None,
+                    local_path: None,
+                    diagnostics: diagnostics.clone(),
+                };
+            };
+            let (depot_path, depot_marker) = mapping_path(field(record, &["depotFile"]));
+            let (client_path, client_marker) = mapping_path(field(record, &["clientFile"]));
+            let (local_path, local_marker) = mapping_path(field(record, &["path"]));
+            let marker = depot_marker.or(client_marker).or(local_marker);
+            let state = if marker == Some('-') {
+                WorkspaceMappingState::Excluded
+            } else if depot_path.is_some() && client_path.is_some() && local_path.is_some() {
+                WorkspaceMappingState::Mapped
+            } else {
+                WorkspaceMappingState::Unmapped
+            };
+            let mapped = matches!(state, WorkspaceMappingState::Mapped);
+            let mut item_diagnostics = Vec::new();
+            if marker == Some('+') {
+                item_diagnostics.push("Server selected an overlay mapping.".to_owned());
+            } else if marker == Some('&') {
+                item_diagnostics.push("Server selected a ditto mapping.".to_owned());
+            }
+            WorkspaceMapping {
+                query: query.clone(),
+                state,
+                depot_path,
+                client_path,
+                local_path: mapped.then_some(local_path).flatten(),
+                diagnostics: item_diagnostics,
+            }
+        })
+        .collect();
+    WorkspaceMappingBatch {
+        mappings,
+        partial,
+        diagnostics,
+    }
+}
+
 fn probe_workspace_paths(
     input: &ConnectionInput,
     depot_paths: &[String],
@@ -4284,6 +4502,29 @@ mod tests {
 
     use super::*;
 
+    fn test_reconcile_item(
+        depot_path: &str,
+        action: &str,
+        local_path: Option<&str>,
+    ) -> ReconcileItem {
+        ReconcileItem {
+            stable_id: format!("{depot_path}\0{action}"),
+            preview_token: String::new(),
+            depot_path: depot_path.to_owned(),
+            action: action.to_owned(),
+            original_action: Some(action.to_owned()),
+            client_path: None,
+            local_path: local_path.map(str::to_owned),
+            mapping_state: WorkspaceMappingState::Unmapped,
+            ignored: false,
+            unsafe_item: false,
+            reasons: Vec::new(),
+            move_partner: None,
+            local_size: None,
+            local_modified: None,
+        }
+    }
+
     #[test]
     fn derives_child_stream_path_in_the_parent_namespace() {
         assert_eq!(
@@ -4746,6 +4987,56 @@ mod tests {
                 "C:\\work\\new.txt".to_owned()
             )]
         );
+    }
+
+    #[test]
+    fn mapping_batch_preserves_server_order_and_never_invents_excluded_paths() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/a.txt","clientFile":"//alex-main/a.txt","path":"C:\\work\\a.txt"}
+{"depotFile":"-//Acme/private/secret.txt","clientFile":"-//alex-main/private/secret.txt","path":"-C:\\work\\private\\secret.txt"}"#,
+        )
+        .unwrap();
+        let batch = parse_workspace_mapping_batch(
+            &[
+                "//Acme/main/a.txt".to_owned(),
+                "//Acme/private/secret.txt".to_owned(),
+                "//Acme/missing.txt".to_owned(),
+            ],
+            &records,
+            Vec::new(),
+            false,
+        );
+        assert_eq!(batch.mappings[0].state, WorkspaceMappingState::Mapped);
+        assert_eq!(batch.mappings[1].state, WorkspaceMappingState::Excluded);
+        assert!(batch.mappings[1].local_path.is_none());
+        assert_eq!(batch.mappings[2].state, WorkspaceMappingState::Unmapped);
+    }
+
+    #[test]
+    fn reconcile_token_changes_with_action_mapping_or_local_metadata() {
+        let mut item = test_reconcile_item("//Acme/main/a.txt", "edit", Some("C:\\work\\a.txt"));
+        item.mapping_state = WorkspaceMappingState::Mapped;
+        let original = reconcile_preview_token("//...", &[item.clone()]);
+        item.action = "delete".to_owned();
+        assert_ne!(reconcile_preview_token("//...", &[item.clone()]), original);
+        item.action = "edit".to_owned();
+        item.local_size = Some(42);
+        assert_ne!(reconcile_preview_token("//...", &[item]), original);
+    }
+
+    #[test]
+    fn reconcile_parser_keeps_server_move_pair_identity() {
+        let item = parse_reconcile_output_record(
+            r#"{"depotFile":"//Acme/main/new.txt","action":"move/add","fromFile":"//Acme/main/old.txt"}"#,
+        )
+        .unwrap();
+        let case_only_partner = parse_reconcile_output_record(
+            r#"{"depotFile":"//Acme/main/New.txt","action":"move/delete","toFile":"//Acme/main/new.txt"}"#,
+        )
+        .unwrap();
+        assert_eq!(item.action, "move");
+        assert_eq!(item.move_partner.as_deref(), Some("//Acme/main/old.txt"));
+        assert_ne!(item.stable_id, case_only_partner.stable_id);
     }
 
     #[test]
@@ -5737,13 +6028,7 @@ mod tests {
         .unwrap();
         let items = records
             .iter()
-            .filter_map(|record| {
-                Some(ReconcileItem {
-                    depot_path: field(record, &["depotFile", "clientFile"])?,
-                    action: field(record, &["action", "status"])?.to_lowercase(),
-                    local_path: field(record, &["path", "clientFile"]),
-                })
-            })
+            .filter_map(reconcile_item)
             .collect::<Vec<_>>();
         assert_eq!(items[0].action, "add");
         assert_eq!(items[0].local_path.as_deref(), Some("C:\\work\\new.txt"));
@@ -5763,11 +6048,12 @@ mod tests {
 
     #[test]
     fn guarded_reconcile_rejects_paths_missing_from_fresh_preview() {
-        let candidates = vec![ReconcileItem {
-            depot_path: "//Acme/main/kept.txt".to_owned(),
-            action: "edit".to_owned(),
-            local_path: None,
-        }];
+        let candidates = vec![
+            parse_reconcile_output_record(
+                r#"{"depotFile":"//Acme/main/kept.txt","action":"edit"}"#,
+            )
+            .unwrap(),
+        ];
         assert!(
             ensure_reconcile_candidates(&["//Acme/main/kept.txt".to_owned()], &candidates,).is_ok()
         );
@@ -5787,21 +6073,9 @@ mod tests {
         )
         .unwrap();
         let candidates = vec![
-            ReconcileItem {
-                depot_path: "//Acme/main/new.txt".to_owned(),
-                action: "add".to_owned(),
-                local_path: Some("C:\\work\\new.txt".to_owned()),
-            },
-            ReconcileItem {
-                depot_path: "//Acme/main/existing.txt".to_owned(),
-                action: "add".to_owned(),
-                local_path: None,
-            },
-            ReconcileItem {
-                depot_path: "//Acme/main/missing.txt".to_owned(),
-                action: "delete".to_owned(),
-                local_path: None,
-            },
+            test_reconcile_item("//Acme/main/new.txt", "add", Some("C:\\work\\new.txt")),
+            test_reconcile_item("//Acme/main/existing.txt", "add", None),
+            test_reconcile_item("//Acme/main/missing.txt", "delete", None),
         ];
         merge_untracked_workspace_files(&mut files, &candidates, &candidates[..1]);
         assert_eq!(files.len(), 2);
