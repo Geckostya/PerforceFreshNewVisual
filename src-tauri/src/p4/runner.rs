@@ -59,6 +59,23 @@ pub(super) fn run_json_allowing_empty_match(
     run_json_with_empty_match_policy(path, command, true)
 }
 
+pub(super) fn run_json_probe(
+    path: &Path,
+    command: &mut Command,
+) -> Result<Vec<Map<String, Value>>, AppError> {
+    let output = command
+        .output()
+        .map_err(|error| launch_error(path, error))?;
+    let records = parse_json_lines(&String::from_utf8_lossy(&output.stdout))?;
+    if let Some(message) = perforce_error(&records) {
+        return Err(classified_command_error(message, &output));
+    }
+    if !output.status.success() {
+        return Err(classified_command_error(combined_output(&output), &output));
+    }
+    Ok(records)
+}
+
 pub(super) fn run_json_with_stdin_allowing_empty_match(
     path: &Path,
     command: &mut Command,

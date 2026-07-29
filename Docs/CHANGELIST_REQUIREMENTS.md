@@ -36,7 +36,7 @@ All actions below are subject to server permission and race checks. Hide an acti
 
 Revert always uses a server preview and warns when work is not protected by a shelf. For files opened for add, disk deletion is a separate persistent choice mapped to `p4 revert -w`; otherwise the local file remains.
 
-Unshelve preserves the source shelf. If a shelved add collides with an untracked local file, preview all collisions together, default every item to Skip, and apply `-f` only to paths explicitly set to Overwrite. A partial normal/force batch reports what already succeeded.
+Unshelve preserves the source shelf. When the shelf belongs to another stream, derive a server-backed stream mapping to the current workspace and use `p4 unshelve -S/-P`; the same mapping applies to selected files and the whole shelf. If a shelved add collides with an untracked local file, preview all collisions together in the mapped target paths, default every item to Skip, and apply `-f` only to paths explicitly set to Overwrite. A partial normal/force batch reports what already succeeded.
 
 Text diff and content preview use the shared bounded viewer. Binary content receives an explicit non-text state. Export uses an exact revision and a new destination without implicit overwrite; batch/native-picker support must extend the shared export workflow.
 

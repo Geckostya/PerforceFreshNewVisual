@@ -2678,26 +2678,49 @@ pub fn preview_unshelve(
         return Ok(UnshelvePreview::default());
     }
 
+    let stream_mapping = resolve_unshelve_stream_mapping(input, &candidates)?;
+    let mapped_candidates = candidates
+        .iter()
+        .map(|path| {
+            (
+                path.clone(),
+                stream_mapping
+                    .as_ref()
+                    .map_or_else(|| path.clone(), |mapping| mapping.map_path(path)),
+            )
+        })
+        .collect::<Vec<_>>();
     let opened = list_opened_files(input)?
         .into_iter()
         .map(|file| file.depot_path)
         .collect::<BTreeSet<_>>();
-    let unopened = candidates
+    let unopened = mapped_candidates
         .into_iter()
-        .filter(|path| !opened.contains(path))
+        .filter(|(_, target_path)| !opened.contains(target_path))
         .collect::<Vec<_>>();
     if unopened.is_empty() {
         return Ok(UnshelvePreview::default());
     }
 
-    let mappings = workspace_paths(input, &unopened)?;
+    let source_by_target = unopened
+        .iter()
+        .cloned()
+        .map(|(source, target)| (target, source))
+        .collect::<BTreeMap<_, _>>();
+    let target_paths = unopened
+        .into_iter()
+        .map(|(_, target)| target)
+        .collect::<Vec<_>>();
+    let mappings = workspace_paths(input, &target_paths)?;
     Ok(UnshelvePreview {
         conflicts: mappings
             .into_iter()
             .filter(|(_, local_path)| Path::new(local_path).exists())
-            .map(|(depot_path, local_path)| UnshelveConflict {
-                depot_path,
-                local_path,
+            .filter_map(|(target_path, local_path)| {
+                Some(UnshelveConflict {
+                    depot_path: source_by_target.get(&target_path)?.clone(),
+                    local_path,
+                })
             })
             .collect(),
     })
@@ -2715,17 +2738,52 @@ pub fn unshelve_files(
     validate_change(target_change)?;
     validate_depot_paths(depot_paths)?;
     validate_depot_paths(force_paths)?;
+    let mapping_paths = if depot_paths.is_empty() && force_paths.is_empty() {
+        list_shelved_files(input, source_change)?
+            .into_iter()
+            .map(|file| file.depot_path)
+            .collect::<Vec<_>>()
+    } else {
+        depot_paths
+            .iter()
+            .chain(force_paths)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    let stream_mapping = resolve_unshelve_stream_mapping(input, &mapping_paths)?;
     let normal = normal_unshelve_paths(depot_paths, force_paths);
     let normal_applied = !normal.is_empty();
     if depot_paths.is_empty() && force_paths.is_empty() {
-        run_unshelve(input, source_change, target_change, &[], false)?;
+        run_unshelve(
+            input,
+            source_change,
+            target_change,
+            &[],
+            false,
+            stream_mapping.as_ref(),
+        )?;
     } else {
         if !normal.is_empty() {
-            run_unshelve(input, source_change, target_change, &normal, false)?;
+            run_unshelve(
+                input,
+                source_change,
+                target_change,
+                &normal,
+                false,
+                stream_mapping.as_ref(),
+            )?;
         }
         if !force_paths.is_empty()
-            && let Err(mut error) =
-                run_unshelve(input, source_change, target_change, force_paths, true)
+            && let Err(mut error) = run_unshelve(
+                input,
+                source_change,
+                target_change,
+                force_paths,
+                true,
+                stream_mapping.as_ref(),
+            )
         {
             if normal_applied {
                 error.kind = ErrorKind::PartialResult;
@@ -2791,22 +2849,155 @@ fn normal_unshelve_paths(depot_paths: &[String], force_paths: &[String]) -> Vec<
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnshelveStreamMapping {
+    source_stream: String,
+    target_stream: String,
+    stream: String,
+    parent: Option<String>,
+}
+
+impl UnshelveStreamMapping {
+    fn map_path(&self, source_path: &str) -> String {
+        replace_stream_prefix(source_path, &self.source_stream, &self.target_stream)
+            .unwrap_or_else(|| source_path.to_owned())
+    }
+}
+
+fn resolve_unshelve_stream_mapping(
+    input: &ConnectionInput,
+    depot_paths: &[String],
+) -> Result<Option<UnshelveStreamMapping>, AppError> {
+    if depot_paths.is_empty() {
+        return Ok(None);
+    }
+
+    let direct_mapping = probe_workspace_paths(input, depot_paths);
+    if direct_mapping
+        .as_ref()
+        .is_ok_and(|paths| paths.len() == depot_paths.len())
+    {
+        return Ok(None);
+    }
+    let direct_error = direct_mapping.err().unwrap_or_else(|| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не все shelved-файлы входят в view текущего workspace.",
+        )
+    });
+
+    let target_stream = match inspect_workspace(input)?.stream {
+        Some(stream) => stream,
+        None => return Err(direct_error),
+    };
+    let streams = list_streams(input)?;
+    let Some(mapping) = infer_unshelve_stream_mapping(&target_stream, &streams, depot_paths) else {
+        return Err(direct_error);
+    };
+    let target_paths = depot_paths
+        .iter()
+        .map(|path| mapping.map_path(path))
+        .collect::<Vec<_>>();
+    if probe_workspace_paths(input, &target_paths)
+        .is_ok_and(|paths| paths.len() == target_paths.len())
+    {
+        Ok(Some(mapping))
+    } else {
+        Err(direct_error)
+    }
+}
+
+fn infer_unshelve_stream_mapping(
+    target_stream: &str,
+    streams: &[StreamSummary],
+    depot_paths: &[String],
+) -> Option<UnshelveStreamMapping> {
+    let mut source_streams = depot_paths
+        .iter()
+        .map(|path| stream_for_depot_path(path, streams).map(|stream| stream.path.as_str()))
+        .collect::<Option<BTreeSet<_>>>()?;
+    if source_streams.len() != 1 {
+        return None;
+    }
+    let source_stream = source_streams.pop_first()?;
+    if source_stream == target_stream {
+        return None;
+    }
+
+    let source = streams.iter().find(|stream| stream.path == source_stream)?;
+    let target = streams.iter().find(|stream| stream.path == target_stream)?;
+    let (stream, parent) = if source.parent.as_deref() == Some(target_stream) {
+        (source_stream.to_owned(), None)
+    } else if target.parent.as_deref() == Some(source_stream) {
+        (source_stream.to_owned(), Some(target_stream.to_owned()))
+    } else {
+        (target_stream.to_owned(), Some(source_stream.to_owned()))
+    };
+    Some(UnshelveStreamMapping {
+        source_stream: source_stream.to_owned(),
+        target_stream: target_stream.to_owned(),
+        stream,
+        parent,
+    })
+}
+
+fn replace_stream_prefix(path: &str, source_stream: &str, target_stream: &str) -> Option<String> {
+    let relative = path.strip_prefix(source_stream.trim_end_matches('/'))?;
+    relative
+        .starts_with('/')
+        .then(|| format!("{}{relative}", target_stream.trim_end_matches('/')))
+}
+
 fn run_unshelve(
     input: &ConnectionInput,
     source_change: &str,
     target_change: &str,
     depot_paths: &[String],
     force: bool,
+    stream_mapping: Option<&UnshelveStreamMapping>,
 ) -> Result<(), AppError> {
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "unshelve"]);
-    if force {
-        command.arg("-f");
-    }
-    command.args(["-s", source_change, "-c", target_change, "-Af"]);
-    command.args(depot_paths);
+    command.args(unshelve_arguments(
+        source_change,
+        target_change,
+        depot_paths,
+        force,
+        stream_mapping,
+    ));
     run_json(&path, &mut command)?;
     Ok(())
+}
+
+fn unshelve_arguments(
+    source_change: &str,
+    target_change: &str,
+    depot_paths: &[String],
+    force: bool,
+    stream_mapping: Option<&UnshelveStreamMapping>,
+) -> Vec<String> {
+    let mut arguments = vec!["-ztag".to_owned(), "-Mj".to_owned(), "unshelve".to_owned()];
+    if force {
+        arguments.push("-f".to_owned());
+    }
+    arguments.extend([
+        "-s".to_owned(),
+        source_change.to_owned(),
+        "-c".to_owned(),
+        target_change.to_owned(),
+    ]);
+    if let Some(mapping) = stream_mapping {
+        arguments.extend(["-S".to_owned(), mapping.stream.clone()]);
+        if let Some(parent) = &mapping.parent {
+            arguments.extend(["-P".to_owned(), parent.clone()]);
+        }
+    }
+    arguments.push("-Af".to_owned());
+    arguments.extend(
+        depot_paths.iter().map(|path| {
+            stream_mapping.map_or_else(|| path.clone(), |mapping| mapping.map_path(path))
+        }),
+    );
+    arguments
 }
 
 fn workspace_paths(
@@ -2817,6 +3008,17 @@ fn workspace_paths(
     command.args(["-ztag", "-Mj", "where"]);
     command.args(depot_paths);
     let records = run_json(&path, &mut command)?;
+    Ok(parse_workspace_paths(&records))
+}
+
+fn probe_workspace_paths(
+    input: &ConnectionInput,
+    depot_paths: &[String],
+) -> Result<Vec<(String, String)>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "where"]);
+    command.args(depot_paths);
+    let records = run_json_probe(&path, &mut command)?;
     Ok(parse_workspace_paths(&records))
 }
 
@@ -4272,6 +4474,128 @@ mod tests {
         let force = vec!["//Acme/a.txt".to_owned()];
         assert_eq!(normal_unshelve_paths(&paths, &force), ["//Acme/b.txt"]);
         assert_eq!(normal_unshelve_paths(&paths, &[]), paths);
+    }
+
+    #[test]
+    fn maps_unshelve_from_child_stream_to_current_parent() {
+        let streams = unshelve_test_streams();
+        let mapping = infer_unshelve_stream_mapping(
+            "//Acme/main",
+            &streams,
+            &["//Acme/dev/Source/a.cpp".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(mapping.stream, "//Acme/dev");
+        assert_eq!(mapping.parent, None);
+        assert_eq!(
+            mapping.map_path("//Acme/dev/Source/a.cpp"),
+            "//Acme/main/Source/a.cpp"
+        );
+        assert_eq!(
+            unshelve_arguments("42", "default", &[], false, Some(&mapping)),
+            [
+                "-ztag",
+                "-Mj",
+                "unshelve",
+                "-s",
+                "42",
+                "-c",
+                "default",
+                "-S",
+                "//Acme/dev",
+                "-Af"
+            ]
+        );
+    }
+
+    #[test]
+    fn maps_unshelve_from_parent_stream_to_current_child() {
+        let streams = unshelve_test_streams();
+        let mapping = infer_unshelve_stream_mapping(
+            "//Acme/dev",
+            &streams,
+            &["//Acme/main/Source/a.cpp".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(mapping.stream, "//Acme/main");
+        assert_eq!(mapping.parent.as_deref(), Some("//Acme/dev"));
+        assert_eq!(
+            unshelve_arguments(
+                "42",
+                "77",
+                &["//Acme/main/Source/a.cpp".to_owned()],
+                true,
+                Some(&mapping),
+            ),
+            [
+                "-ztag",
+                "-Mj",
+                "unshelve",
+                "-f",
+                "-s",
+                "42",
+                "-c",
+                "77",
+                "-S",
+                "//Acme/main",
+                "-P",
+                "//Acme/dev",
+                "-Af",
+                "//Acme/dev/Source/a.cpp"
+            ]
+        );
+    }
+
+    #[test]
+    fn maps_unshelve_between_sibling_streams() {
+        let streams = unshelve_test_streams();
+        let mapping = infer_unshelve_stream_mapping(
+            "//Acme/release",
+            &streams,
+            &["//Acme/dev/Source/a.cpp".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(mapping.stream, "//Acme/release");
+        assert_eq!(mapping.parent.as_deref(), Some("//Acme/dev"));
+        assert_eq!(
+            mapping.map_path("//Acme/dev/Source/a.cpp"),
+            "//Acme/release/Source/a.cpp"
+        );
+    }
+
+    fn unshelve_test_streams() -> Vec<StreamSummary> {
+        vec![
+            StreamSummary {
+                path: "//Acme/main".to_owned(),
+                name: "main".to_owned(),
+                parent: None,
+                stream_type: "mainline".to_owned(),
+                description: String::new(),
+                owner: None,
+                updated: None,
+            },
+            StreamSummary {
+                path: "//Acme/dev".to_owned(),
+                name: "dev".to_owned(),
+                parent: Some("//Acme/main".to_owned()),
+                stream_type: "development".to_owned(),
+                description: String::new(),
+                owner: None,
+                updated: None,
+            },
+            StreamSummary {
+                path: "//Acme/release".to_owned(),
+                name: "release".to_owned(),
+                parent: Some("//Acme/main".to_owned()),
+                stream_type: "release".to_owned(),
+                description: String::new(),
+                owner: None,
+                updated: None,
+            },
+        ]
     }
 
     #[test]
