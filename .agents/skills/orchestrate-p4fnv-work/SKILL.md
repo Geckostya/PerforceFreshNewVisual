@@ -45,4 +45,4 @@ Never accept a worker's self-reported build as authoritative. Never validate an 
 
 ## Finish
 
-Stop assigning when cancelled. Otherwise finish only when `quality.candidateReady` and `integration.integrated` make `quality.handoffReady` true. `promote-main` must fast-forward the primary checkout's clean `main` to the exact validated candidate; divergence requires a validated integration task first. Report the final `main` SHA and blockers, then run cleanup as dry-run. Never push without separate authorization.
+Stop assigning when cancelled. Otherwise finish only when `quality.candidateReady` and `integration.integrated` make `quality.handoffReady` true. `promote-main` must fast-forward the primary checkout's clean `main` to the exact validated candidate; divergence requires a validated integration task first. Run `post-promote` for the final artifact/native-smoke gate, report the final `main` SHA and blockers, then run cleanup as dry-run. Never push without separate authorization.

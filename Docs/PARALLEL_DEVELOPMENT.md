@@ -13,6 +13,7 @@ This contract owns prioritized Codex task orchestration, worker worktree isolati
 - Features run in bounded waves. Each boundary and final partial wave require generated `refactor` then `stabilization` tasks. Any unfinished quality task blocks new features.
 - Agent model and reasoning limits are derived from task class before dispatch. Queue data cannot request an arbitrary model, exceed its class ceiling, or silently fall back to a more expensive profile.
 - Native UI smoke remains a separate visible operation through `p4fnv_agent_plugin`. Never run mutating Perforce smoke against the user's server without explicit authorization.
+- The final handoff gate checks a clean `main`, a passing validation result for its exact SHA, the release executable, and native smoke before reporting completion.
 
 ## Shared state and protocol
 
@@ -151,5 +152,13 @@ npm run workflow -- promote-main --state $state
 ```
 
 `promote-main` refuses a dirty checkout, moved target, missing source ancestry, or non-fast-forward update; it never pushes. Finish only when `quality.handoffReady` and `integration.integrated` are true, and report the `main` SHA. A later main commit requires fresh integration validation.
+
+Run the final handoff gate after promotion. It performs the deterministic checks above and runs the visible native smoke with guaranteed session cleanup:
+
+```powershell
+npm run workflow -- post-promote --state $state
+```
+
+Git commands used by the validator set a checkout-local `safe.directory`; the workflow does not require a persistent global Git configuration change.
 
 After promotion, run cleanup as dry-run. `--apply` removes only completed state-owned worktrees; branches, the final candidate, and Cargo cache remain by default. Unowned worktrees require manual review.

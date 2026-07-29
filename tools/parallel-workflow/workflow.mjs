@@ -16,6 +16,7 @@ import {
   getValidationResultSummary,
   initializeWorkflow,
   promoteMain,
+  postPromote,
   requeueTask,
   runValidator,
   summarizeValidationResult,
@@ -82,6 +83,11 @@ try {
       result = await promoteMain({
         stateRoot: required(options, "state"),
         taskId: options.task,
+      });
+      break;
+    case "post-promote":
+      result = await postPromote({
+        stateRoot: required(options, "state"),
       });
       break;
     case "request":
@@ -248,6 +254,7 @@ Usage:
   npm run workflow -- result --state <path> --request <id> [--verbose]
   npm run workflow -- complete --state <path> --task <id> --request <id>
   npm run workflow -- promote-main --state <path> [--task <integration-task-id>]
+  npm run workflow -- post-promote --state <path>
   npm run workflow -- block --state <path> --task <id> --reason <text>
   npm run workflow -- requeue --state <path> --task <id> --reason <text>
   npm run workflow -- status --state <path> [--verbose] [--available-models <list>]

@@ -649,6 +649,72 @@ export async function promoteMain({ stateRoot, taskId }) {
   };
 }
 
+export async function postPromote({ stateRoot }) {
+  const workflow = await loadWorkflow(stateRoot);
+  const buckets = await loadTaskBuckets(workflow.stateRoot);
+  const integration = await computeMainIntegrationState(buckets, workflow.config);
+  const checks = [];
+  const currentBranch = (await runGit(
+    workflow.config.repoRoot,
+    ["branch", "--show-current"],
+    10_000,
+  )).outputTail.trim();
+  checks.push({
+    name: "main-branch",
+    status: currentBranch === integration.targetBranch ? "passed" : "failed",
+    output: currentBranch,
+  });
+  const dirty = (await runGit(
+    workflow.config.repoRoot,
+    ["status", "--porcelain", "--untracked-files=normal"],
+    30_000,
+  )).outputTail.trim();
+  checks.push({
+    name: "main-clean",
+    status: dirty ? "failed" : "passed",
+    output: dirty || "clean",
+  });
+  const mainSha = await resolveCommit(
+    workflow.config.repoRoot,
+    `refs/heads/${integration.targetBranch}`,
+  );
+  const results = await readJsonDirectory(path.join(workflow.stateRoot, "validation", "results"));
+  const latest = results
+    .filter((result) => result.commitSha === mainSha)
+    .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""))[0];
+  checks.push({
+    name: "validated-main",
+    status: latest?.status === "passed" ? "passed" : "failed",
+    output: latest ? `${latest.status} (${latest.requestId})` : "no validation result for main",
+  });
+  const artifact = path.join(workflow.config.repoRoot, "src-tauri", "target", "release", "p4fnv.exe");
+  checks.push({
+    name: "release-artifact",
+    status: await pathExists(artifact) ? "passed" : "failed",
+    output: artifact,
+  });
+  if (checks.some((check) => check.status !== "passed")) {
+    throw new WorkflowError(
+      `Post-promotion gate failed: ${checks.filter((check) => check.status !== "passed").map((check) => check.name).join(", ")}.`,
+      "post_promotion_failed",
+    );
+  }
+  const smoke = await runProcess(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["run", "smoke:agent"],
+    { cwd: workflow.config.repoRoot, timeoutMs: 20 * 60_000 },
+  );
+  checks.push({ name: "native-smoke", status: "passed", output: smoke.outputTail.trim() });
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    status: "post-promote-passed",
+    targetBranch: integration.targetBranch,
+    commitSha: mainSha,
+    artifact,
+    checks,
+  };
+}
+
 async function computeMainIntegrationState(buckets, config) {
   const targetBranch = requireRef(
     config.integrationTargetBranch ?? "main",
@@ -2122,7 +2188,7 @@ async function changedPaths(repoRoot, baseSha, commitSha) {
 }
 
 async function runGit(cwd, args, timeoutMs) {
-  return runProcess("git", ["-C", cwd, ...args], { timeoutMs });
+  return runProcess("git", ["-c", `safe.directory=${path.resolve(cwd)}`, "-C", cwd, ...args], { timeoutMs });
 }
 
 async function runProcess(executable, args, options = {}) {
