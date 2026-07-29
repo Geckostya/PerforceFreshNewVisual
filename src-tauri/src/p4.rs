@@ -11,20 +11,23 @@ use std::{
 use serde_json::{Map, Value};
 
 use crate::models::{
-    AnnotationLine, AppError, ChangeExportResult, CherryPickPreviewItem, CliLogLevel,
+    AnnotationLine, AppError, AuthStage, ChangeExportResult, CherryPickPreviewItem, CliLogLevel,
     ConnectionInput, CreateStreamInput, CreateStreamPreview, CreateStreamType, DepotDirectory,
     DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
     P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
     RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode,
     SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
     SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SyncPreview, SyncPreviewItem,
-    TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
+    TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
     WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
 };
 
+mod auth;
+mod capabilities;
 mod jobs;
 mod labels;
 mod runner;
+mod trust;
 mod validation;
 
 use jobs::parse_fixes;
@@ -36,6 +39,8 @@ pub use labels::list_labels;
 use labels::parse_labels;
 use runner::*;
 pub use runner::{clear_cli_log, cli_log};
+#[cfg(test)]
+use trust::parse_trust_entries;
 use validation::*;
 
 const MAX_RECORDS: &str = "200";
@@ -75,7 +80,9 @@ pub fn info(input: &ConnectionInput) -> Result<P4Info, AppError> {
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "info"]);
     let records = run_json(&path, &mut command)?;
-    parse_info_records(&records)
+    let mut info = parse_info_records(&records)?;
+    info.capabilities = Some(capabilities::build(input, &info));
+    Ok(info)
 }
 
 pub fn open_workspace(input: &ConnectionInput) -> Result<P4Info, AppError> {
@@ -88,15 +95,27 @@ pub fn open_workspace(input: &ConnectionInput) -> Result<P4Info, AppError> {
 }
 
 pub fn login(input: &ConnectionInput, password: &str) -> Result<(), AppError> {
-    validate_password(password)?;
-    let (path, mut command) = configured_command(input)?;
-    command.args(["login"]);
-    let output = run_output_with_stdin(&path, &mut command, format!("{password}\n").as_bytes())?;
-    if !output.status.success() {
-        return Err(command_error(&output));
-    }
-    log_stderr_warning(&output, "p4 login вернул предупреждение.");
-    Ok(())
+    auth::password_login(input, password)
+}
+
+pub fn begin_auth(input: &ConnectionInput) -> Result<AuthStage, AppError> {
+    auth::begin(input)
+}
+
+pub fn select_auth_method(
+    input: &ConnectionInput,
+    method: &str,
+) -> Result<(AuthStage, Option<String>), AppError> {
+    let result = auth::select_method(input, method)?;
+    Ok((result.stage, result.browser_url))
+}
+
+pub fn check_auth(
+    input: &ConnectionInput,
+    response: Option<&str>,
+    polling_attempt: u8,
+) -> Result<AuthStage, AppError> {
+    auth::check(input, response, polling_attempt)
 }
 
 pub fn login_status(input: &ConnectionInput) -> Result<LoginStatus, AppError> {
@@ -128,18 +147,15 @@ pub fn logout(input: &ConnectionInput) -> Result<(), AppError> {
 }
 
 pub fn list_trust(input: &ConnectionInput) -> Result<Vec<TrustEntry>, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["trust", "-l"]);
-    let output = command
-        .output()
-        .map_err(|error| launch_error(&path, error))?;
-    if !output.status.success() {
-        return Err(command_error(&output));
-    }
-    log_stderr_warning(&output, "p4 trust -l вернул предупреждение.");
-    Ok(parse_trust_entries(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    trust::list(input)
+}
+
+pub fn inspect_trust(input: &ConnectionInput) -> Result<TrustChallenge, AppError> {
+    trust::inspect(input)
+}
+
+pub fn confirm_trust(input: &ConnectionInput, fingerprint: &str) -> Result<TrustEntry, AppError> {
+    trust::confirm(input, fingerprint)
 }
 
 pub fn list_workspaces(input: &ConnectionInput) -> Result<Vec<WorkspaceSummary>, AppError> {
@@ -3663,6 +3679,7 @@ fn parse_info_records(records: &[Map<String, Value>]) -> Result<P4Info, AppError
         security: take_field(&fields, &["security"]),
         client_address: take_field(&fields, &["clientAddress"]),
         user_email: take_field(&fields, &["userEmail"]),
+        capabilities: None,
     };
 
     if info.server_address.is_none() && info.server_version.is_none() {
@@ -3793,23 +3810,6 @@ fn parse_depot_files(records: &[Map<String, Value>]) -> Result<Vec<DepotFile>, A
                 action: optional_field(record, &["action"]),
                 change: optional_field(record, &["change"]),
                 file_type: optional_field(record, &["type", "filetype"]),
-            })
-        })
-        .collect()
-}
-
-fn parse_trust_entries(text: &str) -> Vec<TrustEntry> {
-    text.lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let server = fields.next()?.trim();
-            let fingerprint = fields.collect::<Vec<_>>().join(" ");
-            if !server.starts_with("ssl:") || fingerprint.is_empty() {
-                return None;
-            }
-            Some(TrustEntry {
-                server: server.to_owned(),
-                fingerprint,
             })
         })
         .collect()
@@ -4627,12 +4627,14 @@ mod tests {
 
     #[test]
     fn parses_only_ssl_trust_lines_and_preserves_fingerprint_text() {
-        let entries = parse_trust_entries(
-            "ssl:p4.example:1666  SHA256:AA:BB:CC\nnot-a-server informational line\nssl:other:1666 MD5:11:22",
-        );
+        let sha256 = "SHA256:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+        let md5 = "MD5:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00";
+        let entries = parse_trust_entries(&format!(
+            "ssl:p4.example:1666  {sha256}\nnot-a-server informational line\nssl:other:1666 {md5}"
+        ));
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].server, "ssl:p4.example:1666");
-        assert_eq!(entries[0].fingerprint, "SHA256:AA:BB:CC");
+        assert_eq!(entries[0].fingerprint, sha256);
     }
 
     #[test]

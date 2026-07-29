@@ -89,6 +89,107 @@ pub struct LoginStatus {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityState {
+    Supported,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityEvidence {
+    Client,
+    Server,
+    Workspace,
+    Topology,
+    Permission,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityFact {
+    pub state: CapabilityState,
+    pub reason: String,
+    pub evidence: CapabilityEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    Stream,
+    Classic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilitySnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_services: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topology: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unicode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case_handling: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<String>,
+    pub workspace_kind: WorkspaceKind,
+    pub depot_modes: Vec<String>,
+    pub commands: BTreeMap<String, CapabilityFact>,
+    pub facts: BTreeMap<String, CapabilityFact>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustChallenge {
+    pub server: String,
+    pub presented_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub existing_fingerprint: Option<String>,
+    pub reason: TrustReason,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustReason {
+    New,
+    Changed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthStageKind {
+    PasswordRequired,
+    MethodSelection,
+    SecondFactor,
+    ExternalBrowser,
+    Waiting,
+    Success,
+    Expired,
+    Cancelled,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStage {
+    pub kind: AuthStageKind,
+    pub methods: Vec<String>,
+    pub polling_attempt: u8,
+    pub max_polling_attempts: u8,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionInput {
@@ -178,6 +279,8 @@ pub struct P4Info {
     pub client_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<CapabilitySnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

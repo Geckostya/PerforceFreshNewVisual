@@ -35,6 +35,8 @@ import type {
   DepotFile,
   DepotSummary,
   TrustEntry,
+  TrustChallenge,
+  AuthStage,
   ThemeMode,
   SyncPreview,
   WorkspaceFile,
@@ -73,6 +75,18 @@ export async function login(input: ConnectionInput, password: string): Promise<v
   return invoke("login", { input, password });
 }
 
+export async function beginAuth(input: ConnectionInput): Promise<AuthStage> {
+  return invoke<AuthStage>("begin_auth", { input });
+}
+
+export async function selectAuthMethod(input: ConnectionInput, method: string): Promise<AuthStage> {
+  return invoke<AuthStage>("select_auth_method", { input, method });
+}
+
+export async function checkAuth(input: ConnectionInput, response: string | undefined, pollingAttempt: number): Promise<AuthStage> {
+  return invoke<AuthStage>("check_auth", { input, response, pollingAttempt });
+}
+
 export async function loginStatus(input: ConnectionInput): Promise<LoginStatus> {
   return invoke<LoginStatus>("login_status", { input });
 }
@@ -87,6 +101,14 @@ export async function revealPath(path: string): Promise<void> {
 
 export async function listTrust(input: ConnectionInput): Promise<TrustEntry[]> {
   return invoke<TrustEntry[]>("list_trust", { input });
+}
+
+export async function inspectTrust(input: ConnectionInput): Promise<TrustChallenge> {
+  return invoke<TrustChallenge>("inspect_trust", { input });
+}
+
+export async function confirmTrust(input: ConnectionInput, fingerprint: string): Promise<TrustEntry> {
+  return invoke<TrustEntry>("confirm_trust", { input, fingerprint });
 }
 
 export async function loadSettings(): Promise<AppSettings> {

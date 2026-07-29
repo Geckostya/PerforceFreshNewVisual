@@ -1,7 +1,11 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import { CircleAlert, CircleCheck, LoaderCircle } from "lucide-react";
 import {
   detectP4,
+  beginAuth,
+  checkAuth,
+  confirmTrust,
+  inspectTrust,
   listWorkspaces,
   listTrust,
   toggleFavoriteConnection,
@@ -12,14 +16,16 @@ import {
   normalizeAppError,
   openWorkspace as openWorkspaceSession,
   rememberConnection,
+  selectAuthMethod,
   testConnection,
 } from "../../shared/api";
 import { LanguagePicker } from "../../shared/LanguagePicker";
 import { ThemePicker } from "../../shared/ThemePicker";
+import { ActionDialog, Modal } from "../../shared/View";
 import { useLocale, type TranslationKey } from "../../shared/i18n";
-import type { AppError, ConnectionInput, ErrorKind, LoginStatus, P4Detection, P4Info, TrustEntry, WorkspaceSummary } from "../../shared/models";
+import type { AppError, AuthStage, ConnectionInput, ErrorKind, LoginStatus, P4Detection, P4Info, TrustChallenge, TrustEntry, WorkspaceSummary } from "../../shared/models";
 import { connectionForServer } from "../../shared/connection";
-import { validateConnection, type ConnectionErrors } from "./connection";
+import { authReducer, authShouldPoll, initialAuthState, trustDialogModel, validateConnection, type AuthUiState, type ConnectionErrors } from "./connection";
 
 type DetectionState =
   | { phase: "loading" }
@@ -65,6 +71,15 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
   const [trustError, setTrustError] = useState<AppError>();
   const [ticketStatus, setTicketStatus] = useState<{ phase: "idle" | "loading" | "success" | "error"; value?: LoginStatus; error?: AppError }>({ phase: "idle" });
   const [renewBusy, setRenewBusy] = useState(false);
+  const [trustChallenge, setTrustChallenge] = useState<TrustChallenge>();
+  const [trustConfirmBusy, setTrustConfirmBusy] = useState(false);
+  const [auth, dispatchAuth] = useReducer(authReducer, initialAuthState);
+  const authGeneration = useRef(0);
+
+  function cancelAuth() {
+    authGeneration.current += 1;
+    dispatchAuth({ type: "cancel" });
+  }
 
   async function runDetection(path?: string) {
     setDetection({ phase: "loading" });
@@ -94,6 +109,8 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
     setTrustEntries(undefined);
     setTrustError(undefined);
     setTicketStatus({ phase: "idle" });
+    setTrustChallenge(undefined);
+    cancelAuth();
   }
 
   function resetVerification() {
@@ -104,6 +121,8 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
     setTrustEntries(undefined);
     setTrustError(undefined);
     setTicketStatus({ phase: "idle" });
+    setTrustChallenge(undefined);
+    cancelAuth();
   }
 
   useEffect(() => {
@@ -214,11 +233,12 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
   async function handleLogin() {
     const input = validatedInput(false);
     if (!input || !password) return;
+    const secret = password;
+    setPassword("");
     setBusyAction("login");
     setTestState({ phase: "loading" });
     try {
-      await login(input, password);
-      setPassword("");
+      await login(input, secret);
       await handleTestConnection();
     } catch (error) {
       setTestState({ phase: "error", error: normalizeAppError(error) });
@@ -236,6 +256,93 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
     finally { setBusyAction(undefined); }
   }
 
+  async function handleInspectTrust() {
+    const input = validatedInput(false);
+    if (!input) return;
+    setBusyAction("trust");
+    setTrustError(undefined);
+    try {
+      setTrustChallenge(await inspectTrust(input));
+    } catch (error) {
+      setTrustError(normalizeAppError(error));
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
+  async function handleConfirmTrust() {
+    const input = validatedInput(false);
+    if (!input || !trustChallenge) return;
+    setTrustConfirmBusy(true);
+    setTrustError(undefined);
+    try {
+      await confirmTrust(input, trustChallenge.presentedFingerprint);
+      setTrustChallenge(undefined);
+      await handleTestConnection();
+    } catch (error) {
+      setTrustError(normalizeAppError(error));
+    } finally {
+      setTrustConfirmBusy(false);
+    }
+  }
+
+  async function handleBeginAuth() {
+    const input = validatedInput(false);
+    if (!input) return;
+    const generation = authGeneration.current + 1;
+    authGeneration.current = generation;
+    dispatchAuth({ type: "open" });
+    try {
+      const stage = await beginAuth(input);
+      if (authGeneration.current === generation) dispatchAuth({ type: "stage", stage });
+    } catch (error) {
+      if (authGeneration.current === generation) dispatchAuth({ type: "error", error: normalizeAppError(error) });
+    }
+  }
+
+  async function handleSelectAuthMethod(method: string) {
+    const input = validatedInput(false);
+    if (!input) return;
+    const generation = authGeneration.current;
+    dispatchAuth({ type: "busy" });
+    try {
+      const stage = await selectAuthMethod(input, method);
+      if (authGeneration.current !== generation) return;
+      dispatchAuth({ type: "stage", stage });
+      if (stage.kind === "success") {
+        cancelAuth();
+        await handleTestConnection();
+      }
+    } catch (error) {
+      if (authGeneration.current === generation) dispatchAuth({ type: "error", error: normalizeAppError(error) });
+    }
+  }
+
+  async function handleCheckAuth(stage: AuthStage, response?: string) {
+    const input = validatedInput(false);
+    if (!input) return;
+    const generation = authGeneration.current;
+    dispatchAuth({ type: "busy" });
+    try {
+      const next = await checkAuth(input, response || undefined, stage.pollingAttempt);
+      if (authGeneration.current !== generation) return;
+      dispatchAuth({ type: "stage", stage: next });
+      if (next.kind === "success") {
+        cancelAuth();
+        await handleTestConnection();
+      }
+    } catch (error) {
+      if (authGeneration.current === generation) dispatchAuth({ type: "error", error: normalizeAppError(error) });
+    }
+  }
+
+  useEffect(() => {
+    if (!auth.open || auth.busy || !authShouldPoll(auth.stage) || !auth.stage) return;
+    const stage = auth.stage;
+    const timeout = window.setTimeout(() => void handleCheckAuth(stage), 1500);
+    return () => window.clearTimeout(timeout);
+  }, [auth.open, auth.busy, auth.stage?.kind, auth.stage?.pollingAttempt]);
+
   async function handleTicketStatus() {
     const input = validatedInput(false);
     if (!input) return;
@@ -250,10 +357,11 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
   async function handleRenewTicket() {
     const input = validatedInput(false);
     if (!input || !password) return;
+    const secret = password;
+    setPassword("");
     setRenewBusy(true);
     try {
-      await login(input, password);
-      setPassword("");
+      await login(input, secret);
       await handleTicketStatus();
     } catch (error) {
       setTicketStatus({ phase: "error", error: normalizeAppError(error) });
@@ -447,7 +555,7 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
             </div>
           </form>
 
-          <ConnectionResult state={testState} t={t} password={password} setPassword={setPassword} onLogin={() => void handleLogin()} loginBusy={busyAction === "login"} ticketStatus={ticketStatus} onTicketStatus={() => void handleTicketStatus()} onRenew={() => void handleRenewTicket()} renewBusy={renewBusy} />
+          <ConnectionResult state={testState} t={t} password={password} setPassword={setPassword} onLogin={() => void handleLogin()} onBeginAuth={() => void handleBeginAuth()} onInspectTrust={() => void handleInspectTrust()} loginBusy={busyAction === "login"} authBusy={auth.busy} trustBusy={busyAction === "trust"} ticketStatus={ticketStatus} onTicketStatus={() => void handleTicketStatus()} onRenew={() => void handleRenewTicket()} renewBusy={renewBusy} />
           {trustError && <InlineError error={trustError} t={t} />}
           {trustEntries && <div className="workspace-choice discovery trust-list" role="status"><strong>{t("trustEntriesTitle")}</strong>{trustEntries.length ? trustEntries.map((entry) => <div className="preview-row" key={`${entry.server}-${entry.fingerprint}`}><span>{entry.server}</span><small>{entry.fingerprint}</small></div>) : <p className="field-hint">{t("noTrustEntries")}</p>}</div>}
           {(workspacesLoading || workspaces.length > 0 || workspaceError) && (
@@ -473,6 +581,8 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
           )}
         </section>
       </main>
+      {trustChallenge && <ActionDialog title={t(trustDialogModel(trustChallenge).title)} confirmLabel={trustConfirmBusy ? t("trustConfirming") : t("trustConfirm")} busy={trustConfirmBusy} onClose={() => setTrustChallenge(undefined)} onConfirm={() => void handleConfirmTrust()}><p>{t(trustDialogModel(trustChallenge).warning)}</p><dl className="connection-facts"><Fact label={t("factServer")} value={trustChallenge.server} />{trustChallenge.existingFingerprint && <Fact label={t("trustExistingFingerprint")} value={trustChallenge.existingFingerprint} />}</dl><label className="field"><span className="field-label">{t("trustPresentedFingerprint")}</span><textarea className="trust-fingerprint" readOnly value={trustDialogModel(trustChallenge).fingerprint} aria-label={t("trustPresentedFingerprint")} /></label><p className="field-hint">{t("trustVerifyOutOfBand")}</p>{trustError && <InlineError error={trustError} t={t} />}</ActionDialog>}
+      {auth.open && <AuthDialog state={auth} t={t} onClose={cancelAuth} onSelect={(method) => void handleSelectAuthMethod(method)} onResponse={(value) => dispatchAuth({ type: "response", response: value })} onCheck={() => auth.stage && void handleCheckAuth(auth.stage, auth.response)} />}
     </div>
   );
 }
@@ -491,14 +601,33 @@ function DetectionStatus({ detection, onRetry, t }: { detection: DetectionState;
   return <div className="tool-status success" role="status"><CircleCheck className="status-symbol" aria-hidden="true" /><div className="tool-status-copy"><strong>{t("toolReady")}</strong><span title={`${detection.value.path} · ${detection.value.version}`}>{detection.value.path} · {detection.value.version}</span></div><button className="link-button" type="button" onClick={onRetry}>{t("findAgain")}</button></div>;
 }
 
-function ConnectionResult({ state, t, password, setPassword, onLogin, loginBusy, ticketStatus, onTicketStatus, onRenew, renewBusy }: { state: TestState; t: Translate; password: string; setPassword: (value: string) => void; onLogin: () => void; loginBusy: boolean; ticketStatus: { phase: "idle" | "loading" | "success" | "error"; value?: LoginStatus; error?: AppError }; onTicketStatus: () => void; onRenew: () => void; renewBusy: boolean }) {
+function ConnectionResult({ state, t, password, setPassword, onLogin, onBeginAuth, onInspectTrust, loginBusy, authBusy, trustBusy, ticketStatus, onTicketStatus, onRenew, renewBusy }: { state: TestState; t: Translate; password: string; setPassword: (value: string) => void; onLogin: () => void; onBeginAuth: () => void; onInspectTrust: () => void; loginBusy: boolean; authBusy: boolean; trustBusy: boolean; ticketStatus: { phase: "idle" | "loading" | "success" | "error"; value?: LoginStatus; error?: AppError }; onTicketStatus: () => void; onRenew: () => void; renewBusy: boolean }) {
   if (state.phase === "idle" || state.phase === "loading") return null;
   if (state.phase === "error") {
     const copy = errorText(state.error.kind, t);
-    return <div className="result error" role="alert"><CircleAlert className="status-symbol" aria-hidden="true" /><div><h3>{t("connectionFailed")}</h3><p>{copy.message}</p><p>{copy.hint}</p>{state.error.kind === "auth" && <div className="login-inline"><label className="field"><span className="field-label">{t("passwordLabel")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" onKeyDown={(event) => { if (event.key === "Enter") onLogin(); }} /></label><button className="primary-button" type="button" onClick={onLogin} disabled={loginBusy || !password}>{loginBusy ? t("loggingIn") : t("login")}</button><small>{t("passwordNotStored")}</small></div>}{state.error.diagnostics && <details className="diagnostics"><summary>{t("technicalDetails")}</summary><pre>{state.error.diagnostics}</pre></details>}</div></div>;
+    return <div className="result error" role="alert"><CircleAlert className="status-symbol" aria-hidden="true" /><div><h3>{t("connectionFailed")}</h3><p>{copy.message}</p><p>{copy.hint}</p>{state.error.kind === "auth" && <div className="login-inline"><label className="field"><span className="field-label">{t("passwordLabel")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" onKeyDown={(event) => { if (event.key === "Enter") onLogin(); }} /></label><button className="primary-button" type="button" onClick={onLogin} disabled={loginBusy || !password}>{loginBusy ? t("loggingIn") : t("login")}</button><button className="secondary-button" type="button" onClick={onBeginAuth} disabled={authBusy}>{authBusy ? t("authStarting") : t("authServerDriven")}</button><small>{t("passwordNotStored")}</small></div>}{state.error.kind === "trust" && <button className="primary-button" type="button" onClick={onInspectTrust} disabled={trustBusy}>{trustBusy ? t("loadingTrust") : t("trustReview")}</button>}{state.error.diagnostics && <details className="diagnostics"><summary>{t("technicalDetails")}</summary><pre>{state.error.diagnostics}</pre></details>}</div></div>;
   }
   const info = state.value;
-  return <div className="result success" role="status"><CircleCheck className="status-symbol" aria-hidden="true" /><div><h3>{t("serverResponded")}</h3><p>{t("connectionSuccessBody")}</p><dl className="connection-facts"><Fact label={t("factServer")} value={info.serverAddress} /><Fact label={t("factVersion")} value={info.serverVersion} /><Fact label={t("factUser")} value={info.userName} /><Fact label={t("factWorkspace")} value={info.clientName} /><Fact label={t("factRoot")} value={info.clientRoot} /><Fact label={t("factStream")} value={info.clientStream} /><Fact label={t("factServerServices")} value={info.serverServices} /><Fact label={t("factServerId")} value={info.serverId} /><Fact label={t("factSecurity")} value={info.security} /><Fact label={t("factClientAddress")} value={info.clientAddress} /><Fact label={t("factUserEmail")} value={info.userEmail} /></dl><div className="ticket-status"><button className="secondary-button" type="button" onClick={onTicketStatus} disabled={ticketStatus.phase === "loading"}>{ticketStatus.phase === "loading" ? t("checkingTicket") : t("checkTicket")}</button>{ticketStatus.phase === "success" && <><span>{t("ticketValid")}{ticketStatus.value?.expiresInMinutes !== undefined ? ` · ${ticketStatus.value.expiresInMinutes} ${t("minutesRemaining")}` : ""}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("renewPasswordPlaceholder")} autoComplete="current-password" /><button className="secondary-button" type="button" onClick={onRenew} disabled={renewBusy || !password}>{renewBusy ? t("renewingTicket") : t("renewTicket")}</button></>}{ticketStatus.phase === "error" && <span className="field-error">{errorText(ticketStatus.error?.kind ?? "command_failed", t).message}</span>}</div></div></div>;
+  const capabilities = info.capabilities;
+  return <div className="result success" role="status"><CircleCheck className="status-symbol" aria-hidden="true" /><div><h3>{t("serverResponded")}</h3><p>{t("connectionSuccessBody")}</p><dl className="connection-facts"><Fact label={t("factServer")} value={info.serverAddress} /><Fact label={t("factVersion")} value={info.serverVersion} /><Fact label={t("factCliVersion")} value={capabilities?.cliVersion} /><Fact label={t("factUser")} value={info.userName} /><Fact label={t("factWorkspace")} value={info.clientName} /><Fact label={t("factWorkspaceKind")} value={capabilities ? t(capabilities.workspaceKind === "stream" ? "workspaceKindStream" : capabilities.workspaceKind === "classic" ? "workspaceKindClassic" : "capabilityUnknown") : undefined} /><Fact label={t("factRoot")} value={info.clientRoot} /><Fact label={t("factStream")} value={info.clientStream} /><Fact label={t("factServerServices")} value={info.serverServices} /><Fact label={t("factServerId")} value={info.serverId} /><Fact label={t("factTopology")} value={capabilities?.topology} /><Fact label={t("factSecurity")} value={info.security} /><Fact label={t("factCaseMode")} value={capabilities?.caseHandling} /><Fact label={t("factUnicode")} value={capabilities?.unicode} /><Fact label={t("factDepotModes")} value={capabilities?.depotModes.join(", ")} /><Fact label={t("factClientAddress")} value={info.clientAddress} /><Fact label={t("factUserEmail")} value={info.userEmail} /></dl>{capabilities && <div className="capability-list" aria-label={t("capabilitiesTitle")}><strong>{t("capabilitiesTitle")}</strong>{Object.entries(capabilities.commands).map(([name, fact]) => <span key={name}><code>{name}</code>: {t(fact.state === "supported" ? "capabilitySupported" : fact.state === "unsupported" ? "capabilityUnsupported" : "capabilityUnknown")} · {t(capabilityReasonKey(fact.reason))}</span>)}</div>}<div className="ticket-status"><button className="secondary-button" type="button" onClick={onTicketStatus} disabled={ticketStatus.phase === "loading"}>{ticketStatus.phase === "loading" ? t("checkingTicket") : t("checkTicket")}</button>{ticketStatus.phase === "success" && <><span>{t("ticketValid")}{ticketStatus.value?.expiresInMinutes !== undefined ? ` · ${ticketStatus.value.expiresInMinutes} ${t("minutesRemaining")}` : ""}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("renewPasswordPlaceholder")} autoComplete="current-password" /><button className="secondary-button" type="button" onClick={onRenew} disabled={renewBusy || !password}>{renewBusy ? t("renewingTicket") : t("renewTicket")}</button></>}{ticketStatus.phase === "error" && <span className="field-error">{errorText(ticketStatus.error?.kind ?? "command_failed", t).message}</span>}</div></div></div>;
+}
+
+function AuthDialog({ state, t, onClose, onSelect, onResponse, onCheck }: { state: AuthUiState; t: Translate; onClose: () => void; onSelect: (method: string) => void; onResponse: (value: string) => void; onCheck: () => void }) {
+  const stage = state.stage;
+  return <Modal title={t("authDialogTitle")} busy={state.busy} onClose={onClose}><div className="dialog-body auth-dialog" aria-live="polite">{state.busy && <p>{t("authWaiting")}</p>}{state.error && <InlineError error={state.error} t={t} />}{stage?.kind === "method_selection" && <><p>{t("authChooseMethod")}</p><div className="dialog-choice-list">{stage.methods.map((method) => <button className="secondary-button" type="button" key={method} onClick={() => onSelect(method)}>{method}</button>)}</div></>}{stage?.kind === "second_factor" && <label className="field"><span className="field-label">{t("authResponseLabel")}</span><input autoFocus type="password" value={state.response} onChange={(event) => onResponse(event.currentTarget.value)} autoComplete="one-time-code" onKeyDown={(event) => { if (event.key === "Enter" && state.response) onCheck(); }} /><span className="field-hint">{t("authSecretNotStored")}</span></label>}{stage && ["external_browser", "waiting"].includes(stage.kind) && <p>{t(stage.kind === "external_browser" ? "authBrowserOpened" : "authWaiting")}</p>}{stage?.kind === "password_required" && <p>{t("authPasswordRequired")}</p>}{stage?.kind === "unsupported" && <p>{t("authUnsupported")}</p>}{stage?.kind === "expired" && <p>{t("authExpired")}</p>}{stage?.kind === "failed" && <p>{t("authFailed")}</p>}</div><div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={state.busy}>{t("cancel")}</button>{stage?.kind === "second_factor" && <button className="primary-button" type="button" onClick={onCheck} disabled={state.busy || !state.response}>{t("authContinue")}</button>}</div></Modal>;
+}
+
+function capabilityReasonKey(reason: string): TranslationKey {
+  const keys: Record<string, TranslationKey> = {
+    verified_help: "capabilityReasonVerified",
+    command_missing: "capabilityReasonMissing",
+    flag_missing: "capabilityReasonFlagMissing",
+    permission_denied: "capabilityReasonPermission",
+    probe_unavailable: "capabilityReasonUnavailable",
+    topology_verified: "capabilityReasonTopology",
+    depots_verified: "capabilityReasonServer",
+  };
+  return keys[reason] ?? "capabilityReasonUnavailable";
 }
 
 function Fact({ label, value }: { label: string; value?: string }) {

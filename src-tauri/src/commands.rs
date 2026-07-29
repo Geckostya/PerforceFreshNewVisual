@@ -1,19 +1,20 @@
 use crate::{
     diagnostics, locales,
     models::{
-        AnnotationLine, AppError, AppSettings, ChangeExportResult, CherryPickPreviewItem,
-        CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput, CreateStreamPreview,
-        DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile, DepotSummary, DiffInput,
-        EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, Job, Label,
-        LocaleCatalog, MoveInput, OpenedFile, OperationDiagnostic, OperationEvent,
-        OperationEventKind, OperationItemResult, OperationReadBack, OperationReadBackStatus,
-        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
-        ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput,
-        SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
-        ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
-        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
-        TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput,
-        WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
+        CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
+        CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
+        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
+        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationDiagnostic,
+        OperationEvent, OperationEventKind, OperationItemResult, OperationReadBack,
+        OperationReadBackStatus, P4Detection, P4Info, PendingChange, PreviewUnshelveInput,
+        ReconcileItem, ReopenInput, ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem,
+        SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput,
+        ShelveInput, ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
+        SubmitPreflightSummary, SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput,
+        SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput,
+        UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec,
+        WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -31,6 +32,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Default)]
 pub struct WorkspaceRootRegistry {
@@ -158,6 +160,48 @@ pub async fn login(input: ConnectionInput, password: String) -> Result<(), AppEr
 }
 
 #[tauri::command]
+pub async fn begin_auth(input: ConnectionInput) -> Result<AuthStage, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::begin_auth(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn select_auth_method(
+    app: tauri::AppHandle,
+    input: ConnectionInput,
+    method: String,
+) -> Result<AuthStage, AppError> {
+    let (stage, browser_url) =
+        tauri::async_runtime::spawn_blocking(move || p4::select_auth_method(&input, &method))
+            .await
+            .map_err(task_error)??;
+    if let Some(url) = browser_url {
+        app.opener().open_url(url, None::<String>).map_err(|_| {
+            AppError::new(
+                ErrorKind::Auth,
+                "The system browser could not be opened for authentication.",
+            )
+            .with_hint("Retry the authentication handoff or use password sign-in.")
+        })?;
+    }
+    Ok(stage)
+}
+
+#[tauri::command]
+pub async fn check_auth(
+    input: ConnectionInput,
+    response: Option<String>,
+    polling_attempt: u8,
+) -> Result<AuthStage, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::check_auth(&input, response.as_deref(), polling_attempt)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn login_status(input: ConnectionInput) -> Result<crate::models::LoginStatus, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::login_status(&input))
         .await
@@ -174,6 +218,23 @@ pub async fn logout(input: ConnectionInput) -> Result<(), AppError> {
 #[tauri::command]
 pub async fn list_trust(input: ConnectionInput) -> Result<Vec<TrustEntry>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_trust(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_trust(input: ConnectionInput) -> Result<TrustChallenge, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::inspect_trust(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn confirm_trust(
+    input: ConnectionInput,
+    fingerprint: String,
+) -> Result<TrustEntry, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::confirm_trust(&input, &fingerprint))
         .await
         .map_err(task_error)?
 }

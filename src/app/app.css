@@ -35,6 +35,11 @@
 .submit-preflight-issue small { color:var(--text-tertiary); }
 .login-inline { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; margin-top:12px; padding-top:10px; border-top:1px solid var(--border); }
 .login-inline small { grid-column:1 / -1; color:var(--text-tertiary); }
+.trust-fingerprint { min-height:88px; font-family:ui-monospace, SFMono-Regular, Consolas, monospace; resize:vertical; overflow-wrap:anywhere; }
+.auth-dialog { min-width:min(440px, 75vw); }
+.dialog-choice-list { display:grid; gap:8px; }
+.capability-list { display:grid; gap:4px; margin-top:12px; color:var(--text-secondary); }
+.capability-list > span { font-size:12px; }
 .top-error { position:fixed; z-index:10; top:62px; right:18px; display:grid; gap:3px; max-width:420px; padding:10px 12px; border:1px solid var(--danger); border-radius:7px; background:var(--surface-raised); box-shadow:0 8px 24px #0003; font-size:12px; }
 .top-error span { color:var(--text-secondary); }
 .brand {

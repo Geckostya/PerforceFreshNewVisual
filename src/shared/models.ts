@@ -80,6 +80,31 @@ export interface P4Info {
   security?: string;
   clientAddress?: string;
   userEmail?: string;
+  capabilities?: CapabilitySnapshot;
+}
+
+export type CapabilityState = "supported" | "unsupported" | "unknown";
+export type CapabilityEvidence = "client" | "server" | "workspace" | "topology" | "permission" | "unavailable";
+
+export interface CapabilityFact {
+  state: CapabilityState;
+  reason: string;
+  evidence: CapabilityEvidence;
+}
+
+export interface CapabilitySnapshot {
+  cliVersion?: string;
+  serverVersion?: string;
+  serverServices?: string;
+  serverId?: string;
+  topology?: string;
+  unicode?: string;
+  caseHandling?: string;
+  security?: string;
+  workspaceKind: "stream" | "classic" | "unknown";
+  depotModes: string[];
+  commands: Record<string, CapabilityFact>;
+  facts: Record<string, CapabilityFact>;
 }
 
 export interface LoginStatus {
@@ -175,6 +200,32 @@ export interface DepotFile {
 }
 
 export interface TrustEntry { server: string; fingerprint: string; }
+
+export interface TrustChallenge {
+  server: string;
+  presentedFingerprint: string;
+  existingFingerprint?: string;
+  reason: "new" | "changed";
+}
+
+export type AuthStageKind =
+  | "password_required"
+  | "method_selection"
+  | "second_factor"
+  | "external_browser"
+  | "waiting"
+  | "success"
+  | "expired"
+  | "cancelled"
+  | "failed"
+  | "unsupported";
+
+export interface AuthStage {
+  kind: AuthStageKind;
+  methods: string[];
+  pollingAttempt: number;
+  maxPollingAttempts: number;
+}
 
 export type OperationEventKind =
   | "started"

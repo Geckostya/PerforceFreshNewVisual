@@ -63,6 +63,14 @@ Rust backend:
 
 `AppError.kind` distinguishes auth, trust, permission, conflict, offline, timeout, unsupported capability, server limit, cancelled, stale, partial result, invalid output, and command failure. An ordinary rejected operation is not labeled a connection failure.
 
+### Trust, authentication, and session capabilities
+
+SSL trust is a two-command workflow. A refusal probe (`p4 trust -n`) obtains a complete validated fingerprint and compares it with the local trust list. The UI displays the full presented and existing fingerprints with Cancel as the default. Only the narrow confirmation command may install that exact fingerprint through `trust -i` (and `-f` only for a verified change); success is followed by a trust-list read-back. Ordinary connection paths never auto-accept trust.
+
+Password and MFA responses cross the IPC boundary only for the current action and reach `p4` through stdin. Authentication command output is treated as sensitive: it is parsed into a bounded stage DTO but is not written to the CLI log, diagnostics, settings, or UI snapshot. `login2` method discovery, initialization, and checks are server-driven. Browser handoff accepts only a bounded server-provided HTTP(S) URL, opens it through the platform opener without a shell, and never returns the URL to frontend state. Polling is bounded and closing the dialog stops further checks. Password login remains the fallback when `login2` is unavailable.
+
+Each successful connection builds an immutable capability snapshot inside `P4Info`. It combines CLI help probes with server `info`, bounded topology, depot modes, and workspace binding. Every checked fact is `supported`, `unsupported`, or `unknown`, with an evidence category and stable reason. Permission denial and unavailable probes remain unknown; they are never promoted from version strings. The snapshot is rebuilt after authentication, workspace changes, and new connections. UI gates block only proven unsupported actions; unknown normally permits a safe server-authoritative attempt.
+
 `p4 filelog -Mj` returns revisions as indexed fields (`rev0`, `change0`, `how0,0`), so the history parser expands each index into a separate `FileRevision`; flat records are also supported for compatibility and unit fixtures.
 
 Submitted filtering sends validated user/workspace values to bounded `p4 changes` queries. The Submitted screen enriches that page through `p4 describe -s -m 1` and longest stream-prefix matching; other consumers skip it. Selection uses `describe -s -m limit+1`, reporting truncation without an unbounded read; only explicit choice requests complete detail. Get This Revision streams exact `depotFile#rev` scopes through `p4 -x -` and shared safe sync. Cherry-pick rereads the change, verifies one source stream and the current target, then previews or applies `p4 integrate -S source -P target -Af source/...@=change` into an explicit pending changelist. Resolve, review, and submit remain separate decisions.
@@ -134,6 +142,7 @@ The bridge is an opt-in, development-only boundary without arbitrary filesystem,
 - Unactual IDs cannot be cleaned while the corresponding pending/stream snapshot is still loading or in error; stale cleanup is allowed only after a successful server read.
 - Local Files and its scoped IndexedDB cache follow [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
 - A connection profile contains only executable, port, user, client, charset, and explicit config paths.
+- Trust fingerprints, authentication stages, browser URLs, challenges, responses, tickets, and tokens are session-only or action-local and are never written to connection profiles.
 - Automatic charset remains unset for non-Unicode servers; after `p4 info` reports a Unicode server, the active session uses UTF-8 for metadata, forms, and descriptions while preserving the saved Auto choice.
 - Every user-facing string exists in complete `locales/en.json` and `locales/ru.json` packs.
 - Additional complete JSON packs load beside the shipping executable or from the app config directory; see [`LOCALIZATION.md`](LOCALIZATION.md).

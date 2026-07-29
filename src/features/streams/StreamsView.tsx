@@ -5,7 +5,7 @@ import { useLocale } from "../../shared/i18n";
 import { partitionArchived } from "../../shared/localArchive";
 import { useArchiveDragDrop } from "../../shared/useArchiveDragDrop";
 import { useLocalArchive } from "../../shared/useLocalArchive";
-import type { AppError, ConnectionInput, P4Info, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
+import type { AppError, CapabilitySnapshot, ConnectionInput, P4Info, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
 import type { ResourceFreshness } from "../../shared/models";
 import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
 import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/ItemList";
@@ -18,7 +18,7 @@ import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescen
 import { loadStreamPreferences, saveStreamPreferences, streamPreferencesStorageKey, type StreamPreferences } from "./streamPreferences";
 import { CreateStreamDialog } from "./CreateStreamDialog";
 
-export function StreamsView({ connection, currentStream, onSwitched }: { connection: ConnectionInput; currentStream?: string; onSwitched: (info: P4Info) => void }) {
+export function StreamsView({ connection, currentStream, capabilities, onSwitched }: { connection: ConnectionInput; currentStream?: string; capabilities?: CapabilitySnapshot; onSwitched: (info: P4Info) => void }) {
   const { t } = useLocale();
   const preferencesKey = streamPreferencesStorageKey(connection.port, connection.user, connection.client);
   const initialPreferences = loadStreamPreferences(preferencesKey);
@@ -253,7 +253,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     })}
   </ul>;
 
-  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<><button data-agent-id="create-stream" className="primary-button" type="button" disabled={freshness !== "fresh" || busy || streams.length === 0} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream?.path || currentStream || streams[0]?.path)}>{t("createStream")}</button><RefreshButton busy={busy} onClick={() => void load()} /></>}>
+  return <View id="streams-title" title={t("streamsTitle")} subtitle={`${t("streamsBody")} ${t(capabilities?.workspaceKind === "stream" ? "streamsCapabilityStream" : capabilities?.workspaceKind === "classic" ? "streamsCapabilityClassic" : "streamsCapabilityUnknown")}`} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<><button data-agent-id="create-stream" className="primary-button" type="button" disabled={freshness !== "fresh" || busy || streams.length === 0} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream?.path || currentStream || streams[0]?.path)}>{t("createStream")}</button><RefreshButton busy={busy} onClick={() => void load()} /></>}>
     {freshness !== "fresh" && freshness !== "loading" && <p className="notice-banner" id="streams-stale-reason" role="status">{t("staleMutationBlocked")}</p>}
     <div className="streams-workbench">
       <aside className="streams-tree-pane">
