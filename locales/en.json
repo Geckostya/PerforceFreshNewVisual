@@ -567,6 +567,7 @@
     "operationsActive": "active",
     "operationSync": "Sync",
     "operationSubmit": "Submit",
+    "operationIntegrate": "Integration",
     "operationReconcilePreview": "Reconcile preview",
     "operationReconcile": "Reconcile",
     "operationFilesProcessed": "files processed",

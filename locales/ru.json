@@ -567,6 +567,7 @@
     "operationsActive": "активных",
     "operationSync": "Sync",
     "operationSubmit": "Submit",
+    "operationIntegrate": "Интеграция",
     "operationReconcilePreview": "Предпросмотр reconcile",
     "operationReconcile": "Reconcile",
     "operationFilesProcessed": "файлов обработано",

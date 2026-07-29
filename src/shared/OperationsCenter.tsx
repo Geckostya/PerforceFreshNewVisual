@@ -2,10 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Activity, X } from "lucide-react";
 import { cancelOperation, startSync } from "./api";
-import { useLocale } from "./i18n";
+import { useLocale, type TranslationKey } from "./i18n";
 import type { ConnectionInput, OperationEvent } from "./models";
 import { formatEta, isOperationActive, operationAnnouncementPriority, operationConnectionKey, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
 import { ActionDialog } from "./View";
+
+export function operationLabelKey(kind: string): TranslationKey {
+  if (kind === "submit") return "operationSubmit";
+  if (kind === "reconcile_preview") return "operationReconcilePreview";
+  if (kind === "reconcile") return "operationReconcile";
+  if (kind === "integrate") return "operationIntegrate";
+  return "operationSync";
+}
 
 export function OperationsCenter({ connection, onRecover }: {
   connection: ConnectionInput;
@@ -90,10 +98,7 @@ export function OperationsCenter({ connection, onRecover }: {
   }
 
   function operationLabel(kind: string) {
-    if (kind === "submit") return t("operationSubmit");
-    if (kind === "reconcile_preview") return t("operationReconcilePreview");
-    if (kind === "reconcile") return t("operationReconcile");
-    return t("operationSync");
+    return t(operationLabelKey(kind));
   }
 
   function operationPhase(item: OperationSnapshot) {

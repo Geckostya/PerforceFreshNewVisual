@@ -915,6 +915,44 @@ fn integration_output_path(line: &str) -> Option<String> {
         })
 }
 
+fn confirmed_integration_paths(
+    expected: &BTreeSet<String>,
+    baseline: &BTreeSet<String>,
+    output: &BTreeSet<String>,
+    opened: &[OpenedFile],
+    target_change: &str,
+) -> BTreeSet<String> {
+    opened
+        .iter()
+        .filter(|item| item.change == target_change)
+        .map(|item| item.depot_path.to_ascii_lowercase())
+        .filter(|path| {
+            expected.contains(path) && (!baseline.contains(path) || output.contains(path))
+        })
+        .collect()
+}
+
+fn unexpected_integration_paths(
+    expected: &BTreeSet<String>,
+    baseline: &BTreeSet<String>,
+    output: &BTreeSet<String>,
+    opened: &[OpenedFile],
+    target_change: &str,
+) -> BTreeSet<String> {
+    let mut unexpected = output
+        .difference(expected)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    unexpected.extend(
+        opened
+            .iter()
+            .filter(|item| item.change == target_change)
+            .map(|item| item.depot_path.to_ascii_lowercase())
+            .filter(|path| !baseline.contains(path) && !expected.contains(path)),
+    );
+    unexpected
+}
+
 #[tauri::command]
 pub async fn start_stream_integration(
     app: tauri::AppHandle,
@@ -944,6 +982,22 @@ pub async fn start_stream_integration(
             "Another workspace mutation is already running.",
         ));
     }
+    let baseline_opened = match p4::list_opened_files(&input.connection) {
+        Ok(opened) => opened
+            .into_iter()
+            .filter(|item| item.change == input.target_change)
+            .map(|item| item.depot_path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>(),
+        Err(error) => {
+            registry.remove(&operation_id);
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Could not establish the pre-integration server state.",
+            )
+            .with_diagnostics(error.message)
+            .with_hint("Refresh the pending changelist and retry."));
+        }
+    };
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -1042,18 +1096,26 @@ pub async fn start_stream_integration(
             .map(|path| path.to_ascii_lowercase())
             .collect::<BTreeSet<_>>();
         let confirmed = readback.as_ref().map(|opened| {
-            opened
-                .iter()
-                .filter(|item| {
-                    item.change == recovery_input.target_change
-                        && expected.contains(&item.depot_path.to_ascii_lowercase())
-                })
-                .map(|item| item.depot_path.to_ascii_lowercase())
-                .filter(|path| process_success || output_path_set.contains(path))
-                .collect::<BTreeSet<_>>()
+            confirmed_integration_paths(
+                &expected,
+                &baseline_opened,
+                &output_path_set,
+                opened,
+                &recovery_input.target_change,
+            )
+        });
+        let unexpected = readback.as_ref().map(|opened| {
+            unexpected_integration_paths(
+                &expected,
+                &baseline_opened,
+                &output_path_set,
+                opened,
+                &recovery_input.target_change,
+            )
         });
         let confirmed_count = confirmed.as_ref().map(BTreeSet::len).unwrap_or_default();
-        let kind = if readback.is_err() && (process_success || !output_paths.is_empty()) {
+        let has_unexpected = unexpected.as_ref().is_ok_and(|paths| !paths.is_empty());
+        let kind = if readback.is_err() || has_unexpected {
             OperationEventKind::Unknown
         } else if was_cancelled && confirmed_count > 0 {
             OperationEventKind::Partial
@@ -1066,7 +1128,7 @@ pub async fn start_stream_integration(
         } else {
             OperationEventKind::Failed
         };
-        let item_results = preview
+        let mut item_results = preview
             .items
             .iter()
             .enumerate()
@@ -1097,6 +1159,21 @@ pub async fn start_stream_integration(
                 }
             })
             .collect::<Vec<_>>();
+        if let Ok(paths) = &unexpected {
+            item_results.extend(paths.iter().enumerate().map(|(index, path)| {
+                OperationItemResult {
+                    item_id: format!("integration-unexpected-{index}"),
+                    path: Some(path.clone()),
+                    status: OperationItemStatus::Failed,
+                    reason: Some(
+                        "The server changed a path that was not present in the approved preview."
+                            .to_owned(),
+                    ),
+                    compensation: OperationCompensationStatus::NotRequired,
+                    recovery_action_id: Some("refresh_changes".to_owned()),
+                }
+            }));
+        }
         let read_back = OperationReadBack {
             status: if readback.is_ok() {
                 OperationReadBackStatus::Succeeded
@@ -1109,6 +1186,12 @@ pub async fn start_stream_integration(
                 "resolve_state".to_owned(),
             ],
             message: Some(match &readback {
+                Ok(_) if has_unexpected => format!(
+                    "Confirmed {confirmed_count} of {} previewed files, but detected {} unexpected path(s) in CL {}.",
+                    expected.len(),
+                    unexpected.as_ref().map(BTreeSet::len).unwrap_or_default(),
+                    recovery_input.target_change
+                ),
                 Ok(_) => format!(
                     "Confirmed {confirmed_count} of {} previewed files in CL {}.",
                     expected.len(),
@@ -2847,12 +2930,13 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_operation_diagnostics, operation_event, parse_sync_output_record,
-        submitted_change_from_record, sync_operation_scope, sync_operation_succeeded,
-        validate_reveal_path, workspace_stream_view_paths,
+        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
+        parse_sync_output_record, submitted_change_from_record, sync_operation_scope,
+        sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
+        workspace_stream_view_paths,
     };
-    use crate::models::OperationEventKind;
-    use std::fs;
+    use crate::models::{OpenedFile, OperationEventKind};
+    use std::{collections::BTreeSet, fs};
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -2872,6 +2956,56 @@ mod tests {
         assert!(!sync_operation_succeeded(true, true, false));
         assert!(sync_operation_succeeded(true, false, true));
         assert!(sync_operation_succeeded(false, true, false));
+    }
+
+    #[test]
+    fn integration_readback_uses_delta_or_command_output_and_detects_expansion() {
+        let expected =
+            BTreeSet::from(["//acme/dev/a.txt".to_owned(), "//acme/dev/b.txt".to_owned()]);
+        let baseline = BTreeSet::from(["//acme/dev/a.txt".to_owned()]);
+        let output = BTreeSet::from(["//acme/dev/a.txt".to_owned()]);
+        let opened = [
+            opened_file("//Acme/dev/a.txt"),
+            opened_file("//Acme/dev/b.txt"),
+            opened_file("//Acme/dev/unexpected.txt"),
+        ];
+
+        assert_eq!(
+            confirmed_integration_paths(&expected, &baseline, &output, &opened, "123"),
+            expected
+        );
+        assert_eq!(
+            unexpected_integration_paths(&expected, &baseline, &output, &opened, "123"),
+            BTreeSet::from(["//acme/dev/unexpected.txt".to_owned()])
+        );
+    }
+
+    #[test]
+    fn integration_readback_does_not_claim_an_unchanged_preopened_file() {
+        let path = "//acme/dev/a.txt".to_owned();
+        let expected = BTreeSet::from([path.clone()]);
+        let baseline = BTreeSet::from([path]);
+        assert!(
+            confirmed_integration_paths(
+                &expected,
+                &baseline,
+                &BTreeSet::new(),
+                &[opened_file("//Acme/dev/a.txt")],
+                "123",
+            )
+            .is_empty()
+        );
+    }
+
+    fn opened_file(path: &str) -> OpenedFile {
+        OpenedFile {
+            depot_path: path.to_owned(),
+            client_path: None,
+            action: "integrate".to_owned(),
+            change: "123".to_owned(),
+            revision: None,
+            file_type: None,
+        }
     }
 
     #[test]

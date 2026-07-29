@@ -754,6 +754,7 @@ pub fn preview_stream_integration(
     input.target_change.hash(&mut hasher);
     items.hash(&mut hasher);
     let identity = format!("stream-integration-{:016x}", hasher.finish());
+    let partial = integration_preview_is_partial(partial, &warnings);
     Ok(StreamIntegrationPreview {
         identity,
         direction: input.direction,
@@ -767,6 +768,10 @@ pub fn preview_stream_integration(
         truncated,
         partial,
     })
+}
+
+fn integration_preview_is_partial(command_partial: bool, warnings: &[String]) -> bool {
+    command_partial || !warnings.is_empty()
 }
 
 pub fn stream_integration_command(
@@ -6935,5 +6940,14 @@ mod tests {
         );
         assert!(preview.contains(&"-n".to_owned()));
         assert!(preview.contains(&"201".to_owned()));
+    }
+
+    #[test]
+    fn stream_integration_warning_makes_preview_non_applyable() {
+        assert!(integration_preview_is_partial(
+            false,
+            &["Some files were skipped.".to_owned()]
+        ));
+        assert!(!integration_preview_is_partial(false, &[]));
     }
 }

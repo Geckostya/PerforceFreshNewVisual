@@ -20,6 +20,17 @@ export function streamIntegrationCandidates(streams: StreamSummary[], currentStr
   return candidates;
 }
 
+export function streamIntegrationCandidatesForSelection(
+  candidates: StreamIntegrationCandidate[],
+  selectedStream?: string,
+): StreamIntegrationCandidate[] {
+  if (!selectedStream) return [];
+  const selected = selectedStream.toLowerCase();
+  return candidates.filter((candidate) =>
+    candidate.sourceStream.toLowerCase() === selected || candidate.targetStream.toLowerCase() === selected,
+  );
+}
+
 export interface StreamTreeNode {
   stream: StreamSummary;
   children: StreamTreeNode[];
