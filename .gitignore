@@ -9,6 +9,7 @@ src-tauri/target/
 
 # Local development state
 artifacts/
+.tmp/
 p4fnv.lnk
 .codex/environments/
 .env

@@ -9,6 +9,7 @@ Docs/                  living contracts, area checklists, and selected research
 locales/               complete external English and Russian packs
 scripts/               repository-wide build and packaging helpers
 tools/p4fnv-agent/     development-only native UI MCP
+tools/parallel-workflow/ prioritized worktree queue and isolated validator
 src/app/               application shell, navigation, and global composition
 src/features/<area>/   one user-facing vertical slice
 src/shared/            primitives used by more than one feature

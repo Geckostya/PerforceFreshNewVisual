@@ -18,6 +18,7 @@ The root of `Docs` contains the application's living contracts. This file is the
 | [`LOCALIZATION.md`](LOCALIZATION.md) | English/Russian and external language packs |
 | [`CODEX_MCP_SETUP.md`](CODEX_MCP_SETUP.md) | installing, discovering, and diagnosing the P4FNV Agent plugin in Codex |
 | [`AGENT_DEVELOPMENT.md`](AGENT_DEVELOPMENT.md) | local MCP, the native UI bridge, and autonomous verification |
+| [`PARALLEL_DEVELOPMENT.md`](PARALLEL_DEVELOPMENT.md) | prioritized worktree workers and serialized commit validation |
 
 ## Freshness rule
 

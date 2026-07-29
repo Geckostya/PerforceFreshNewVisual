@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4fnv.local/schemas/parallel-workflow/validation-result.schema.json",
+  "title": "P4FNV validation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "resultId",
+    "requestId",
+    "workflowId",
+    "taskId",
+    "taskKind",
+    "assignmentId",
+    "workerThreadId",
+    "commitSha",
+    "baseSha",
+    "validationProfile",
+    "changedFiles",
+    "status",
+    "retryable",
+    "summary",
+    "startedAt",
+    "completedAt",
+    "durationMs",
+    "logDirectory",
+    "commands",
+    "warnings"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "resultId": { "type": "string", "minLength": 1 },
+    "requestId": { "type": "string", "minLength": 1 },
+    "workflowId": { "type": "string", "minLength": 1 },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "taskKind": {
+      "enum": ["feature", "refactor", "stabilization"]
+    },
+    "qualityCheckpointId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "assignmentId": { "type": "string", "minLength": 1 },
+    "workerThreadId": { "type": "string", "minLength": 1 },
+    "commitSha": { "$ref": "#/$defs/commitSha" },
+    "baseSha": { "$ref": "#/$defs/commitSha" },
+    "validationProfile": {
+      "enum": ["p4fnv-fast", "p4fnv-full", "p4fnv-full-p4d"]
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "status": {
+      "enum": ["passed", "failed", "infrastructure-error"]
+    },
+    "retryable": { "type": "boolean" },
+    "summary": { "type": "string", "minLength": 1 },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "logDirectory": { "type": "string", "minLength": 1 },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "command",
+          "status",
+          "exitCode",
+          "timedOut",
+          "startedAt",
+          "completedAt",
+          "durationMs",
+          "logPath",
+          "outputTail"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "command": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "status": { "enum": ["passed", "failed"] },
+          "exitCode": { "type": "integer" },
+          "timedOut": { "type": "boolean" },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "completedAt": { "type": "string", "format": "date-time" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "logPath": { "type": "string", "minLength": 1 },
+          "outputTail": { "type": "string" }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "commitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    }
+  }
+}

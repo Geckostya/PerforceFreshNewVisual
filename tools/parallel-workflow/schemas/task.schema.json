@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4fnv.local/schemas/parallel-workflow/task.schema.json",
+  "title": "P4FNV parallel workflow task",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "taskId",
+    "title",
+    "description",
+    "priority",
+    "dependsOn",
+    "acceptanceCriteria"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "priority": { "type": "integer", "minimum": 1, "maximum": 999 },
+    "taskKind": {
+      "enum": ["feature", "refactor", "stabilization"]
+    },
+    "dependsOn": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+      }
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "sourceTaskIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+      }
+    },
+    "coveredFeatureTaskIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+      }
+    },
+    "qualityCheckpointId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "baseRef": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+    },
+    "validationProfile": {
+      "enum": ["p4fnv-fast", "p4fnv-full", "p4fnv-full-p4d"]
+    },
+    "relevantPaths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "metadata": { "type": "object" },
+    "status": {
+      "enum": ["pending", "active", "completed", "blocked"]
+    },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "workerThreadId": { "type": "string", "minLength": 1 },
+    "assignmentId": { "type": "string", "minLength": 1 },
+    "baseSha": { "$ref": "#/$defs/commitSha" },
+    "claimedAt": { "type": "string", "format": "date-time" },
+    "latestValidationRequestId": { "type": "string", "minLength": 1 },
+    "latestValidationState": {
+      "enum": ["pending", "passed", "failed", "infrastructure-error"]
+    },
+    "latestValidationResultId": { "type": "string", "minLength": 1 },
+    "latestValidatedCommitSha": { "$ref": "#/$defs/commitSha" },
+    "validatedCommitSha": { "$ref": "#/$defs/commitSha" },
+    "validationResultId": { "type": "string", "minLength": 1 },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "blockedReason": { "type": "string", "minLength": 1 },
+    "blockedAt": { "type": "string", "format": "date-time" },
+    "requeueReason": { "type": "string", "minLength": 1 },
+    "requeuedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "commitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    }
+  }
+}

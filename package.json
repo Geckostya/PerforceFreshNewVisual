@@ -14,8 +14,10 @@
     "mcp:agent": ".\\.toolchain\\node\\node.exe tools\\p4fnv-agent\\start.mjs",
     "smoke:agent": "npm run build:agent && .\\.toolchain\\node\\node.exe tools\\p4fnv-agent\\dist\\smoke.js",
     "test": "vitest run",
+    "test:workflow": "vitest run tools/parallel-workflow/workflow.test.mjs",
     "test:watch": "vitest",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "workflow": "node tools/parallel-workflow/workflow.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "P4FNV Parallel Work"
+  short_description: "Orchestrate worktrees and quality gates"
+  default_prompt: "Use $orchestrate-p4fnv-work to run prioritized feature work in isolated worktrees with serialized validation and mandatory refactor/stabilization checkpoints."

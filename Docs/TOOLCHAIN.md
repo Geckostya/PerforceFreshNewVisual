@@ -11,6 +11,8 @@
 
 The repository supports pinned local Node, Rust, and npm cache content in the ignored `.toolchain` directory. A global Tauri CLI, pnpm/yarn, C++ P4API, Docker, and a local P4 Server are not needed for an ordinary build.
 
+Git worktrees automatically reuse the primary checkout's pinned `.toolchain` when they do not have a local copy. Their `node_modules`, Cargo `target`, build outputs, and application processes remain worktree-local. The prioritized worker/validator workflow is defined in [`PARALLEL_DEVELOPMENT.md`](PARALLEL_DEVELOPMENT.md).
+
 ## Activation and dependency installation
 
 Start every PowerShell session from the project root:

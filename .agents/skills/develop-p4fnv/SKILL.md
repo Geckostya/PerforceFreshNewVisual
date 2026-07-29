@@ -30,6 +30,7 @@ Communicate with the user in the language of their latest request unless they as
 - Strings, RU/EN packs, or external languages: `Docs/LOCALIZATION.md`.
 - Codex Desktop plugin installation, `p4fnv_agent_plugin` discovery, or MCP startup diagnostics: `Docs/CODEX_MCP_SETUP.md`.
 - Native UI verification or snapshot/MCP bridge: `Docs/AGENT_DEVELOPMENT.md`.
+- Parallel feature workers, priority queues, worktree isolation, or serialized validation: `Docs/PARALLEL_DEVELOPMENT.md`.
 - Windows/macOS/Linux boundaries: `Docs/PORTABILITY.md`.
 - Documentation creation, cleanup, ownership, size, or feature closeout: `Docs/DOCUMENTATION_POLICY.md`.
 

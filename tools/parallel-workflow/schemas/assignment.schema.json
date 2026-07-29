@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4fnv.local/schemas/parallel-workflow/assignment.schema.json",
+  "title": "P4FNV worker assignment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "assignmentId",
+    "workflowId",
+    "taskId",
+    "taskKind",
+    "workerThreadId",
+    "stateRoot",
+    "repoRoot",
+    "baseRef",
+    "baseSha",
+    "sourceCommits",
+    "validationProfile",
+    "claimedAt",
+    "task"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "assignmentId": { "type": "string", "minLength": 1 },
+    "workflowId": { "type": "string", "minLength": 1 },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "workerThreadId": { "type": "string", "minLength": 1 },
+    "taskKind": {
+      "enum": ["feature", "refactor", "stabilization"]
+    },
+    "qualityCheckpointId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "stateRoot": { "type": "string", "minLength": 1 },
+    "repoRoot": { "type": "string", "minLength": 1 },
+    "baseRef": { "type": "string", "minLength": 1 },
+    "baseSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "sourceCommits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["taskId", "taskKind", "baseSha", "commitSha"],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "taskKind": {
+            "enum": ["feature", "refactor", "stabilization"]
+          },
+          "baseSha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "commitSha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          }
+        }
+      }
+    },
+    "validationProfile": {
+      "enum": ["p4fnv-fast", "p4fnv-full", "p4fnv-full-p4d"]
+    },
+    "claimedAt": { "type": "string", "format": "date-time" },
+    "task": {
+      "$ref": "./task.schema.json"
+    }
+  }
+}
