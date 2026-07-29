@@ -10,8 +10,9 @@ const TASK_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 const COMMIT_PATTERN = /^[0-9a-f]{40,64}$/i;
 const TASK_BUCKETS = ["pending", "active", "completed", "blocked"];
-const TASK_KINDS = new Set(["feature", "refactor", "stabilization"]);
+const TASK_KINDS = new Set(["feature", "refactor", "stabilization", "integration"]);
 const QUALITY_TASK_KINDS = new Set(["refactor", "stabilization"]);
+const INTEGRATION_TASK_KIND = "integration";
 const WORK_CLASSES = new Set(["implementation", "mechanical", "quality", "complex"]);
 const TASK_VALIDATION_PROFILES = new Set(["p4fnv-auto", ...Object.keys(validationProfiles)]);
 const ALLOWED_REASONING_EFFORTS = Object.freeze({
@@ -137,6 +138,7 @@ export async function initializeWorkflow({
       validationCargoTargetRoot: path.join(validationCheckoutRoot, "cargo-target"),
       workerWorktreeRoot: path.join(resolvedRepoRoot, ".tmp", "parallel-worktrees"),
       defaultBaseRef: "main",
+      integrationTargetBranch: "main",
       defaultValidationProfile: "p4fnv-auto",
       orchestratorAgentProfile: ORCHESTRATOR_AGENT_PROFILE,
       qualityCheckpointUnits: resolvedQualityEvery,
@@ -286,6 +288,12 @@ export function normalizeTaskInput(value, config) {
     value.qualityCheckpointId === undefined
       ? undefined
       : validateTaskId(value.qualityCheckpointId);
+  const integrationTargetBranch = value.integrationTargetBranch === undefined
+    ? undefined
+    : requireRef(value.integrationTargetBranch, `task ${taskId} integrationTargetBranch`);
+  const integrationTargetBaseSha = value.integrationTargetBaseSha === undefined
+    ? undefined
+    : validateCommit(value.integrationTargetBaseSha, `task ${taskId} integrationTargetBaseSha`);
   if (taskKind === "feature" && (sourceTaskIds.length > 0 || coveredFeatureTaskIds.length > 0)) {
     throw new WorkflowError(
       `Feature task ${taskId} cannot declare quality checkpoint sources or coverage.`,
@@ -298,6 +306,27 @@ export function normalizeTaskInput(value, config) {
   ) {
     throw new WorkflowError(
       `Quality task ${taskId} requires qualityCheckpointId, sourceTaskIds, and coveredFeatureTaskIds.`,
+      "invalid_task",
+    );
+  }
+  if (
+    taskKind === INTEGRATION_TASK_KIND &&
+    (workClass !== "complex" ||
+      sourceTaskIds.length === 0 ||
+      !integrationTargetBranch ||
+      !integrationTargetBaseSha)
+  ) {
+    throw new WorkflowError(
+      `Integration task ${taskId} requires complex work, sources, a target branch, and its immutable base SHA.`,
+      "invalid_task",
+    );
+  }
+  if (
+    taskKind !== INTEGRATION_TASK_KIND &&
+    (integrationTargetBranch !== undefined || integrationTargetBaseSha !== undefined)
+  ) {
+    throw new WorkflowError(
+      `Only an integration task may declare a target branch or target base SHA.`,
       "invalid_task",
     );
   }
@@ -319,6 +348,8 @@ export function normalizeTaskInput(value, config) {
     sourceTaskIds,
     coveredFeatureTaskIds,
     ...(qualityCheckpointId ? { qualityCheckpointId } : {}),
+    ...(integrationTargetBranch ? { integrationTargetBranch } : {}),
+    ...(integrationTargetBaseSha ? { integrationTargetBaseSha } : {}),
     acceptanceCriteria: nonEmptyStrings(
       value.acceptanceCriteria,
       `task ${taskId} acceptanceCriteria`,
@@ -336,7 +367,13 @@ export function normalizeTaskInput(value, config) {
 export async function getNextTask(stateRoot, { availableModels } = {}) {
   const workflow = await loadWorkflow(stateRoot);
   const buckets = await loadTaskBuckets(workflow.stateRoot);
-  return selectNextWorkflowItem(buckets, workflow.config, availableModels);
+  const selected = selectNextWorkflowItem(buckets, workflow.config, availableModels);
+  if (selected) return selected;
+  const quality = computeQualityState(buckets, workflow.config);
+  if (!quality.handoffReady) return null;
+  return integrationDispatchState(
+    await computeMainIntegrationState(buckets, workflow.config),
+  );
 }
 
 export function agentProfileForTask(task) {
@@ -393,6 +430,11 @@ export function computeQualityState(buckets, config) {
     thresholdReached &&
     activeFeatures.length === 0 &&
     uncovered.length > 0;
+  const unfinishedBeforeIntegration = [
+    ...buckets.pending,
+    ...buckets.active,
+    ...buckets.blocked,
+  ].filter((task) => taskKindOf(task) !== INTEGRATION_TASK_KIND);
   return {
     checkpointEvery: qualityEvery(config),
     checkpointUnits: qualityEvery(config),
@@ -406,11 +448,312 @@ export function computeQualityState(buckets, config) {
       ...new Set(qualityBarrierTasks.map((task) => task.qualityCheckpointId).filter(Boolean)),
     ],
     handoffReady:
-      buckets.pending.length === 0 &&
-      buckets.active.length === 0 &&
-      buckets.blocked.length === 0 &&
+      unfinishedBeforeIntegration.length === 0 &&
       uncovered.length === 0 &&
       qualityBarrierTasks.length === 0,
+  };
+}
+
+export async function createMainIntegrationTask({ stateRoot, taskId }) {
+  const workflow = await loadWorkflow(stateRoot);
+  const buckets = await loadTaskBuckets(workflow.stateRoot);
+  const quality = computeQualityState(buckets, workflow.config);
+  if (!quality.handoffReady) {
+    throw new WorkflowError(
+      "Main integration requires all feature, refactor, and stabilization work to complete first.",
+      "integration_not_ready",
+    );
+  }
+  const integration = await computeMainIntegrationState(buckets, workflow.config);
+  if (integration.integrated) {
+    throw new WorkflowError("The workflow is already integrated into main.", "already_integrated");
+  }
+  if (integration.inFlightTaskIds.length > 0) {
+    throw new WorkflowError(
+      `Main integration is already in flight: ${integration.inFlightTaskIds.join(", ")}.`,
+      "integration_in_flight",
+    );
+  }
+  if (integration.promotionCandidateTaskId) {
+    throw new WorkflowError(
+      `Validated task ${integration.promotionCandidateTaskId} can be promoted directly.`,
+      "promotion_required",
+    );
+  }
+  if (integration.candidateTaskIds.length === 0) {
+    throw new WorkflowError("No validated commits require main integration.", "integration_not_required");
+  }
+
+  const completedById = new Map(buckets.completed.map((task) => [task.taskId, task]));
+  const sources = integration.candidateTaskIds.map((sourceTaskId) => completedById.get(sourceTaskId));
+  const id = taskId ? validateTaskId(taskId) : nextIntegrationTaskId(buckets);
+  const profile = workflow.config.p4dTestServerRoot ? "p4fnv-full-p4d" : "p4fnv-full";
+  const coveredFeatureTaskIds = buckets.completed
+    .filter((task) => taskKindOf(task) === "feature")
+    .map((task) => task.taskId);
+  const tasks = await enqueueTasks({
+    stateRoot: workflow.stateRoot,
+    input: {
+      schemaVersion: SCHEMA_VERSION,
+      taskId: id,
+      taskKind: INTEGRATION_TASK_KIND,
+      title: "Integrate validated workflow into main",
+      description:
+        "Start from the recorded main SHA, merge every validated terminal source commit, resolve conflicts without dropping either main or feature behavior, and produce one clean integration commit for final regression validation.",
+      priority: 1,
+      workClass: "complex",
+      resourceJustification:
+        "Final main integration may require architectural conflict resolution across independently validated waves.",
+      dependsOn: integration.candidateTaskIds,
+      sourceTaskIds: integration.candidateTaskIds,
+      coveredFeatureTaskIds,
+      acceptanceCriteria: [
+        "Every assigned source commit is an ancestor of the integration commit.",
+        "Current main behavior and all validated workflow behavior are preserved after conflict resolution.",
+        "The worktree is clean and the integration commit passes the full regression profile.",
+      ],
+      baseRef: integration.targetSha,
+      integrationTargetBranch: integration.targetBranch,
+      integrationTargetBaseSha: integration.targetSha,
+      validationProfile: profile,
+      relevantPaths: [...new Set(sources.flatMap((task) => task.relevantPaths ?? []))],
+      metadata: { generatedBy: "main-integration" },
+    },
+  });
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    status: "main-integration-created",
+    targetBranch: integration.targetBranch,
+    targetBaseSha: integration.targetSha,
+    candidateTaskIds: integration.candidateTaskIds,
+    task: tasks[0],
+  };
+}
+
+export async function promoteMain({ stateRoot, taskId }) {
+  const workflow = await loadWorkflow(stateRoot);
+  const buckets = await loadTaskBuckets(workflow.stateRoot);
+  const integration = await computeMainIntegrationState(buckets, workflow.config);
+  if (integration.integrated) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      status: "already-integrated",
+      targetBranch: integration.targetBranch,
+      commitSha: integration.targetSha,
+    };
+  }
+
+  const candidateTaskId = taskId
+    ? validateTaskId(taskId)
+    : integration.promotionCandidateTaskId;
+  if (!candidateTaskId) {
+    throw new WorkflowError(
+      "No validated commit can be promoted directly; create and validate a main integration task.",
+      "integration_required",
+    );
+  }
+  if (candidateTaskId !== integration.promotionCandidateTaskId) {
+    throw new WorkflowError(
+      `Task ${candidateTaskId} is not the current validated promotion candidate.`,
+      "invalid_promotion_candidate",
+    );
+  }
+  const candidate = buckets.completed.find((task) => task.taskId === candidateTaskId);
+  if (!candidate?.validatedCommitSha) {
+    throw new WorkflowError(
+      `Promotion candidate ${candidateTaskId} is not a completed validated task.`,
+      "invalid_promotion_candidate",
+    );
+  }
+  if (taskKindOf(candidate) === INTEGRATION_TASK_KIND) {
+    if (candidate.integrationTargetBranch !== integration.targetBranch) {
+      throw new WorkflowError("Integration task targets another branch.", "target_mismatch");
+    }
+    if (candidate.integrationTargetBaseSha !== integration.targetSha) {
+      throw new WorkflowError(
+        `Target ${integration.targetBranch} moved after the integration task was created.`,
+        "target_moved",
+      );
+    }
+    const completedById = new Map(buckets.completed.map((task) => [task.taskId, task]));
+    for (const sourceTaskId of candidate.sourceTaskIds ?? []) {
+      const source = completedById.get(sourceTaskId);
+      if (
+        !source?.validatedCommitSha ||
+        !(await isAncestor(
+          workflow.config.repoRoot,
+          source.validatedCommitSha,
+          candidate.validatedCommitSha,
+        ))
+      ) {
+        throw new WorkflowError(
+          `Integration commit does not contain source ${sourceTaskId} as an ancestor.`,
+          "integration_source_missing",
+        );
+      }
+    }
+  } else if (
+    !(await isAncestor(
+      workflow.config.repoRoot,
+      integration.targetSha,
+      candidate.validatedCommitSha,
+    ))
+  ) {
+    throw new WorkflowError(
+      `Target ${integration.targetBranch} cannot fast-forward to ${candidate.validatedCommitSha}.`,
+      "integration_required",
+    );
+  }
+
+  const currentBranch = (await runGit(
+    workflow.config.repoRoot,
+    ["branch", "--show-current"],
+    10_000,
+  )).outputTail.trim();
+  if (currentBranch !== integration.targetBranch) {
+    throw new WorkflowError(
+      `Primary checkout must have ${integration.targetBranch} checked out before promotion.`,
+      "target_not_checked_out",
+    );
+  }
+  const dirty = (await runGit(
+    workflow.config.repoRoot,
+    ["status", "--porcelain", "--untracked-files=normal"],
+    30_000,
+  )).outputTail.trim();
+  if (dirty) {
+    throw new WorkflowError(
+      "Primary checkout must be clean before promotion into main.",
+      "dirty_target_worktree",
+    );
+  }
+  await runGit(
+    workflow.config.repoRoot,
+    ["merge", "--ff-only", candidate.validatedCommitSha],
+    120_000,
+  );
+  const promotedSha = await resolveCommit(
+    workflow.config.repoRoot,
+    `refs/heads/${integration.targetBranch}`,
+  );
+  if (promotedSha !== candidate.validatedCommitSha) {
+    throw new WorkflowError("Main promotion did not reach the validated SHA.", "promotion_failed");
+  }
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    status: "promoted",
+    targetBranch: integration.targetBranch,
+    previousSha: integration.targetSha,
+    commitSha: promotedSha,
+    taskId: candidate.taskId,
+  };
+}
+
+async function computeMainIntegrationState(buckets, config) {
+  const targetBranch = requireRef(
+    config.integrationTargetBranch ?? "main",
+    "integrationTargetBranch",
+  );
+  const targetSha = await resolveCommit(config.repoRoot, `refs/heads/${targetBranch}`);
+  const candidateTasks = await mainIntegrationCandidates(buckets.completed, config.repoRoot);
+  const integrationTasks = [...buckets.pending, ...buckets.active, ...buckets.blocked].filter(
+    (task) => taskKindOf(task) === INTEGRATION_TASK_KIND,
+  );
+  const completedIntegrations = buckets.completed
+    .filter((task) => taskKindOf(task) === INTEGRATION_TASK_KIND && task.validatedCommitSha)
+    .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""));
+  const currentCandidateIds = new Set(candidateTasks.map((task) => task.taskId));
+  const applicableIntegrations = completedIntegrations.filter((task) =>
+    currentCandidateIds.size > 0 &&
+    currentCandidateIds.size === new Set(task.sourceTaskIds ?? []).size &&
+    [...currentCandidateIds].every((taskId) => (task.sourceTaskIds ?? []).includes(taskId))
+  );
+  const integratedTask = [...applicableIntegrations, ...candidateTasks].find(
+    (task) => task.validatedCommitSha === targetSha,
+  );
+  let promotionCandidate = applicableIntegrations.find(
+    (task) => task.integrationTargetBaseSha === targetSha,
+  ) ?? null;
+  if (
+    !promotionCandidate &&
+    candidateTasks.length === 1 &&
+    await isAncestor(config.repoRoot, targetSha, candidateTasks[0].validatedCommitSha)
+  ) {
+    promotionCandidate = candidateTasks[0];
+  }
+  return {
+    targetBranch,
+    targetSha,
+    candidateTaskIds: candidateTasks.map((task) => task.taskId),
+    candidateCommitShas: candidateTasks.map((task) => task.validatedCommitSha),
+    inFlightTaskIds: integrationTasks.map((task) => task.taskId),
+    completedIntegrationTaskIds: completedIntegrations.map((task) => task.taskId),
+    promotionCandidateTaskId: promotionCandidate?.taskId ?? null,
+    promotionCandidateCommitSha: promotionCandidate?.validatedCommitSha ?? null,
+    integrated: candidateTasks.length === 0 || Boolean(integratedTask),
+  };
+}
+
+async function mainIntegrationCandidates(completedTasks, repoRoot) {
+  const completedStabilizations = completedTasks.filter(
+    (task) => taskKindOf(task) === "stabilization" && task.validatedCommitSha,
+  );
+  const coveredFeatureIds = new Set(
+    completedStabilizations.flatMap((task) => task.coveredFeatureTaskIds ?? []),
+  );
+  const candidates = [
+    ...completedStabilizations,
+    ...completedTasks.filter(
+      (task) =>
+        taskKindOf(task) === "feature" &&
+        task.validatedCommitSha &&
+        !coveredFeatureIds.has(task.taskId),
+    ),
+  ];
+  const terminal = [];
+  for (const candidate of candidates) {
+    let containedByAnother = false;
+    for (const other of candidates) {
+      if (
+        candidate.taskId !== other.taskId &&
+        await isAncestor(repoRoot, candidate.validatedCommitSha, other.validatedCommitSha)
+      ) {
+        containedByAnother = true;
+        break;
+      }
+    }
+    if (!containedByAnother) terminal.push(candidate);
+  }
+  return terminal.sort(compareTasks);
+}
+
+function integrationDispatchState(integration) {
+  if (integration.integrated) return null;
+  if (integration.inFlightTaskIds.length > 0) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      status: "main-integration-in-flight",
+      targetBranch: integration.targetBranch,
+      taskIds: integration.inFlightTaskIds,
+    };
+  }
+  if (integration.promotionCandidateTaskId) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      status: "main-promotion-required",
+      targetBranch: integration.targetBranch,
+      targetSha: integration.targetSha,
+      taskId: integration.promotionCandidateTaskId,
+      commitSha: integration.promotionCandidateCommitSha,
+    };
+  }
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    status: "main-integration-required",
+    targetBranch: integration.targetBranch,
+    targetSha: integration.targetSha,
+    candidateTaskIds: integration.candidateTaskIds,
+    candidateCommitShas: integration.candidateCommitShas,
   };
 }
 
@@ -536,6 +879,18 @@ export async function createQualityCheckpoint({ stateRoot, checkpointId, sourceT
 function selectNextWorkflowItem(buckets, config, availableModels) {
   const completedIds = new Set(buckets.completed.map((task) => task.taskId));
   const quality = computeQualityState(buckets, config);
+  const integrationBarrier = [...buckets.pending, ...buckets.active, ...buckets.blocked].filter(
+    (task) => taskKindOf(task) === INTEGRATION_TASK_KIND,
+  );
+  if (integrationBarrier.length > 0) {
+    return taskForDispatch(
+      selectNextTask(
+        buckets.pending.filter((task) => taskKindOf(task) === INTEGRATION_TASK_KIND),
+        completedIds,
+      ),
+      availableModels,
+    );
+  }
   const qualityBarrier = [...buckets.pending, ...buckets.active, ...buckets.blocked].some((task) =>
     QUALITY_TASK_KINDS.has(taskKindOf(task)),
   );
@@ -604,11 +959,15 @@ export async function claimTask({
 
   const buckets = await loadTaskBuckets(workflow.stateRoot);
   const quality = computeQualityState(buckets, workflow.config);
+  const integrationBarrier = [...buckets.pending, ...buckets.active, ...buckets.blocked].some(
+    (item) => taskKindOf(item) === INTEGRATION_TASK_KIND,
+  );
   if (
     taskKindOf(task) === "feature" &&
     (quality.checkpointDraining ||
       quality.checkpointRequired ||
-      quality.inFlightCheckpointIds.length > 0)
+      quality.inFlightCheckpointIds.length > 0 ||
+      integrationBarrier)
   ) {
     throw new WorkflowError(
       `Feature task ${id} cannot be claimed while a quality checkpoint is required or in flight.`,
@@ -1000,6 +1359,26 @@ export async function completeTask({ stateRoot, taskId, requestId }) {
   if (result.status !== "passed") {
     throw new WorkflowError(`Task ${id} cannot complete with result ${result.status}.`, "not_validated");
   }
+  if (taskKindOf(task) === INTEGRATION_TASK_KIND) {
+    const buckets = await loadTaskBuckets(workflow.stateRoot);
+    const completedById = new Map(buckets.completed.map((item) => [item.taskId, item]));
+    for (const sourceTaskId of task.sourceTaskIds ?? []) {
+      const source = completedById.get(sourceTaskId);
+      if (
+        !source?.validatedCommitSha ||
+        !(await isAncestor(
+          workflow.config.repoRoot,
+          source.validatedCommitSha,
+          result.commitSha,
+        ))
+      ) {
+        throw new WorkflowError(
+          `Integration result does not contain source ${sourceTaskId} as an ancestor.`,
+          "integration_source_missing",
+        );
+      }
+    }
+  }
 
   const completedPath = taskPath(workflow.stateRoot, "completed", id);
   await fs.rename(activePath, completedPath).catch((error) => {
@@ -1117,7 +1496,14 @@ export async function workflowStatus(stateRoot, { verbose = false, availableMode
   );
   const results = await readJsonDirectory(path.join(workflow.stateRoot, "validation", "results"));
   const lock = await readValidatorLock(workflow.stateRoot);
-  const quality = computeQualityState(buckets, workflow.config);
+  const candidateQuality = computeQualityState(buckets, workflow.config);
+  const integration = await computeMainIntegrationState(buckets, workflow.config);
+  const quality = {
+    ...candidateQuality,
+    candidateReady: candidateQuality.handoffReady,
+    handoffReady: candidateQuality.handoffReady && integration.integrated,
+  };
+  const selected = selectNextWorkflowItem(buckets, workflow.config, availableModels);
   const status = {
     schemaVersion: SCHEMA_VERSION,
     workflowId: workflow.config.workflowId,
@@ -1130,9 +1516,10 @@ export async function workflowStatus(stateRoot, { verbose = false, availableMode
       active: buckets.active.length,
       completed: buckets.completed.length,
       blocked: buckets.blocked.length,
-      next: selectNextWorkflowItem(buckets, workflow.config, availableModels),
+      next: selected ?? (candidateQuality.handoffReady ? integrationDispatchState(integration) : null),
     },
     quality,
+    integration,
     validation: {
       pending: validationPending.map(validationRequestSummary),
       running: validationRunning.map(validationRequestSummary),
@@ -1232,6 +1619,9 @@ export async function cleanupWorkflow({
   }
 
   const finalTask = [...buckets.completed]
+    .filter((task) => taskKindOf(task) === INTEGRATION_TASK_KIND)
+    .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""))[0]
+    ?? [...buckets.completed]
     .filter((task) => taskKindOf(task) === "stabilization")
     .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""))[0]
     ?? [...buckets.completed]
@@ -1836,6 +2226,7 @@ function validateConfig(config, expectedStateRoot) {
   if (!TASK_VALIDATION_PROFILES.has(config.defaultValidationProfile)) {
     throw new WorkflowError("Workflow default validation profile is unknown.", "invalid_config");
   }
+  requireRef(config.integrationTargetBranch ?? "main", "integrationTargetBranch");
   if (
     config.orchestratorAgentProfile !== undefined &&
     !sameAgentProfile(config.orchestratorAgentProfile, ORCHESTRATOR_AGENT_PROFILE)
@@ -1881,7 +2272,8 @@ function taskKindOf(task) {
 
 function normalizeWorkClass(value, taskKind, taskId) {
   const qualityTask = QUALITY_TASK_KINDS.has(taskKind);
-  const normalized = value ?? (qualityTask ? "quality" : "implementation");
+  const integrationTask = taskKind === INTEGRATION_TASK_KIND;
+  const normalized = value ?? (qualityTask ? "quality" : integrationTask ? "complex" : "implementation");
   if (!WORK_CLASSES.has(normalized)) {
     throw new WorkflowError(`Task ${taskId} has unknown workClass ${normalized}.`, "invalid_task");
   }
@@ -1894,6 +2286,12 @@ function normalizeWorkClass(value, taskKind, taskId) {
   if (!qualityTask && normalized === "quality") {
     throw new WorkflowError(
       `Feature task ${taskId} cannot use the quality workClass.`,
+      "invalid_task",
+    );
+  }
+  if (integrationTask && normalized !== "complex") {
+    throw new WorkflowError(
+      `Integration task ${taskId} must use the complex workClass.`,
       "invalid_task",
     );
   }
@@ -2027,7 +2425,7 @@ export function resolveValidationProfile(requestedProfile, changedFiles, taskKin
     }
     return requestedProfile;
   }
-  if (taskKind === "stabilization") {
+  if (taskKind === "stabilization" || taskKind === INTEGRATION_TASK_KIND) {
     return config.p4dTestServerRoot ? "p4fnv-full-p4d" : "p4fnv-full";
   }
   return inferPathValidationProfile(changedFiles);
@@ -2081,12 +2479,33 @@ function nextCheckpointId(buckets) {
   throw new WorkflowError("Could not allocate a quality checkpoint ID.", "quality_id_exhausted");
 }
 
+function nextIntegrationTaskId(buckets) {
+  const used = new Set(
+    [...buckets.pending, ...buckets.active, ...buckets.completed, ...buckets.blocked]
+      .map((task) => task.taskId),
+  );
+  for (let index = 1; index < 10_000; index += 1) {
+    const candidate = index === 1
+      ? "main-integration"
+      : `main-integration-${String(index).padStart(2, "0")}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new WorkflowError("Could not allocate a main integration task ID.", "integration_id_exhausted");
+}
+
 function validateTaskId(value) {
   if (typeof value !== "string" || !TASK_ID_PATTERN.test(value)) {
     throw new WorkflowError(
       "taskId must contain 1-64 lowercase letters, digits, dots, underscores, or hyphens.",
       "invalid_task_id",
     );
+  }
+  return value;
+}
+
+function requireRef(value, name) {
+  if (typeof value !== "string" || !REF_PATTERN.test(value)) {
+    throw new WorkflowError(`${name} is not a safe Git ref name.`, "invalid_ref");
   }
   return value;
 }

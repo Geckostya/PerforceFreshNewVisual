@@ -37,7 +37,7 @@
       "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
     },
     "taskKind": {
-      "enum": ["feature", "refactor", "stabilization"]
+      "enum": ["feature", "refactor", "stabilization", "integration"]
     },
     "qualityCheckpointId": {
       "type": "string",

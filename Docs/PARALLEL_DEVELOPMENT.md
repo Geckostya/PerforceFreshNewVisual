@@ -9,6 +9,7 @@ This contract owns prioritized Codex task orchestration, worker worktree isolati
 - Validation accepts only a clean committed SHA. One validator serializes builds in a fresh detached checkout at a stable workflow path, with request-local `node_modules` and a reusable workflow-scoped Cargo target.
 - Queue JSON selects an allow-listed validation profile; it cannot provide an executable, arguments, environment, cleanup path, or shell text.
 - A task completes only when its latest result passes; its validated SHA, not its branch, is the integration candidate.
+- A workflow completes only when the primary checkout's clean `main` is fast-forwarded to the exact validated final SHA. A divergent `main` requires a separate validated integration task; an unvalidated merge commit is never promoted.
 - Features run in bounded waves. Each boundary and final partial wave require generated `refactor` then `stabilization` tasks. Any unfinished quality task blocks new features.
 - Agent model and reasoning limits are derived from task class before dispatch. Queue data cannot request an arbitrary model, exceed its class ceiling, or silently fall back to a more expensive profile.
 - Native UI smoke remains a separate visible operation through `p4fnv_agent_plugin`. Never run mutating Perforce smoke against the user's server without explicit authorization.
@@ -25,7 +26,7 @@ validation/{pending,running,results,logs}/
 locks/validator.lock
 ```
 
-Queue transitions use same-volume renames; an exclusive PID/host lock serializes validation and recovers interrupted requests. `config.validationWorktreePath` is recreated under `config.validationCheckoutRoot`, while the sibling `config.validationCargoTargetRoot` persists. Queue JSON cannot select either path, and cleanup stays inside the managed root.
+Queue transitions use same-volume renames; a PID/host lock serializes validation and recovers interrupted requests. The validation checkout is recreated while its Cargo target persists. Queue JSON cannot select these paths; cleanup stays inside the managed root.
 
 The normative JSON formats are:
 
@@ -35,13 +36,13 @@ The normative JSON formats are:
 - [`validation-result.schema.json`](../tools/parallel-workflow/schemas/validation-result.schema.json) for the report returned to the worker.
 - [`validation-result-summary.schema.json`](../tools/parallel-workflow/schemas/validation-result-summary.schema.json) for the compact event envelope.
 
-`status`, `result`, and validator events are compact by default; successful envelopes contain IDs, status, duration, counts, and paths, not command output. Use `--verbose` for full stored JSON. Failed envelopes include only the failing command's bounded tail and log path.
+`status`, `result`, and validator events are compact by default. Use `--verbose` for stored JSON; failures expose only the failing command's bounded tail and log path.
 
 Use `p4fnv-auto` for feature and refactor tasks. The immutable changed-path list selects the smallest safe profile: `p4fnv-docs` runs repository tests, `p4fnv-frontend` adds the web build, `p4fnv-rust` runs fmt/tests/Clippy, and mixed or unknown paths use `p4fnv-fast` with a debug desktop build. Stabilization alone uses `p4fnv-full`, or `p4fnv-full-p4d` with an authorized disposable server. Queue JSON still cannot provide commands.
 
 ## Agent resource limits
 
-Classify a task by its primary purpose. Tests or documentation that are part of a normal feature remain with that feature worker; use `mechanical` when the whole assignment is primarily tests, documentation, formatting, generated updates, or another bounded mechanical change.
+Classify by primary purpose. Feature tests/docs stay with that feature; use `mechanical` only for an entirely bounded mechanical assignment.
 
 | Work | Class | Model/reasoning | Monitor timeout | Quality units |
 |---|---|---|---|---|
@@ -51,9 +52,11 @@ Classify a task by its primary purpose. Tests or documentation that are part of 
 | Refactoring and stabilization | `quality` | Sol/Medium | 30→60 min | 0 |
 | Complex bugs, architecture, conflicts | `complex` | Sol/High | 30→60 min | 2 |
 
-Backlog tasks select only `workClass`; `agentProfile` is derived and cannot be supplied directly. Mechanical work defaults to Low. Selecting Medium for it requires `reasoningEffort: "medium"` and a non-empty `resourceJustification`. Complex work always requires `resourceJustification`. Generated refactor and stabilization tasks are forced to `quality`, regardless of source feature classes.
+Final integration uses `complex` and Sol/High only when `main` cannot fast-forward to the stabilized candidate. The task starts from an immutable `main` SHA and must preserve both sides of every conflict.
 
-`doctor --available-models` and `next --available-models` expose missing families before dispatch. `claim` requires the actual model, effort, and `maxChildAgents=0`; a mismatch is rejected. Workers may not delegate. Monitor with the assignment timeout, then double once up to its maximum; a timeout triggers one liveness check, not polling. If a family is unavailable, leave the task pending. The validator is a script and consumes no agent slot.
+Backlog tasks select `workClass`; `agentProfile` is derived. Mechanical defaults to Low; Medium and all complex work require `resourceJustification`. Generated refactor and stabilization tasks are always `quality`.
+
+`doctor` and `next --available-models` expose missing families. `claim` enforces the actual model, effort, and `maxChildAgents=0`. Monitor with the assignment timeout, doubling once to its maximum; timeout triggers one liveness check. The validator consumes no agent slot.
 
 ## Start a run
 
@@ -94,6 +97,7 @@ Use the project skill `$orchestrate-p4fnv-work` in the orchestrator task.
 4. Keep workers bounded and fill slots by eligible priority; quality always takes precedence.
 5. On a result event, load it by request ID and return it to `workerThreadId`. Failures stay with the worker; infrastructure errors stay with the validator owner.
 6. Run `complete` only for the latest passing request. Use `block` or `requeue` with a reason.
+7. After quality work, handle `main-integration-required` by creating and validating the generated integration task. Handle `main-promotion-required` with `promote-main`.
 
 Wait for a real thread ID before claiming; never store a temporary client ID.
 
@@ -101,7 +105,7 @@ Worker monitoring is event-driven. Wait using `agentBudget.monitorTimeoutMs`; af
 
 ## Quality checkpoints
 
-The threshold defaults to four risk units and accepts `1` to `20`. Implementation contributes one, complex work two, and mechanical work zero. Thus docs/test-only work does not buy a Sol checkpoint. At the threshold, or after the final partial non-mechanical wave, the scheduler drains all active features. `status.quality` exposes units, coverage, and `handoffReady`.
+The threshold defaults to four risk units and accepts `1` to `20`. Implementation contributes one, complex work two, and mechanical work zero. Thus docs/test-only work does not buy a Sol checkpoint. At the threshold, or after the final partial non-mechanical wave, the scheduler drains all active features. `quality.candidateReady` means refactoring and stabilization are complete; `quality.handoffReady` becomes true only after final integration into `main`.
 
 `quality-checkpoint` creates two dependent tasks with immutable `sourceCommits` ranges. Its base is the merge base of source-task base SHAs, preventing sequential ranges from being applied twice:
 
@@ -133,6 +137,19 @@ The command verifies repository, clean `HEAD`, base ancestry, and changed paths.
 
 ## Handoff and integration
 
-Report completed task IDs, validated SHAs, profiles, quality coverage, and blocked work. Integration is ready only at `handoffReady`; rebases or new commits require validation again.
+When `next` reports `main-promotion-required`, the target is an ancestor of a single validated candidate. Promote it without creating another commit:
 
-Run `cleanup --state <path>` first: it is always a dry-run. `--apply` removes only completed, registered worktrees owned by that state, preserving branches, the final candidate, and Cargo cache. `--remove-final` and `--remove-cargo` are separate explicit choices. Registered paths under the managed root that are not state-owned are reported for manual review and never deleted automatically.
+```powershell
+npm run workflow -- promote-main --state $state
+```
+
+When `next` reports `main-integration-required`, `main` diverged or several terminal candidates exist. Create the final gate, dispatch it with its derived Sol/High profile, validate it normally, complete it, then promote the exact SHA:
+
+```powershell
+npm run workflow -- main-integration --state $state
+npm run workflow -- promote-main --state $state
+```
+
+`promote-main` refuses a dirty checkout, moved target, missing source ancestry, or non-fast-forward update; it never pushes. Finish only when `quality.handoffReady` and `integration.integrated` are true, and report the `main` SHA. A later main commit requires fresh integration validation.
+
+After promotion, run cleanup as dry-run. `--apply` removes only completed state-owned worktrees; branches, the final candidate, and Cargo cache remain by default. Unowned worktrees require manual review.

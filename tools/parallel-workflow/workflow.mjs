@@ -7,6 +7,7 @@ import {
   claimTask,
   cleanupWorkflow,
   completeTask,
+  createMainIntegrationTask,
   createQualityCheckpoint,
   doctorWorkflow,
   enqueueTasks,
@@ -14,6 +15,7 @@ import {
   getValidationResult,
   getValidationResultSummary,
   initializeWorkflow,
+  promoteMain,
   requeueTask,
   runValidator,
   summarizeValidationResult,
@@ -68,6 +70,18 @@ try {
         sourceTaskIds: options.sources
           ? options.sources.split(",").map((value) => value.trim()).filter(Boolean)
           : undefined,
+      });
+      break;
+    case "main-integration":
+      result = await createMainIntegrationTask({
+        stateRoot: required(options, "state"),
+        taskId: options.id,
+      });
+      break;
+    case "promote-main":
+      result = await promoteMain({
+        stateRoot: required(options, "state"),
+        taskId: options.task,
       });
       break;
     case "request":
@@ -225,6 +239,7 @@ Usage:
   npm run workflow -- next --state <path> [--available-models <terra,luna,sol>]
   npm run workflow -- quality-checkpoint --state <path> [--id <id>] \\
     [--sources <task-id,task-id>]
+  npm run workflow -- main-integration --state <path> [--id <id>]
   npm run workflow -- claim --state <path> --task <id> --worker <thread-id> \\
     --model <terra|luna|sol> --effort <low|medium|high> --max-child-agents 0
   npm run workflow -- request --state <path> --task <id> --assignment <id> \\
@@ -232,13 +247,14 @@ Usage:
   npm run workflow -- validate --state <path> [--watch] [--poll-ms <milliseconds>] [--verbose]
   npm run workflow -- result --state <path> --request <id> [--verbose]
   npm run workflow -- complete --state <path> --task <id> --request <id>
+  npm run workflow -- promote-main --state <path> [--task <integration-task-id>]
   npm run workflow -- block --state <path> --task <id> --reason <text>
   npm run workflow -- requeue --state <path> --task <id> --reason <text>
   npm run workflow -- status --state <path> [--verbose] [--available-models <list>]
   npm run workflow -- cleanup --state <path> [--apply] [--remove-final] [--remove-cargo]
 
-Priority 1 is highest. Quality checkpoints pause new feature assignment and run refactoring
-before stabilization. The validator accepts only immutable commits and allow-listed profiles;
-it never executes commands from queue JSON.
+Priority 1 is highest. Quality checkpoints pause new features; final completion requires the
+exact validated integration SHA in main. The validator accepts only immutable commits and
+allow-listed profiles; it never executes commands from queue JSON.
 `;
 }

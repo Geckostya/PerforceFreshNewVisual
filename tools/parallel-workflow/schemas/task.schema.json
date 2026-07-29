@@ -23,7 +23,7 @@
     "description": { "type": "string", "minLength": 1 },
     "priority": { "type": "integer", "minimum": 1, "maximum": 999 },
     "taskKind": {
-      "enum": ["feature", "refactor", "stabilization"]
+      "enum": ["feature", "refactor", "stabilization", "integration"]
     },
     "workClass": {
       "enum": ["implementation", "mechanical", "quality", "complex"]
@@ -69,6 +69,11 @@
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
     },
+    "integrationTargetBranch": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+    },
+    "integrationTargetBaseSha": { "$ref": "#/$defs/commitSha" },
     "baseRef": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"

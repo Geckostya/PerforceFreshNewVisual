@@ -29,7 +29,7 @@
     "requestId": { "type": "string", "minLength": 1 },
     "workflowId": { "type": "string", "minLength": 1 },
     "taskId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
-    "taskKind": { "enum": ["feature", "refactor", "stabilization"] },
+    "taskKind": { "enum": ["feature", "refactor", "stabilization", "integration"] },
     "qualityCheckpointId": { "type": "string", "minLength": 1 },
     "workerThreadId": { "type": "string", "minLength": 1 },
     "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },

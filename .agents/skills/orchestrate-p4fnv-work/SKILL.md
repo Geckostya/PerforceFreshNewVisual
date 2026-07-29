@@ -21,10 +21,11 @@ Do not place shared queue state in a worker worktree. Do not start feature work 
 
 1. Call `next --available-models <list>`.
 2. If `next` returns `quality-checkpoint-draining`, assign no new features and wait for the listed active feature workers. If it returns `quality-checkpoint-required`, run `quality-checkpoint --state <path>` before creating more workers. Schedule its refactor task and then its dependent stabilization task; pending, active, or blocked quality work is a hard feature barrier.
-3. Run coordinator-only scheduling and status work on Terra/Low when the task surface supports model selection. Read the selected task's derived `agentProfile`, then create its Codex task with that exact model and reasoning effort plus `environment.type: "worktree"`. If the profile is unavailable, leave the task pending and report it; never silently upgrade or substitute. Use the task's `baseRef` as the starting branch only when the thread API requires an explicit existing state.
-4. Wait for a real thread ID. Claim with the actual model/effort and `--max-child-agents 0`, then send the assignment unchanged. Workers must not spawn subagents.
-5. Ask a feature worker to implement only its assignment. Ask a quality worker to integrate every immutable `sourceCommits` range exactly once before its refactor or stabilization audit. All workers commit, leave the worktree clean, submit `HEAD` with `request`, and return the request JSON.
-6. Fill free worker slots with the next eligible priorities. Never skip a higher-priority dependency-ready task or assign a feature across a quality barrier.
+3. If `next` returns `main-integration-required`, run `main-integration`, dispatch its Sol/High task, and require the worker to merge every assigned source commit into the recorded `main` base. If it returns `main-promotion-required`, run `promote-main`; never move `main` to an unvalidated SHA.
+4. Run coordinator-only scheduling and status work on Terra/Low when the task surface supports model selection. Read the selected task's derived `agentProfile`, then create its Codex task with that exact model and reasoning effort plus `environment.type: "worktree"`. If the profile is unavailable, leave the task pending and report it; never silently upgrade or substitute. Use the task's `baseRef` as the starting branch only when the thread API requires an explicit existing state.
+5. Wait for a real thread ID. Claim with the actual model/effort and `--max-child-agents 0`, then send the assignment unchanged. Workers must not spawn subagents.
+6. Ask a feature worker to implement only its assignment. Ask quality and integration workers to integrate every immutable `sourceCommits` range exactly once. All workers commit, leave the worktree clean, submit `HEAD` with `request`, and return the request JSON.
+7. Fill free worker slots with the next eligible priorities. Never skip a higher-priority dependency-ready task or assign a feature across a quality or integration barrier.
 
 Workers use focused and debug checks only. They never start, stop, or mutate the shared disposable P4D server; the serialized stabilization validator owns release regression and writable P4D smoke.
 
@@ -44,4 +45,4 @@ Never accept a worker's self-reported build as authoritative. Never validate an 
 
 ## Finish
 
-Stop assigning when cancelled. Otherwise finish only at `handoffReady`; weighted non-mechanical partial waves still require quality work. Report validated SHAs and blockers. Run `cleanup` as dry-run and apply it only when authorized; preserve the final candidate and Cargo cache by default. Do not merge or push without separate authorization.
+Stop assigning when cancelled. Otherwise finish only when `quality.candidateReady` and `integration.integrated` make `quality.handoffReady` true. `promote-main` must fast-forward the primary checkout's clean `main` to the exact validated candidate; divergence requires a validated integration task first. Report the final `main` SHA and blockers, then run cleanup as dry-run. Never push without separate authorization.

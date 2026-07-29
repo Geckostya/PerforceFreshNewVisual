@@ -10,6 +10,7 @@ import {
   assertManagedPath,
   claimTask,
   cleanupWorkflow,
+  createMainIntegrationTask,
   createQualityCheckpoint,
   enqueueTasks,
   getNextTask,
@@ -468,6 +469,59 @@ describe("parallel workflow queue", () => {
       warningCount: 0,
     });
     expect(result).not.toHaveProperty("commands");
+  });
+
+  it("requires a validated final integration before main handoff", async () => {
+    const stateRoot = await temporaryStateRoot();
+    await initializeWorkflow({ stateRoot, repoRoot: repositoryRoot });
+    const mainHead = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "main"], {
+      encoding: "utf8",
+    }).trim();
+    const previousHead = execFileSync(
+      "git",
+      ["-C", repositoryRoot, "rev-parse", `${mainHead}^`],
+      { encoding: "utf8" },
+    ).trim();
+    await seedCompletedFeature(
+      stateRoot,
+      "validated-but-not-final-main",
+      10,
+      previousHead,
+      previousHead,
+      "mechanical",
+    );
+
+    expect(await getNextTask(stateRoot)).toMatchObject({
+      status: "main-integration-required",
+      targetBranch: "main",
+      candidateTaskIds: ["validated-but-not-final-main"],
+    });
+    expect((await workflowStatus(stateRoot)).quality).toMatchObject({
+      candidateReady: true,
+      handoffReady: false,
+    });
+
+    const created = await createMainIntegrationTask({ stateRoot });
+    expect(created).toMatchObject({
+      status: "main-integration-created",
+      targetBranch: "main",
+      targetBaseSha: mainHead,
+      task: {
+        taskKind: "integration",
+        workClass: "complex",
+        validationProfile: "p4fnv-full",
+        sourceTaskIds: ["validated-but-not-final-main"],
+        agentProfile: { model: "sol", reasoningEffort: "high" },
+      },
+    });
+    expect(await getNextTask(stateRoot)).toMatchObject({
+      taskKind: "integration",
+      agentProfile: { model: "sol", reasoningEffort: "high" },
+    });
+    expect((await workflowStatus(stateRoot))).toMatchObject({
+      quality: { candidateReady: true, handoffReady: false },
+      integration: { inFlightTaskIds: ["main-integration"], integrated: false },
+    });
   });
 
   it("requires explicit disposable P4D configuration for writable validation", () => {
