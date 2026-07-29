@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StreamSummary } from "../../shared/models";
-import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
+import { buildStreamForest, childStreamPath, flattenStreamForest, isValidStreamName, layoutStreamGraph, mergeSelectedStreamViewPaths, streamDescendantPaths, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
 
 const stream = (path: string, parent?: string): StreamSummary => ({
   path,
@@ -11,6 +11,30 @@ const stream = (path: string, parent?: string): StreamSummary => ({
 });
 
 describe("stream hierarchy", () => {
+  it("derives the child path and validates the conservative stream name subset", () => {
+    expect(childStreamPath("//Acme/main", "feature-login")).toBe("//Acme/feature-login");
+    expect(isValidStreamName("release-1.0_rc")).toBe(true);
+    expect(isValidStreamName("feature/login")).toBe(false);
+    expect(isValidStreamName("-feature")).toBe(false);
+  });
+
+  it("replaces the catch-all default with selected workspace folders", () => {
+    expect(mergeSelectedStreamViewPaths(
+      [{ kind: "share", viewPath: "..." }],
+      ["Source/...", "Content/..."],
+    )).toEqual([
+      { kind: "share", viewPath: "Source/..." },
+      { kind: "share", viewPath: "Content/..." },
+    ]);
+    expect(mergeSelectedStreamViewPaths(
+      [{ kind: "exclude", viewPath: "Build/..." }],
+      ["Build/...", "Source/...", "Source/..."],
+    )).toEqual([
+      { kind: "exclude", viewPath: "Build/..." },
+      { kind: "share", viewPath: "Source/..." },
+    ]);
+  });
+
   it("builds parent-child trees and keeps orphaned streams visible", () => {
     const forest = buildStreamForest([
       stream("//Acme/dev", "//Acme/main"),

@@ -118,6 +118,36 @@ export interface StreamSummary {
   updated?: string;
 }
 
+export type CreateStreamType = "development" | "release" | "virtual" | "task";
+export type StreamPathKind = "share" | "isolate" | "import" | "exclude";
+
+export interface StreamPathRuleInput {
+  kind: StreamPathKind;
+  viewPath: string;
+  depotPath?: string;
+}
+
+export interface CreateStreamInput {
+  connection: ConnectionInput;
+  name: string;
+  parent: string;
+  streamType: CreateStreamType;
+  description: string;
+  paths: StreamPathRuleInput[];
+}
+
+export interface CreateStreamPreview {
+  path: string;
+  name: string;
+  parent: string;
+  streamType: string;
+  description: string;
+  parentView: string;
+  options: string;
+  paths: string[];
+  spec: string;
+}
+
 export type StreamLocalStrategy = "shelve" | "keep";
 
 export interface WorkspaceUpdateInput { name: string; root: string; stream?: string; description: string; }

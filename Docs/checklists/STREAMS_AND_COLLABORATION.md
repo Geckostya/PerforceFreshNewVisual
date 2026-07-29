@@ -5,6 +5,7 @@ Current status for streams, integration, shared shelves, jobs, labels, and locks
 ## Available
 
 - [~] P1 Bounded stream catalog/tree/graph with hierarchy, filtering, multi-select, persisted visibility, and current-workspace context; details/spec/history remain incomplete.
+- [x] P1 Child stream creation provides graph-context parent selection, server-backed form preview, bounded Paths editing, confirmation, and final server read-back without changing the workspace.
 - [~] P1 Confirmed workspace/stream switching with local/content strategies exists; live standard/commit-edge coverage is not recorded.
 - [x] P1 Basic lock/unlock is available for selected opened files.
 - [~] P1 Shared Shelves can browse, inspect, unshelve, reshelve selected files, and export one file; advanced topology and batch export remain.

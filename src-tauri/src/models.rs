@@ -219,6 +219,57 @@ pub struct StreamSummary {
     pub updated: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CreateStreamType {
+    Development,
+    Release,
+    Virtual,
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StreamPathKind {
+    Share,
+    Isolate,
+    Import,
+    Exclude,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamPathRuleInput {
+    pub kind: StreamPathKind,
+    pub view_path: String,
+    pub depot_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateStreamInput {
+    pub connection: ConnectionInput,
+    pub name: String,
+    pub parent: String,
+    pub stream_type: CreateStreamType,
+    pub description: String,
+    pub paths: Vec<StreamPathRuleInput>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateStreamPreview {
+    pub path: String,
+    pub name: String,
+    pub parent: String,
+    pub stream_type: String,
+    pub description: String,
+    pub parent_view: String,
+    pub options: String,
+    pub paths: Vec<String>,
+    pub spec: String,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum StreamLocalStrategy {

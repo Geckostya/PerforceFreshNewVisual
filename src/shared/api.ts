@@ -44,6 +44,8 @@ import type {
   ResolveMode,
   StreamLocalStrategy,
   StreamSummary,
+  CreateStreamInput,
+  CreateStreamPreview,
   UiAgentCommand,
   UiAgentResponse,
   UiSnapshot,
@@ -141,6 +143,18 @@ export async function renameWorkspace(connection: ConnectionInput, from: string,
 
 export async function listStreams(input: ConnectionInput): Promise<StreamSummary[]> {
   return invoke<StreamSummary[]>("list_streams", { input });
+}
+
+export async function previewCreateStream(input: CreateStreamInput): Promise<CreateStreamPreview> {
+  return invoke<CreateStreamPreview>("preview_create_stream", { input });
+}
+
+export async function createStream(input: CreateStreamInput): Promise<StreamSummary> {
+  return invoke<StreamSummary>("create_stream", { input });
+}
+
+export async function streamViewPathsFromLocalDirectories(input: ConnectionInput, directories: string[]): Promise<string[]> {
+  return invoke<string[]>("stream_view_paths_from_local_directories", { input, directories });
 }
 
 export async function switchStream(connection: ConnectionInput, stream: string, localStrategy: StreamLocalStrategy): Promise<void> {

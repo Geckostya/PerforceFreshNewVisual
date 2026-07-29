@@ -95,7 +95,7 @@ Every mutation requires:
 
 Do not automatically trust an SSL fingerprint, overwrite an untracked/writable file, change protections, or execute administrative force flags from the ordinary UI.
 
-Local filesystem mutations are available only through narrow backend operations inside the authorized client root; the exact Files contract is in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md). The frontend receives no general filesystem API.
+Local filesystem mutations are available only through narrow backend operations inside the authorized client root; the exact Files contract is in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md). A native directory dialog may return user-selected paths, but stream creation converts only existing directories inside the registered current client root into relative view paths through a narrow backend command. The frontend receives no general filesystem API.
 
 Changing streams is a composite operation with an explicit strategy. The catalog is read with bounded `p4 streams`; Keep uses safely constructed `p4 client -s -f -S` without touching workspace contents, while Shelve first saves and reverts numbered changelists and then uses `p4 switch --no-sync` for Default work. The subsequent sync starts separately through the existing preview/operation protocol, so a sync failure cannot hide an already-completed stream change.
 

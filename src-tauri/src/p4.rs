@@ -12,13 +12,14 @@ use serde_json::{Map, Value};
 
 use crate::models::{
     AnnotationLine, AppError, ChangeExportResult, CherryPickPreviewItem, CliLogLevel,
-    ConnectionInput, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
-    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
-    ResolveMode, ResolvePreviewItem, RevertPreviewItem, ShelvedFile, StreamLocalStrategy,
-    StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
-    SubmitPreflightSummary, SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions,
-    SyncPreview, SyncPreviewItem, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview,
-    WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
+    ConnectionInput, CreateStreamInput, CreateStreamPreview, CreateStreamType, DepotDirectory,
+    DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
+    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
+    RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode,
+    SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
+    SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SyncPreview, SyncPreviewItem,
+    TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
+    WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
 };
 
 mod jobs;
@@ -276,6 +277,207 @@ pub fn list_streams(input: &ConnectionInput) -> Result<Vec<StreamSummary>, AppEr
         "Stream,Name,Parent,Type,Description,Owner,Update",
     ]);
     parse_streams(&run_json(&path, &mut command)?)
+}
+
+pub fn preview_create_stream(input: &CreateStreamInput) -> Result<CreateStreamPreview, AppError> {
+    build_create_stream_preview(input)
+}
+
+pub fn create_stream(input: &CreateStreamInput) -> Result<StreamSummary, AppError> {
+    let preview = build_create_stream_preview(input)?;
+    let (path, mut command) = configured_command(&input.connection)?;
+    command.args(["stream", "-i"]);
+    let output = run_output_with_stdin(&path, &mut command, preview.spec.as_bytes())?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    log_stderr_warning(&output, "p4 stream -i вернул предупреждение.");
+    exact_stream(&input.connection, &preview.path)?.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "p4 подтвердил создание stream, но финальное чтение не нашло его.",
+        )
+        .with_hint("Обновите список stream и проверьте состояние сервера.")
+    })
+}
+
+fn build_create_stream_preview(input: &CreateStreamInput) -> Result<CreateStreamPreview, AppError> {
+    let name = validate_stream_name(&input.name)?;
+    validate_stream_path(&input.parent)?;
+    let description = validate_stream_description(&input.description)?;
+    let parent = exact_stream(&input.connection, input.parent.trim())?.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Родительский stream больше не существует.",
+        )
+        .with_hint("Обновите список stream и выберите родителя снова.")
+    })?;
+    let stream_path = child_stream_path(&parent.path, name)?;
+    if exact_stream(&input.connection, &stream_path)?.is_some() {
+        return Err(
+            AppError::new(ErrorKind::Conflict, "Stream с таким путём уже существует.")
+                .with_hint("Выберите другое имя и повторите preview."),
+        );
+    }
+    let path_lines = format_stream_paths(&input.paths)?;
+    let stream_type = stream_type_name(&input.stream_type);
+    let (path, mut command) = configured_command(&input.connection)?;
+    command.args([
+        "stream",
+        "-o",
+        "-P",
+        &parent.path,
+        "-t",
+        stream_type,
+        "--parentview",
+        "inherit",
+        &stream_path,
+    ]);
+    let output = command
+        .output()
+        .map_err(|error| launch_error(&path, error))?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    log_stderr_warning(&output, "p4 stream -o вернул предупреждение.");
+    let mut lines = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    replace_single_form_field(&mut lines, "Name", name)?;
+    replace_single_form_field(&mut lines, "Parent", &parent.path)?;
+    replace_single_form_field(&mut lines, "Type", stream_type)?;
+    replace_multiline_form_field(&mut lines, "Description", description)?;
+    replace_multiline_form_field(&mut lines, "Paths", &path_lines.join("\n"))?;
+    let parent_view =
+        form_single_value(&lines, "ParentView").unwrap_or_else(|| "inherit".to_owned());
+    let options = form_single_value(&lines, "Options").unwrap_or_default();
+    let spec = format!("{}\n", lines.join("\n"));
+    Ok(CreateStreamPreview {
+        path: stream_path,
+        name: name.to_owned(),
+        parent: parent.path,
+        stream_type: stream_type.to_owned(),
+        description: description.to_owned(),
+        parent_view,
+        options,
+        paths: path_lines,
+        spec,
+    })
+}
+
+fn exact_stream(
+    input: &ConnectionInput,
+    stream_path: &str,
+) -> Result<Option<StreamSummary>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args([
+        "-ztag",
+        "-Mj",
+        "streams",
+        "-m",
+        "2",
+        "-T",
+        "Stream,Name,Parent,Type,Description,Owner,Update",
+        stream_path,
+    ]);
+    Ok(
+        parse_streams(&run_json_allowing_empty_match(&path, &mut command)?)?
+            .into_iter()
+            .find(|stream| stream.path.eq_ignore_ascii_case(stream_path)),
+    )
+}
+
+fn child_stream_path(parent: &str, name: &str) -> Result<String, AppError> {
+    let (namespace, _) = parent.rsplit_once('/').ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "Сервер вернул некорректный путь родительского stream.",
+        )
+    })?;
+    if namespace.len() <= 2 {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "Не удалось определить namespace родительского stream.",
+        ));
+    }
+    Ok(format!("{namespace}/{name}"))
+}
+
+fn stream_type_name(stream_type: &CreateStreamType) -> &'static str {
+    match stream_type {
+        CreateStreamType::Development => "development",
+        CreateStreamType::Release => "release",
+        CreateStreamType::Virtual => "virtual",
+        CreateStreamType::Task => "task",
+    }
+}
+
+fn format_stream_paths(
+    paths: &[crate::models::StreamPathRuleInput],
+) -> Result<Vec<String>, AppError> {
+    if paths.is_empty() || paths.len() > 100 {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Paths stream должны содержать от 1 до 100 правил.",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    paths
+        .iter()
+        .map(|rule| {
+            let view_path = validate_stream_view_path(&rule.view_path)?;
+            if !seen.insert(view_path.to_ascii_lowercase()) {
+                return Err(AppError::new(
+                    ErrorKind::Conflict,
+                    "Paths stream содержат повторяющийся view path.",
+                ));
+            }
+            let kind = match rule.kind {
+                StreamPathKind::Share => "share",
+                StreamPathKind::Isolate => "isolate",
+                StreamPathKind::Import => "import",
+                StreamPathKind::Exclude => "exclude",
+            };
+            let view_path = quote_stream_view_path(view_path);
+            match rule.kind {
+                StreamPathKind::Import => {
+                    let depot_path = validate_stream_import_path(
+                        rule.depot_path.as_deref().unwrap_or_default(),
+                    )?;
+                    Ok(format!("{kind} {view_path} {depot_path}"))
+                }
+                _ if rule
+                    .depot_path
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()) =>
+                {
+                    Err(AppError::new(
+                        ErrorKind::CommandFailed,
+                        "Depot path разрешён только для import-правил.",
+                    ))
+                }
+                _ => Ok(format!("{kind} {view_path}")),
+            }
+        })
+        .collect()
+}
+
+fn quote_stream_view_path(path: &str) -> String {
+    if path.chars().any(char::is_whitespace) {
+        format!("\"{path}\"")
+    } else {
+        path.to_owned()
+    }
+}
+
+fn form_single_value(lines: &[String], field: &str) -> Option<String> {
+    let prefix = format!("{field}:");
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 pub fn switch_stream(
@@ -4081,6 +4283,63 @@ mod tests {
     use std::ffi::OsStr;
 
     use super::*;
+
+    #[test]
+    fn derives_child_stream_path_in_the_parent_namespace() {
+        assert_eq!(
+            child_stream_path("//Acme/main", "feature-login").unwrap(),
+            "//Acme/feature-login"
+        );
+        assert_eq!(
+            child_stream_path("//Acme/project/main", "release-1.0").unwrap(),
+            "//Acme/project/release-1.0"
+        );
+    }
+
+    #[test]
+    fn formats_supported_stream_path_rules_and_rejects_duplicates() {
+        let paths = vec![
+            crate::models::StreamPathRuleInput {
+                kind: StreamPathKind::Share,
+                view_path: "...".to_owned(),
+                depot_path: None,
+            },
+            crate::models::StreamPathRuleInput {
+                kind: StreamPathKind::Import,
+                view_path: "tools/...".to_owned(),
+                depot_path: Some("//shared/tools/...".to_owned()),
+            },
+            crate::models::StreamPathRuleInput {
+                kind: StreamPathKind::Share,
+                view_path: "NewTestFolder - Copy/...".to_owned(),
+                depot_path: None,
+            },
+        ];
+        assert_eq!(
+            format_stream_paths(&paths).unwrap(),
+            [
+                "share ...",
+                "import tools/... //shared/tools/...",
+                "share \"NewTestFolder - Copy/...\"",
+            ]
+        );
+
+        let duplicate = vec![paths[0].clone(), paths[0].clone()];
+        assert!(format_stream_paths(&duplicate).is_err());
+    }
+
+    #[test]
+    fn stream_form_fields_are_replaced_without_allowing_field_injection() {
+        let mut lines =
+            "Stream:\t//Acme/dev\nName:\tdev\nDescription:\n\told\nPaths:\n\tshare ...\n"
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+        replace_multiline_form_field(&mut lines, "Description", "First\nPaths: still description")
+            .unwrap();
+        assert!(lines.contains(&"\tPaths: still description".to_owned()));
+        assert_eq!(form_single_value(&lines, "Name").as_deref(), Some("dev"));
+    }
 
     #[test]
     fn parses_info_from_multiple_json_records() {

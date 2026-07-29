@@ -2,14 +2,14 @@ use crate::{
     diagnostics, locales,
     models::{
         AnnotationLine, AppError, AppSettings, ChangeExportResult, CherryPickPreviewItem,
-        CliLogEntry, ConnectionInput, CreateChangeInput, DeleteChangeInput, DeleteShelfInput,
-        DepotDirectory, DepotFile, DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff,
-        FileOperationInput, FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
-        OperationEvent, OperationEventKind, P4Detection, P4Info, PendingChange,
-        PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput, ResolveInput, RevertInput,
-        RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
-        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamSummary, SubmitInput,
-        SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmittedChangeDetail,
+        CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput, CreateStreamPreview,
+        DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile, DepotSummary, DiffInput,
+        EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, Job, Label,
+        LocaleCatalog, MoveInput, OpenedFile, OperationEvent, OperationEventKind, P4Detection,
+        P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
+        ResolveInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput,
+        SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamSummary,
+        SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmittedChangeDetail,
         SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode, TrustEntry,
         UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile,
         WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
@@ -21,8 +21,9 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex, atomic::Ordering, mpsc},
     thread,
@@ -309,6 +310,98 @@ pub async fn list_streams(input: ConnectionInput) -> Result<Vec<StreamSummary>, 
     tauri::async_runtime::spawn_blocking(move || p4::list_streams(&input))
         .await
         .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_create_stream(
+    input: CreateStreamInput,
+) -> Result<CreateStreamPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::preview_create_stream(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn create_stream(input: CreateStreamInput) -> Result<StreamSummary, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::create_stream(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn stream_view_paths_from_local_directories(
+    input: ConnectionInput,
+    directories: Vec<String>,
+    roots: State<'_, WorkspaceRootRegistry>,
+) -> Result<Vec<String>, AppError> {
+    let root = roots.root(&input)?;
+    tauri::async_runtime::spawn_blocking(move || workspace_stream_view_paths(&root, &directories))
+        .await
+        .map_err(task_error)?
+}
+
+fn workspace_stream_view_paths(
+    root: &Path,
+    directories: &[String],
+) -> Result<Vec<String>, AppError> {
+    if directories.is_empty() || directories.len() > 100 {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Выберите от 1 до 100 папок workspace.",
+        ));
+    }
+    let root = fs::canonicalize(root).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не удалось прочитать root workspace.",
+        )
+        .with_diagnostics(error.to_string())
+    })?;
+    let mut view_paths = Vec::new();
+    for directory in directories {
+        let directory = directory.trim();
+        if directory.is_empty() || directory.contains(['\r', '\n']) {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Не указан корректный путь папки workspace.",
+            ));
+        }
+        let directory = fs::canonicalize(directory).map_err(|error| {
+            AppError::new(
+                ErrorKind::CommandFailed,
+                "Выбранная папка не существует или недоступна.",
+            )
+            .with_diagnostics(error.to_string())
+        })?;
+        if !directory.is_dir() || !directory.starts_with(&root) {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Можно выбирать только существующие папки текущего workspace.",
+            ));
+        }
+        let relative = directory
+            .strip_prefix(&root)
+            .map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Выбранная папка находится вне текущего workspace.",
+                )
+                .with_diagnostics(error.to_string())
+            })?
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let view_path = if relative.is_empty() {
+            "...".to_owned()
+        } else {
+            format!("{relative}/...")
+        };
+        if !view_paths.contains(&view_path) {
+            view_paths.push(view_path);
+        }
+    }
+    Ok(view_paths)
 }
 
 #[tauri::command]
@@ -1961,8 +2054,9 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 mod tests {
     use super::{
         parse_sync_output_record, sync_operation_scope, sync_operation_succeeded,
-        validate_reveal_path,
+        validate_reveal_path, workspace_stream_view_paths,
     };
+    use std::fs;
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -2003,5 +2097,31 @@ mod tests {
             validate_reveal_path(" C:\\work\\file.txt ").unwrap(),
             "C:\\work\\file.txt"
         );
+    }
+
+    #[test]
+    fn selected_workspace_directories_become_relative_stream_view_paths() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-stream-folders-{}", std::process::id()));
+        let root = fixture.join("workspace");
+        let source = root.join("Source").join("Game");
+        let outside = fixture.join("outside");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        let paths = workspace_stream_view_paths(
+            &root,
+            &[
+                root.to_string_lossy().into_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(paths, vec!["...", "Source/Game/..."]);
+        assert!(
+            workspace_stream_view_paths(&root, &[outside.to_string_lossy().into_owned()]).is_err()
+        );
+
+        fs::remove_dir_all(fixture).unwrap();
     }
 }

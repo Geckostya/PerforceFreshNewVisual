@@ -1,4 +1,4 @@
-import type { StreamSummary } from "../../shared/models";
+import type { StreamPathRuleInput, StreamSummary } from "../../shared/models";
 
 export interface StreamTreeNode {
   stream: StreamSummary;
@@ -14,6 +14,33 @@ export interface StreamGraphNode {
 export interface StreamGraphEdge {
   from: string;
   to: string;
+}
+
+export function isValidStreamName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name.trim());
+}
+
+export function childStreamPath(parent: string, name: string): string {
+  const separator = parent.lastIndexOf("/");
+  return separator > 1 && name.trim() ? `${parent.slice(0, separator)}/${name.trim()}` : "";
+}
+
+export function mergeSelectedStreamViewPaths(
+  paths: StreamPathRuleInput[],
+  selected: string[],
+): StreamPathRuleInput[] {
+  const base = paths.length === 1 && paths[0].kind === "share" && paths[0].viewPath.trim() === "..."
+    ? []
+    : paths;
+  const existing = new Set(base.map((rule) => rule.viewPath.trim()));
+  const additions = selected
+    .filter((viewPath) => {
+      if (existing.has(viewPath)) return false;
+      existing.add(viewPath);
+      return true;
+    })
+    .map((viewPath): StreamPathRuleInput => ({ kind: "share", viewPath }));
+  return [...base, ...additions].slice(0, 100);
 }
 
 export function buildStreamForest(streams: StreamSummary[]): StreamTreeNode[] {

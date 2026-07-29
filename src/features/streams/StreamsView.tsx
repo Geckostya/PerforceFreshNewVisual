@@ -14,6 +14,7 @@ import { ActionDialog, CompactEmpty, ContextMenu, MenuButton, View } from "../..
 import { useContextMenu } from "../../shared/useContextMenu";
 import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
 import { loadStreamPreferences, saveStreamPreferences, streamPreferencesStorageKey, type StreamPreferences } from "./streamPreferences";
+import { CreateStreamDialog } from "./CreateStreamDialog";
 
 export function StreamsView({ connection, currentStream, onSwitched }: { connection: ConnectionInput; currentStream?: string; onSwitched: (info: P4Info) => void }) {
   const { t } = useLocale();
@@ -27,6 +28,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set(initialPreferences?.collapsedPaths));
   const selectionAnchor = useRef<string | undefined>(undefined);
   const [switchTarget, setSwitchTarget] = useState<StreamSummary>();
+  const [createParent, setCreateParent] = useState<string>();
   const [localStrategy, setLocalStrategy] = useState<StreamLocalStrategy>("shelve");
   const [downloadNow, setDownloadNow] = useState(false);
   const [syncPreview, setSyncPreview] = useState<SyncPreview>();
@@ -181,6 +183,19 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     }
   }
 
+  async function finishCreate(created: StreamSummary) {
+    await load();
+    setSelectedPaths([created.path]);
+    selectionAnchor.current = created.path;
+    setVisible((current) => {
+      const next = new Set(current).add(created.path);
+      saveStreamPreferences(preferencesKey, { visiblePaths: [...next], collapsedPaths: [...collapsedPaths], archivedOpen });
+      return next;
+    });
+    setNotice(t("streamCreated"));
+    setCreateParent(undefined);
+  }
+
   async function runSync() {
     setSyncPreview(undefined);
     await safeSync.start(["//..."]);
@@ -229,7 +244,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     })}
   </ul>;
 
-  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<RefreshButton busy={busy} onClick={() => void load()} />}>
+  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<><button data-agent-id="create-stream" className="primary-button" type="button" disabled={busy || streams.length === 0} onClick={() => setCreateParent(selectedStream?.path || currentStream || streams[0]?.path)}>{t("createStream")}</button><RefreshButton busy={busy} onClick={() => void load()} /></>}>
     <div className="streams-workbench">
       <aside className="streams-tree-pane">
         <div className="column-heading">
@@ -259,7 +274,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
       </aside>
       <section className="stream-graph-pane" aria-label={t("streamGraph")}>
         <div className="column-heading"><strong>{t("streamGraph")}</strong><span>{graph.nodes.length}</span></div>
-        {selectedStream ? <div className="stream-selection-summary"><strong>{selectedStream.path}</strong><span>{selectedStream.description || selectedStream.streamType}</span></div> : selectedPaths.length > 1 ? <div className="stream-selection-summary"><strong>{selectedPaths.length} {t("streamsSelected")}</strong></div> : null}
+        {selectedStream ? <div className="stream-selection-summary"><div><strong>{selectedStream.path}</strong><span>{selectedStream.description || selectedStream.streamType}</span></div><button data-agent-id="create-child-stream" className="secondary-button" type="button" onClick={() => setCreateParent(selectedStream.path)}>{t("createChildStream")}</button></div> : selectedPaths.length > 1 ? <div className="stream-selection-summary"><strong>{selectedPaths.length} {t("streamsSelected")}</strong></div> : null}
         {graph.nodes.length ? <div className="stream-graph-scroll"><svg className="stream-graph" role="img" aria-label={t("streamGraph")} viewBox={`0 0 ${graph.width} ${graph.height}`} width={graph.width} height={graph.height}>
           <g className="stream-edges">{graph.edges.map((edge) => { const from = graphByPath.get(edge.from)!; const to = graphByPath.get(edge.to)!; return <path key={`${edge.from}-${edge.to}`} d={`M ${from.x + 190} ${from.y + 27} C ${from.x + 215} ${from.y + 27}, ${to.x - 25} ${to.y + 27}, ${to.x} ${to.y + 27}`} />; })}</g>
           {graph.nodes.map((node) => <g className={`stream-node ${streamTypeClass(node.stream.streamType)}${selectedPaths.includes(node.stream.path) ? " selected" : ""}${node.stream.path === currentStream ? " current" : ""}`} key={node.stream.path} transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} onClick={(event) => selectStream(node.stream.path, event)} onDoubleClick={() => beginSwitch(node.stream)} onContextMenu={(event) => openMenu(event, node.stream)} onKeyDown={(event) => { if (event.key === "Enter") beginSwitch(node.stream); if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, node.stream); }}>
@@ -270,6 +285,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     </div>
 
     {menu && streamMenu.menu && <ContextMenu x={streamMenu.menu.x} y={streamMenu.menu.y} onSelect={streamMenu.close}>
+      <MenuButton onClick={() => setCreateParent(menu.path)}>{t("createChildStream")}</MenuButton>
       <MenuButton disabled={selectedPaths.length !== 1 || menu.path === currentStream} onClick={() => beginSwitch(menu)}>{t("switchToStream")}</MenuButton>
       <MenuButton onClick={() => {
         const paths = selectedPaths.includes(menu.path) ? selectedPaths : [menu.path];
@@ -289,6 +305,8 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
       <fieldset className="strategy-fieldset"><legend>{t("localFilesStrategy")}</legend><label className="check-field"><input type="radio" name="local-strategy" checked={localStrategy === "shelve"} onChange={() => setLocalStrategy("shelve")} /><span><strong>{t("streamShelveLocal")}</strong><small>{t("streamShelveLocalBody")}</small></span></label><label className="check-field"><input type="radio" name="local-strategy" checked={localStrategy === "keep"} onChange={() => setLocalStrategy("keep")} /><span><strong>{t("streamKeepLocal")}</strong><small>{t("streamKeepLocalBody")}</small></span></label></fieldset>
       <fieldset className="strategy-fieldset"><legend>{t("depotFilesStrategy")}</legend><label className="check-field"><input type="radio" name="depot-strategy" checked={downloadNow} onChange={() => setDownloadNow(true)} /><span><strong>{t("streamDownloadNow")}</strong><small>{t("streamDownloadNowBody")}</small></span></label><label className="check-field"><input type="radio" name="depot-strategy" checked={!downloadNow} onChange={() => setDownloadNow(false)} /><span><strong>{t("streamKeepDepot")}</strong><small>{t("streamKeepDepotBody")}</small></span></label></fieldset>
     </ActionDialog>}
+
+    {createParent && <CreateStreamDialog connection={connection} streams={streams} initialParent={createParent} onClose={() => setCreateParent(undefined)} onCreated={finishCreate} />}
 
     {syncPreview && <SyncPreviewDialog preview={syncPreview} busy={busy} acknowledged={syncAcknowledged} onAcknowledged={setSyncAcknowledged} onClose={() => setSyncPreview(undefined)} onConfirm={() => void runSync()} />}
     <SafeSyncConflictDialog sync={safeSync} />

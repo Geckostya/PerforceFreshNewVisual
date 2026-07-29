@@ -44,6 +44,7 @@ Every resource screen uses the same icon-only Refresh action in the heading. Its
 - Selection and visibility are separate. Group visibility actions apply to the selection; disabling a parent cascades, enabling changes only that parent, and mixed descendants produce an indeterminate state.
 - Collapse changes tree presentation and range order, not selection or graph visibility. Visibility, collapse, and `Unactual` presentation persist per server/user/workspace without changing Helix Core.
 - Moving a parent to `Unactual` includes descendants; ordinary restore affects only selected paths. Explicit descendant commands exist and stale paths are cleaned after a successful read.
+- Child stream creation is available from the heading and selected-stream summary, with `Create child stream` as a graph/tree context-menu accelerator that preselects the parent. The three-step dialog collects basics and Paths, lets the user type view paths or select existing directories inside the current workspace, requires a server-backed stream-form review before creation, and creates only the stream specification without switching or syncing the workspace.
 - Stream switching chooses independent local (`Shelve`/`Keep`) and content (`Download now`/`Keep as is`) strategies. Download uses safe sync, and a successful switch invalidates hidden Local Files state.
 
 ## Selection, keyboard, and drag-and-drop

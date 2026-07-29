@@ -42,6 +42,75 @@ pub(super) fn validate_stream_path(stream: &str) -> Result<(), AppError> {
     }
 }
 
+pub(super) fn validate_stream_name(name: &str) -> Result<&str, AppError> {
+    let name = name.trim();
+    let valid = !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric());
+    if valid {
+        Ok(name)
+    } else {
+        Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Имя stream должно начинаться с буквы или цифры и содержать только латинские буквы, цифры, точки, дефисы и подчёркивания.",
+        ))
+    }
+}
+
+pub(super) fn validate_stream_description(description: &str) -> Result<&str, AppError> {
+    let description = description.trim();
+    if description.len() <= 10_000 {
+        Ok(description)
+    } else {
+        Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Описание stream не должно превышать 10000 символов.",
+        ))
+    }
+}
+
+pub(super) fn validate_stream_view_path(path: &str) -> Result<&str, AppError> {
+    let path = path.trim();
+    let valid = !path.is_empty()
+        && path.len() <= 1024
+        && !path.starts_with(['/', '\\'])
+        && !path.split('/').any(|segment| segment == "..")
+        && !path.contains(['\\', '"', '\r', '\n', '\t', '@', '#', '%'])
+        && path.chars().all(|character| !character.is_control());
+    if valid {
+        Ok(path)
+    } else {
+        Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Некорректный view path в Paths stream.",
+        ))
+    }
+}
+
+pub(super) fn validate_stream_import_path(path: &str) -> Result<&str, AppError> {
+    let path = path.trim();
+    if path.starts_with("//")
+        && path.len() > 2
+        && path.len() <= 2048
+        && !path.contains(['\r', '\n', '\t', ' '])
+        && !path.split('/').any(|segment| segment == "..")
+        && !path.contains(['@', '#', '%'])
+    {
+        Ok(path)
+    } else {
+        Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Для import требуется корректный depot path.",
+        ))
+    }
+}
+
 pub(super) fn empty_file_selection() -> AppError {
     AppError::new(ErrorKind::CommandFailed, "Не выбраны файлы для операции.")
 }
