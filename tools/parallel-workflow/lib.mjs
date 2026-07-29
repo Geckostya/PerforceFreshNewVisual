@@ -13,6 +13,7 @@ const TASK_BUCKETS = ["pending", "active", "completed", "blocked"];
 const TASK_KINDS = new Set(["feature", "refactor", "stabilization"]);
 const QUALITY_TASK_KINDS = new Set(["refactor", "stabilization"]);
 const WORK_CLASSES = new Set(["implementation", "mechanical", "quality", "complex"]);
+const TASK_VALIDATION_PROFILES = new Set(["p4fnv-auto", ...Object.keys(validationProfiles)]);
 const ALLOWED_REASONING_EFFORTS = Object.freeze({
   implementation: new Set(["medium"]),
   mechanical: new Set(["low", "medium"]),
@@ -27,6 +28,35 @@ const DEFAULT_REASONING_EFFORT = Object.freeze({
 });
 const DEFAULT_QUALITY_CHECKPOINT_EVERY = 4;
 const RESULT_TAIL_LIMIT = 12_000;
+const FAILURE_SUMMARY_TAIL_LIMIT = 2_000;
+const WORK_CLASS_QUALITY_WEIGHTS = Object.freeze({
+  implementation: 1,
+  mechanical: 0,
+  quality: 0,
+  complex: 2,
+});
+const WORK_CLASS_AGENT_BUDGETS = Object.freeze({
+  implementation: Object.freeze({
+    maxChildAgents: 0,
+    monitorTimeoutMs: 20 * 60_000,
+    maximumMonitorTimeoutMs: 40 * 60_000,
+  }),
+  mechanical: Object.freeze({
+    maxChildAgents: 0,
+    monitorTimeoutMs: 10 * 60_000,
+    maximumMonitorTimeoutMs: 20 * 60_000,
+  }),
+  quality: Object.freeze({
+    maxChildAgents: 0,
+    monitorTimeoutMs: 30 * 60_000,
+    maximumMonitorTimeoutMs: 60 * 60_000,
+  }),
+  complex: Object.freeze({
+    maxChildAgents: 0,
+    monitorTimeoutMs: 30 * 60_000,
+    maximumMonitorTimeoutMs: 60 * 60_000,
+  }),
+});
 
 export const ORCHESTRATOR_AGENT_PROFILE = Object.freeze({
   model: "terra",
@@ -71,6 +101,7 @@ export async function initializeWorkflow({
   backlogFile,
   p4dTestServerRoot,
   qualityCheckpointEvery,
+  qualityCheckpointUnits,
 }) {
   const resolvedStateRoot = path.resolve(requireString(stateRoot, "stateRoot"));
   const resolvedRepoRoot = await resolveRepositoryRoot(repoRoot ?? process.cwd());
@@ -90,7 +121,8 @@ export async function initializeWorkflow({
   } else {
     const workflowId = randomUUID();
     const validationCheckoutRoot = path.join(tmpdir(), "p4fnv-v", workflowId.slice(0, 8));
-    const resolvedQualityEvery = normalizeQualityEvery(qualityCheckpointEvery);
+    const requestedQualityUnits = qualityCheckpointUnits ?? qualityCheckpointEvery;
+    const resolvedQualityEvery = normalizeQualityEvery(requestedQualityUnits);
     const resolvedP4dRoot = p4dTestServerRoot
       ? await resolveP4dTestServerRoot(p4dTestServerRoot)
       : undefined;
@@ -103,10 +135,11 @@ export async function initializeWorkflow({
       validationCheckoutRoot,
       validationWorktreePath: path.join(validationCheckoutRoot, "checkout"),
       validationCargoTargetRoot: path.join(validationCheckoutRoot, "cargo-target"),
+      workerWorktreeRoot: path.join(resolvedRepoRoot, ".tmp", "parallel-worktrees"),
       defaultBaseRef: "main",
-      defaultValidationProfile: "p4fnv-full",
+      defaultValidationProfile: "p4fnv-auto",
       orchestratorAgentProfile: ORCHESTRATOR_AGENT_PROFILE,
-      qualityCheckpointEvery: resolvedQualityEvery,
+      qualityCheckpointUnits: resolvedQualityEvery,
       createdAt: now(),
       ...(resolvedP4dRoot ? { p4dTestServerRoot: resolvedP4dRoot } : {}),
     };
@@ -122,11 +155,11 @@ export async function initializeWorkflow({
     }
   }
   if (
-    qualityCheckpointEvery !== undefined &&
-    qualityEvery(config) !== normalizeQualityEvery(qualityCheckpointEvery)
+    (qualityCheckpointUnits !== undefined || qualityCheckpointEvery !== undefined) &&
+    qualityEvery(config) !== normalizeQualityEvery(qualityCheckpointUnits ?? qualityCheckpointEvery)
   ) {
     throw new WorkflowError(
-      "Workflow already has a different quality checkpoint interval.",
+      "Workflow already has a different quality checkpoint unit threshold.",
       "config_mismatch",
     );
   }
@@ -215,7 +248,7 @@ export function normalizeTaskInput(value, config) {
   if (!TASK_KINDS.has(taskKind)) {
     throw new WorkflowError(`Task ${taskId} has unknown taskKind ${taskKind}.`, "invalid_task");
   }
-  if (!Object.hasOwn(validationProfiles, validationProfile)) {
+  if (!TASK_VALIDATION_PROFILES.has(validationProfile)) {
     throw new WorkflowError(
       `Task ${taskId} requests unknown validation profile ${validationProfile}.`,
       "invalid_task",
@@ -227,9 +260,9 @@ export function normalizeTaskInput(value, config) {
       "p4d_not_configured",
     );
   }
-  if (value.agentProfile !== undefined) {
+  if (value.agentProfile !== undefined || value.agentBudget !== undefined) {
     throw new WorkflowError(
-      `Task ${taskId} cannot select agentProfile directly; use workClass.`,
+      `Task ${taskId} cannot select agentProfile or agentBudget directly; use workClass.`,
       "invalid_task",
     );
   }
@@ -279,6 +312,8 @@ export function normalizeTaskInput(value, config) {
     workClass,
     reasoningEffort,
     agentProfile: agentProfileForWorkClass(workClass, reasoningEffort),
+    agentBudget: agentBudgetForWorkClass(workClass),
+    qualityWeight: qualityWeightForWorkClass(workClass),
     ...(resourceJustification ? { resourceJustification } : {}),
     dependsOn: uniqueTaskIds(value.dependsOn ?? [], `task ${taskId} dependsOn`),
     sourceTaskIds,
@@ -298,10 +333,10 @@ export function normalizeTaskInput(value, config) {
   };
 }
 
-export async function getNextTask(stateRoot) {
+export async function getNextTask(stateRoot, { availableModels } = {}) {
   const workflow = await loadWorkflow(stateRoot);
   const buckets = await loadTaskBuckets(workflow.stateRoot);
-  return selectNextWorkflowItem(buckets, workflow.config);
+  return selectNextWorkflowItem(buckets, workflow.config, availableModels);
 }
 
 export function agentProfileForTask(task) {
@@ -322,7 +357,9 @@ export function selectNextTask(tasks, completedIds) {
 }
 
 export function computeQualityState(buckets, config) {
-  const completedFeatures = buckets.completed.filter((task) => taskKindOf(task) === "feature");
+  const completedFeatures = buckets.completed.filter(
+    (task) => taskKindOf(task) === "feature" && qualityWeightForTask(task) > 0,
+  );
   const completedStabilizations = buckets.completed.filter(
     (task) => taskKindOf(task) === "stabilization",
   );
@@ -339,11 +376,16 @@ export function computeQualityState(buckets, config) {
   const uncovered = completedFeatures
     .filter((task) => !covered.has(task.taskId) && !reserved.has(task.taskId))
     .sort(compareTasks);
-  const pendingFeatures = buckets.pending.filter((task) => taskKindOf(task) === "feature");
+  const pendingFeatures = buckets.pending.filter(
+    (task) => taskKindOf(task) === "feature" && qualityWeightForTask(task) > 0,
+  );
   const activeFeatures = buckets.active.filter((task) => taskKindOf(task) === "feature");
+  const activeRiskFeatures = activeFeatures.filter((task) => qualityWeightForTask(task) > 0);
+  const completedRiskUnits = sumQualityWeights(uncovered);
+  const activeRiskUnits = sumQualityWeights(activeRiskFeatures);
   const thresholdReached =
-    uncovered.length >= qualityEvery(config) ||
-    (pendingFeatures.length === 0 && uncovered.length + activeFeatures.length > 0);
+    completedRiskUnits >= qualityEvery(config) ||
+    (pendingFeatures.length === 0 && completedRiskUnits + activeRiskUnits > 0);
   const checkpointDraining =
     qualityBarrierTasks.length === 0 && thresholdReached && activeFeatures.length > 0;
   const checkpointRequired =
@@ -353,6 +395,9 @@ export function computeQualityState(buckets, config) {
     uncovered.length > 0;
   return {
     checkpointEvery: qualityEvery(config),
+    checkpointUnits: qualityEvery(config),
+    completedRiskUnits,
+    activeRiskUnits,
     checkpointDraining,
     checkpointRequired,
     drainingFeatureTaskIds: activeFeatures.sort(compareTasks).map((task) => task.taskId),
@@ -449,7 +494,7 @@ export async function createQualityCheckpoint({ stateRoot, checkpointId, sourceT
           "The fast debug validation profile passes for the consolidated commit.",
         ],
         baseRef: baseSha,
-        validationProfile: "p4fnv-fast",
+        validationProfile: "p4fnv-auto",
         relevantPaths,
         metadata: { generatedBy: "quality-checkpoint" },
       },
@@ -488,7 +533,7 @@ export async function createQualityCheckpoint({ stateRoot, checkpointId, sourceT
   };
 }
 
-function selectNextWorkflowItem(buckets, config) {
+function selectNextWorkflowItem(buckets, config, availableModels) {
   const completedIds = new Set(buckets.completed.map((task) => task.taskId));
   const quality = computeQualityState(buckets, config);
   const qualityBarrier = [...buckets.pending, ...buckets.active, ...buckets.blocked].some((task) =>
@@ -498,7 +543,7 @@ function selectNextWorkflowItem(buckets, config) {
     return taskForDispatch(selectNextTask(
       buckets.pending.filter((task) => QUALITY_TASK_KINDS.has(taskKindOf(task))),
       completedIds,
-    ));
+    ), availableModels);
   }
   if (quality.checkpointDraining) {
     return {
@@ -517,15 +562,45 @@ function selectNextWorkflowItem(buckets, config) {
       sourceTaskIds: quality.uncoveredFeatureTaskIds,
     };
   }
-  return taskForDispatch(selectNextTask(buckets.pending, completedIds));
+  return taskForDispatch(selectNextTask(buckets.pending, completedIds), availableModels);
 }
 
-export async function claimTask({ stateRoot, taskId, workerId }) {
+export async function claimTask({
+  stateRoot,
+  taskId,
+  workerId,
+  actualModel,
+  actualReasoningEffort,
+  maxChildAgents,
+}) {
   const workflow = await loadWorkflow(stateRoot);
   const id = validateTaskId(taskId);
   const worker = requireString(workerId, "workerId");
   const pendingPath = taskPath(workflow.stateRoot, "pending", id);
   const task = taskForDispatch(await readJson(pendingPath));
+  const actualAgentProfile = {
+    model: requireString(actualModel, "actualModel"),
+    reasoningEffort: requireString(actualReasoningEffort, "actualReasoningEffort"),
+  };
+  if (
+    actualAgentProfile.model !== task.agentProfile.model ||
+    actualAgentProfile.reasoningEffort !== task.agentProfile.reasoningEffort
+  ) {
+    throw new WorkflowError(
+      `Worker profile ${actualAgentProfile.model}/${actualAgentProfile.reasoningEffort} does not match required ${task.agentProfile.model}/${task.agentProfile.reasoningEffort}.`,
+      "agent_profile_mismatch",
+    );
+  }
+  const declaredMaxChildAgents = Number(maxChildAgents);
+  if (
+    !Number.isInteger(declaredMaxChildAgents) ||
+    declaredMaxChildAgents !== task.agentBudget.maxChildAgents
+  ) {
+    throw new WorkflowError(
+      `Worker must declare maxChildAgents=${task.agentBudget.maxChildAgents}.`,
+      "agent_budget_mismatch",
+    );
+  }
 
   const buckets = await loadTaskBuckets(workflow.stateRoot);
   const quality = computeQualityState(buckets, workflow.config);
@@ -582,6 +657,8 @@ export async function claimTask({ stateRoot, taskId, workerId }) {
     sourceCommits,
     validationProfile: task.validationProfile,
     agentProfile: task.agentProfile,
+    actualAgentProfile,
+    agentBudget: task.agentBudget,
     claimedAt: now(),
     task,
   };
@@ -595,6 +672,8 @@ export async function claimTask({ stateRoot, taskId, workerId }) {
     status: "active",
     workerThreadId: worker,
     assignmentId: assignment.assignmentId,
+    actualAgentProfile,
+    maxChildAgents: declaredMaxChildAgents,
     baseSha,
     claimedAt: assignment.claimedAt,
   };
@@ -640,6 +719,12 @@ export async function submitValidationRequest({
   }
 
   const changedFiles = await changedPaths(workflow.config.repoRoot, base, commit);
+  const validationProfile = resolveValidationProfile(
+    task.validationProfile,
+    changedFiles,
+    taskKindOf(task),
+    workflow.config,
+  );
   const request = {
     schemaVersion: SCHEMA_VERSION,
     requestId: randomUUID(),
@@ -653,7 +738,8 @@ export async function submitValidationRequest({
     worktreePath: resolvedWorktree,
     commitSha: commit,
     baseSha: base,
-    validationProfile: task.validationProfile,
+    requestedValidationProfile: task.validationProfile,
+    validationProfile,
     changedFiles,
     summary: String(summary),
     requestedAt: now(),
@@ -665,13 +751,20 @@ export async function submitValidationRequest({
   );
   await atomicWriteJson(taskFile, {
     ...task,
+    worktreePath: resolvedWorktree,
+    resolvedValidationProfile: validationProfile,
     latestValidationRequestId: request.requestId,
     latestValidationState: "pending",
   });
   return request;
 }
 
-export async function runValidator({ stateRoot, watch = false, pollIntervalMs = 2_000 }) {
+export async function runValidator({
+  stateRoot,
+  watch = false,
+  pollIntervalMs = 2_000,
+  onResult,
+}) {
   const workflow = await loadWorkflow(stateRoot);
   const lock = await acquireValidatorLock(workflow);
   let interrupted = false;
@@ -688,6 +781,7 @@ export async function runValidator({ stateRoot, watch = false, pollIntervalMs = 
       const result = await processNextValidation(workflow);
       if (result) {
         results.push(result);
+        if (onResult) await onResult(result, workflow.stateRoot);
       } else if (watch && !interrupted) {
         await delay(Math.max(250, pollIntervalMs));
       }
@@ -815,6 +909,8 @@ async function validateRequest(workflow, request) {
     workerThreadId: request.workerThreadId,
     commitSha: request.commitSha,
     baseSha: request.baseSha,
+    worktreePath: request.worktreePath,
+    requestedValidationProfile: request.requestedValidationProfile ?? request.validationProfile,
     validationProfile: request.validationProfile,
     changedFiles: request.changedFiles,
     status,
@@ -967,7 +1063,50 @@ export async function getValidationResult(stateRoot, requestId) {
   return readJson(path.join(workflow.stateRoot, "validation", "results", `${id}.json`));
 }
 
-export async function workflowStatus(stateRoot) {
+export async function getValidationResultSummary(stateRoot, requestId) {
+  const workflow = await loadWorkflow(stateRoot);
+  const result = await getValidationResult(workflow.stateRoot, requestId);
+  return summarizeValidationResult(result, workflow.stateRoot);
+}
+
+export function summarizeValidationResult(result, stateRoot) {
+  const failedCommand = result.commands?.find((command) => command.status === "failed");
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    resultId: result.resultId,
+    requestId: result.requestId,
+    workflowId: result.workflowId,
+    taskId: result.taskId,
+    taskKind: result.taskKind,
+    ...(result.qualityCheckpointId
+      ? { qualityCheckpointId: result.qualityCheckpointId }
+      : {}),
+    workerThreadId: result.workerThreadId,
+    commitSha: result.commitSha,
+    validationProfile: result.validationProfile,
+    status: result.status,
+    retryable: result.retryable,
+    summary: result.summary,
+    durationMs: result.durationMs,
+    changedFileCount: result.changedFiles?.length ?? 0,
+    warningCount: result.warnings?.length ?? 0,
+    resultPath: path.join(stateRoot, "validation", "results", `${result.requestId}.json`),
+    logDirectory: result.logDirectory,
+    ...(failedCommand
+      ? {
+          failedCommand: {
+            id: failedCommand.id,
+            exitCode: failedCommand.exitCode,
+            timedOut: failedCommand.timedOut,
+            logPath: failedCommand.logPath,
+            outputTail: failedCommand.outputTail.slice(-FAILURE_SUMMARY_TAIL_LIMIT),
+          },
+        }
+      : {}),
+  };
+}
+
+export async function workflowStatus(stateRoot, { verbose = false, availableModels } = {}) {
   const workflow = await loadWorkflow(stateRoot);
   const buckets = await loadTaskBuckets(workflow.stateRoot);
   const validationPending = await readJsonDirectory(
@@ -979,36 +1118,50 @@ export async function workflowStatus(stateRoot) {
   const results = await readJsonDirectory(path.join(workflow.stateRoot, "validation", "results"));
   const lock = await readValidatorLock(workflow.stateRoot);
   const quality = computeQualityState(buckets, workflow.config);
-  return {
+  const status = {
     schemaVersion: SCHEMA_VERSION,
     workflowId: workflow.config.workflowId,
     stateRoot: workflow.stateRoot,
     orchestratorAgentProfile: structuredClone(
       workflow.config.orchestratorAgentProfile ?? ORCHESTRATOR_AGENT_PROFILE,
     ),
-    validationCheckoutRoot: workflow.config.validationCheckoutRoot,
-    validationWorktreePath: validationWorktreePath(workflow.config),
-    validationCargoTargetRoot: validationCargoTargetPath(workflow.config),
     tasks: {
       pending: buckets.pending.length,
       active: buckets.active.length,
       completed: buckets.completed.length,
       blocked: buckets.blocked.length,
-      next: selectNextWorkflowItem(buckets, workflow.config),
+      next: selectNextWorkflowItem(buckets, workflow.config, availableModels),
     },
     quality,
     validation: {
-      pending: validationPending,
-      running: validationRunning,
+      pending: validationPending.map(validationRequestSummary),
+      running: validationRunning.map(validationRequestSummary),
       recentResults: results
         .sort((left, right) => right.completedAt.localeCompare(left.completedAt))
-        .slice(0, 10),
+        .slice(0, 5)
+        .map(validationResultStatusSummary),
+      validatorLock: lock,
+    },
+  };
+  if (!verbose) return status;
+  return {
+    ...status,
+    paths: {
+      validationCheckoutRoot: workflow.config.validationCheckoutRoot,
+      validationWorktreePath: validationWorktreePath(workflow.config),
+      validationCargoTargetRoot: validationCargoTargetPath(workflow.config),
+      workerWorktreeRoot: workerWorktreePath(workflow.config),
+    },
+    validation: {
+      pending: validationPending,
+      running: validationRunning,
+      recentResults: results.slice(0, 10),
       validatorLock: lock,
     },
   };
 }
 
-export async function doctorWorkflow(stateRoot) {
+export async function doctorWorkflow(stateRoot, { availableModels } = {}) {
   const workflow = await loadWorkflow(stateRoot);
   const checks = [];
   checks.push(await diagnostic("git", () => runProcess("git", ["--version"], { timeoutMs: 10_000 })));
@@ -1017,6 +1170,24 @@ export async function doctorWorkflow(stateRoot) {
       runGit(workflow.config.repoRoot, ["rev-parse", "--is-inside-work-tree"], 10_000),
     ),
   );
+  const buckets = await loadTaskBuckets(workflow.stateRoot);
+  const requiredModels = new Set([
+    ORCHESTRATOR_AGENT_PROFILE.model,
+    ...[...buckets.pending, ...buckets.active].map(
+      (task) => agentProfileForTask(task).model,
+    ),
+  ]);
+  const available = normalizeAvailableModels(availableModels);
+  const missingModels = [...requiredModels].filter((model) => !available?.has(model));
+  checks.push({
+    name: "agent-models",
+    status: available && missingModels.length === 0 ? "passed" : "failed",
+    output: available
+      ? missingModels.length === 0
+        ? `Available: ${[...available].sort().join(", ")}.`
+        : `Unavailable required models: ${missingModels.sort().join(", ")}.`
+      : "Agent capabilities were not supplied; pass --available-models.",
+  });
   checks.push(
     await diagnostic("toolchain", () =>
       runProcess(
@@ -1038,6 +1209,105 @@ export async function doctorWorkflow(stateRoot) {
     schemaVersion: SCHEMA_VERSION,
     status: checks.every((check) => check.status === "passed") ? "passed" : "failed",
     checks,
+  };
+}
+
+export async function cleanupWorkflow({
+  stateRoot,
+  apply = false,
+  removeFinal = false,
+  removeCargo = false,
+}) {
+  const workflow = await loadWorkflow(stateRoot);
+  const buckets = await loadTaskBuckets(workflow.stateRoot);
+  const validationRunning = await readJsonDirectory(
+    path.join(workflow.stateRoot, "validation", "running"),
+  );
+  const lock = await readValidatorLock(workflow.stateRoot);
+  if (apply && (buckets.active.length > 0 || validationRunning.length > 0 || lock)) {
+    throw new WorkflowError(
+      "Cleanup cannot apply while workers or validation are active.",
+      "cleanup_active_work",
+    );
+  }
+
+  const finalTask = [...buckets.completed]
+    .filter((task) => taskKindOf(task) === "stabilization")
+    .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""))[0]
+    ?? [...buckets.completed]
+      .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""))[0]
+    ?? null;
+  const managedWorkerRoot = workerWorktreePath(workflow.config);
+  const registeredPaths = await registeredWorktreePaths(workflow.config.repoRoot);
+  const seenPaths = new Set();
+  const worktrees = [];
+  for (const task of buckets.completed.sort(compareTasks)) {
+    const candidate = assertManagedPath(
+      managedWorkerRoot,
+      task.worktreePath ?? path.join(managedWorkerRoot, task.taskId),
+    );
+    const normalized = normalizeWindowsPath(candidate);
+    if (seenPaths.has(normalized)) continue;
+    seenPaths.add(normalized);
+    const exists = await pathExists(candidate);
+    const registered = exists && registeredPaths.some((item) => samePath(item, candidate));
+    const kept = !removeFinal && task.taskId === finalTask?.taskId;
+    let action = kept ? "keep-final" : exists && registered ? "remove" : "skip";
+    let reason = kept
+      ? "Final integration candidate is preserved."
+      : exists
+        ? registered
+          ? "Completed workflow worktree."
+          : "Path exists but is not a registered worktree."
+        : "Worktree path is already absent.";
+    if (apply && action === "remove") {
+      await detachSharedToolchain(workflow, candidate);
+      await runGit(
+        workflow.config.repoRoot,
+        ["worktree", "remove", "--force", candidate],
+        120_000,
+      );
+      action = "removed";
+      reason = "Completed workflow worktree removed; branch preserved.";
+    }
+    worktrees.push({ taskId: task.taskId, path: candidate, action, reason });
+  }
+  if (apply && worktrees.some((item) => item.action === "removed")) {
+    await runGit(workflow.config.repoRoot, ["worktree", "prune"], 30_000);
+  }
+  const unownedWorktrees = registeredPaths
+    .filter((candidate) => {
+      const relative = path.relative(managedWorkerRoot, candidate);
+      return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+    })
+    .filter((candidate) => !seenPaths.has(normalizeWindowsPath(candidate)))
+    .map((candidate) => ({
+      path: candidate,
+      action: "manual-review",
+      reason: "Registered worktree is inside the managed root but is not owned by this state.",
+    }));
+
+  const cargoTarget = validationCargoTargetPath(workflow.config);
+  const cargoExists = await pathExists(cargoTarget);
+  let cargoAction = removeCargo && cargoExists ? "remove" : cargoExists ? "keep" : "skip";
+  if (apply && cargoAction === "remove") {
+    assertManagedPath(workflow.config.validationCheckoutRoot, cargoTarget);
+    await fs.rm(cargoTarget, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
+    cargoAction = "removed";
+  }
+
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    workflowId: workflow.config.workflowId,
+    mode: apply ? "applied" : "dry-run",
+    finalTaskId: finalTask?.taskId ?? null,
+    worktrees,
+    unownedWorktrees,
+    cargoTarget: {
+      path: cargoTarget,
+      action: cargoAction,
+      reason: removeCargo ? "Explicit Cargo cache removal requested." : "Cargo cache preserved.",
+    },
   };
 }
 
@@ -1184,6 +1454,20 @@ export function validationCargoTargetPath(config) {
   const target = config.validationCargoTargetRoot
     ?? path.join(config.validationCheckoutRoot, "cargo-target");
   return assertManagedPath(config.validationCheckoutRoot, target);
+}
+
+export function workerWorktreePath(config) {
+  const root = config.workerWorktreeRoot
+    ?? path.join(config.repoRoot, ".tmp", "parallel-worktrees");
+  const resolvedRoot = path.resolve(root);
+  const relative = path.relative(path.resolve(config.repoRoot), resolvedRoot);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new WorkflowError(
+      `Worker worktree root ${resolvedRoot} must stay inside ${config.repoRoot}.`,
+      "unsafe_path",
+    );
+  }
+  return resolvedRoot;
 }
 
 async function acquireValidatorLock(workflow) {
@@ -1389,12 +1673,16 @@ async function detachSharedToolchain(workflow, checkoutPath) {
 }
 
 async function isRegisteredWorktree(repoRoot, checkoutPath) {
+  return (await registeredWorktreePaths(repoRoot))
+    .some((registeredPath) => samePath(registeredPath, checkoutPath));
+}
+
+async function registeredWorktreePaths(repoRoot) {
   const result = await runGit(repoRoot, ["worktree", "list", "--porcelain"], 30_000);
   return result.outputTail
     .split(/\r?\n/)
     .filter((line) => line.startsWith("worktree "))
-    .map((line) => line.slice("worktree ".length))
-    .some((registeredPath) => samePath(registeredPath, checkoutPath));
+    .map((line) => path.resolve(line.slice("worktree ".length)));
 }
 
 async function resolveCommit(repoRoot, ref) {
@@ -1538,13 +1826,14 @@ function validateConfig(config, expectedStateRoot) {
   }
   validationCargoTargetPath(config);
   validationWorktreePath(config);
+  workerWorktreePath(config);
   if (config.p4dTestServerRoot !== undefined && !path.isAbsolute(config.p4dTestServerRoot)) {
     throw new WorkflowError("Workflow P4D test server path must be absolute.", "invalid_config");
   }
   if (!samePath(config.stateRoot, expectedStateRoot)) {
     throw new WorkflowError("Workflow stateRoot does not match its location.", "invalid_config");
   }
-  if (!Object.hasOwn(validationProfiles, config.defaultValidationProfile)) {
+  if (!TASK_VALIDATION_PROFILES.has(config.defaultValidationProfile)) {
     throw new WorkflowError("Workflow default validation profile is unknown.", "invalid_config");
   }
   if (
@@ -1556,7 +1845,7 @@ function validateConfig(config, expectedStateRoot) {
       "invalid_config",
     );
   }
-  normalizeQualityEvery(config.qualityCheckpointEvery);
+  qualityEvery(config);
 }
 
 function sameAgentProfile(actual, expected) {
@@ -1572,7 +1861,7 @@ function sameAgentProfile(actual, expected) {
 }
 
 function qualityEvery(config) {
-  return normalizeQualityEvery(config.qualityCheckpointEvery);
+  return normalizeQualityEvery(config.qualityCheckpointUnits ?? config.qualityCheckpointEvery);
 }
 
 function normalizeQualityEvery(value) {
@@ -1630,7 +1919,32 @@ function agentProfileForWorkClass(workClass, reasoningEffort) {
   return { ...structuredClone(profile), reasoningEffort };
 }
 
-function taskForDispatch(task) {
+function agentBudgetForWorkClass(workClass) {
+  const budget = WORK_CLASS_AGENT_BUDGETS[workClass];
+  if (!budget) {
+    throw new WorkflowError(`No agent budget exists for ${workClass}.`, "invalid_task");
+  }
+  return structuredClone(budget);
+}
+
+function qualityWeightForWorkClass(workClass) {
+  const weight = WORK_CLASS_QUALITY_WEIGHTS[workClass];
+  if (weight === undefined) {
+    throw new WorkflowError(`No quality weight exists for ${workClass}.`, "invalid_task");
+  }
+  return weight;
+}
+
+function qualityWeightForTask(task) {
+  const workClass = normalizeWorkClass(task.workClass, taskKindOf(task), task.taskId);
+  return qualityWeightForWorkClass(workClass);
+}
+
+function sumQualityWeights(tasks) {
+  return tasks.reduce((total, task) => total + qualityWeightForTask(task), 0);
+}
+
+function taskForDispatch(task, availableModels) {
   if (!task) return null;
   const workClass = normalizeWorkClass(task.workClass, taskKindOf(task), task.taskId);
   const reasoningEffort = normalizeReasoningEffort(
@@ -1647,12 +1961,103 @@ function taskForDispatch(task) {
       "resource_justification_required",
     );
   }
+  const agentProfile = agentProfileForWorkClass(workClass, reasoningEffort);
+  const available = normalizeAvailableModels(availableModels);
   return {
     ...task,
     workClass,
     reasoningEffort,
-    agentProfile: agentProfileForWorkClass(workClass, reasoningEffort),
+    agentProfile,
+    agentBudget: agentBudgetForWorkClass(workClass),
+    qualityWeight: qualityWeightForWorkClass(workClass),
+    agentAvailability: {
+      model: agentProfile.model,
+      status: available
+        ? available.has(agentProfile.model)
+          ? "available"
+          : "unavailable"
+        : "unchecked",
+    },
   };
+}
+
+function normalizeAvailableModels(value) {
+  if (value === undefined || value === null) return null;
+  const values = value instanceof Set
+    ? [...value]
+    : Array.isArray(value)
+      ? value
+      : String(value).split(",");
+  const normalized = values
+    .map((model) => String(model).trim().toLowerCase())
+    .filter(Boolean);
+  if (normalized.some((model) => !["terra", "luna", "sol"].includes(model))) {
+    throw new WorkflowError("availableModels contains an unknown model family.", "invalid_arguments");
+  }
+  return new Set(normalized);
+}
+
+function validationRequestSummary(request) {
+  return {
+    requestId: request.requestId,
+    taskId: request.taskId,
+    workerThreadId: request.workerThreadId,
+    commitSha: request.commitSha,
+    validationProfile: request.validationProfile,
+    requestedAt: request.requestedAt,
+  };
+}
+
+function validationResultStatusSummary(result) {
+  return {
+    requestId: result.requestId,
+    taskId: result.taskId,
+    status: result.status,
+    commitSha: result.commitSha,
+    validationProfile: result.validationProfile,
+    durationMs: result.durationMs,
+    completedAt: result.completedAt,
+  };
+}
+
+export function resolveValidationProfile(requestedProfile, changedFiles, taskKind, config = {}) {
+  if (requestedProfile !== "p4fnv-auto") {
+    if (!Object.hasOwn(validationProfiles, requestedProfile)) {
+      throw new WorkflowError(`Unknown validation profile ${requestedProfile}.`, "invalid_task");
+    }
+    return requestedProfile;
+  }
+  if (taskKind === "stabilization") {
+    return config.p4dTestServerRoot ? "p4fnv-full-p4d" : "p4fnv-full";
+  }
+  return inferPathValidationProfile(changedFiles);
+}
+
+export function inferPathValidationProfile(changedFiles) {
+  if (!Array.isArray(changedFiles) || changedFiles.length === 0) return "p4fnv-fast";
+  const paths = changedFiles.map((value) => String(value).replaceAll("\\", "/").toLowerCase());
+  const isDocs = (value) =>
+    value.startsWith("docs/") ||
+    value.startsWith(".agents/") ||
+    value.startsWith("tools/parallel-workflow/") ||
+    value.endsWith(".md");
+  const isFrontend = (value) =>
+    value.startsWith("src/") ||
+    value.startsWith("locales/") ||
+    ["package.json", "package-lock.json", "vite.config.ts", "tsconfig.json"].includes(value);
+  const isRust = (value) =>
+    value.startsWith("src-tauri/src/") ||
+    ["src-tauri/cargo.toml", "src-tauri/cargo.lock", "rust-toolchain.toml"].includes(value);
+  if (paths.every(isDocs)) return "p4fnv-docs";
+  const hasFrontend = paths.some(isFrontend);
+  const hasRust = paths.some(isRust);
+  if (hasFrontend && !hasRust && paths.every((value) => isFrontend(value) || isDocs(value))) {
+    return "p4fnv-frontend";
+  }
+  if (hasRust && !hasFrontend && paths.every((value) => isRust(value) || isDocs(value))) {
+    return "p4fnv-rust";
+  }
+  return "p4fnv-fast";
 }
 
 function compareTasks(left, right) {

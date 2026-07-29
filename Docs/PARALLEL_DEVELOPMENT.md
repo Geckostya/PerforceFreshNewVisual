@@ -33,24 +33,27 @@ The normative JSON formats are:
 - [`assignment.schema.json`](../tools/parallel-workflow/schemas/assignment.schema.json) for the prompt sent to a worker;
 - [`validation-request.schema.json`](../tools/parallel-workflow/schemas/validation-request.schema.json) for an immutable handoff;
 - [`validation-result.schema.json`](../tools/parallel-workflow/schemas/validation-result.schema.json) for the report returned to the worker.
+- [`validation-result-summary.schema.json`](../tools/parallel-workflow/schemas/validation-result-summary.schema.json) for the compact event envelope.
 
-`p4fnv-fast` is the normal feature and refactor profile: it runs frontend tests, Rust formatting, and a debug application build. `p4fnv-full` is reserved for stabilization and final regression coverage and runs the complete gate from `TOOLCHAIN.md`, including the release build. `p4fnv-full-p4d` adds a serialized writable smoke against an explicitly configured disposable loopback P4D server: it creates, reads back, and deletes an empty changelist. The server root is coordinator configuration, never queue data.
+`status`, `result`, and validator events are compact by default; successful envelopes contain IDs, status, duration, counts, and paths, not command output. Use `--verbose` for full stored JSON. Failed envelopes include only the failing command's bounded tail and log path.
+
+Use `p4fnv-auto` for feature and refactor tasks. The immutable changed-path list selects the smallest safe profile: `p4fnv-docs` runs repository tests, `p4fnv-frontend` adds the web build, `p4fnv-rust` runs fmt/tests/Clippy, and mixed or unknown paths use `p4fnv-fast` with a debug desktop build. Stabilization alone uses `p4fnv-full`, or `p4fnv-full-p4d` with an authorized disposable server. Queue JSON still cannot provide commands.
 
 ## Agent resource limits
 
 Classify a task by its primary purpose. Tests or documentation that are part of a normal feature remain with that feature worker; use `mechanical` when the whole assignment is primarily tests, documentation, formatting, generated updates, or another bounded mechanical change.
 
-| Work | Queue class | Model | Initial reasoning | Hard ceiling |
+| Work | Class | Model/reasoning | Monitor timeout | Quality units |
 |---|---|---|---|---|
-| Orchestration, queue, and status handling | coordinator | Terra | Low | Low |
-| Ordinary feature implementation | `implementation` | Terra | Medium | Medium |
-| Tests, documentation, and mechanical edits | `mechanical` | Luna | Low | Medium |
-| Generated refactoring and stabilization | `quality` | Sol | Medium | Medium |
-| Complex bugs, architecture, and conflict resolution | `complex` | Sol | High | High |
+| Orchestration and status | coordinator | Terra/Low | event-driven | — |
+| Ordinary implementation | `implementation` | Terra/Medium | 20→40 min | 1 |
+| Tests, docs, mechanical edits | `mechanical` | Luna/Low–Medium | 10→20 min | 0 |
+| Refactoring and stabilization | `quality` | Sol/Medium | 30→60 min | 0 |
+| Complex bugs, architecture, conflicts | `complex` | Sol/High | 30→60 min | 2 |
 
 Backlog tasks select only `workClass`; `agentProfile` is derived and cannot be supplied directly. Mechanical work defaults to Low. Selecting Medium for it requires `reasoningEffort: "medium"` and a non-empty `resourceJustification`. Complex work always requires `resourceJustification`. Generated refactor and stabilization tasks are forced to `quality`, regardless of source feature classes.
 
-`next` exposes the derived profile before worker creation, and the immutable assignment repeats it. Create the worker with that exact model and effort. These are cost ceilings, not hints: do not silently upgrade, substitute another family, or increase reasoning. If the requested family is unavailable in the current runtime, leave the task pending and report `agentProfile` as unavailable; a user-approved reclassification is required. The validator remains a script and consumes no agent model slot.
+`doctor --available-models` and `next --available-models` expose missing families before dispatch. `claim` requires the actual model, effort, and `maxChildAgents=0`; a mismatch is rejected. Workers may not delegate. Monitor with the assignment timeout, then double once up to its maximum; a timeout triggers one liveness check, not polling. If a family is unavailable, leave the task pending. The validator is a script and consumes no agent slot.
 
 ## Start a run
 
@@ -59,8 +62,8 @@ Copy and edit [`backlog.example.json`](../tools/parallel-workflow/examples/backl
 ```powershell
 . .\scripts\toolchain.ps1
 $state = Join-Path (git rev-parse --show-toplevel) ".tmp\parallel-workflow\feature-run"
-npm run workflow -- init --state $state --backlog C:\absolute\path\to\backlog.json --quality-every 4
-npm run workflow -- doctor --state $state
+npm run workflow -- init --state $state --backlog C:\absolute\path\to\backlog.json --quality-units 4
+npm run workflow -- doctor --state $state --available-models terra,luna,sol
 ```
 
 Initialization is idempotent; `enqueue` adds tasks without overwriting IDs.
@@ -76,7 +79,7 @@ Only a serialized `p4fnv-full-p4d` validator may mutate this server. It cleans i
 
 ```powershell
 . .\scripts\toolchain.ps1
-npm run workflow -- validate --state $state --watch
+npm run --silent workflow -- validate --state $state --watch
 ```
 
 The validator is quiet while idle, logs by request, and rejects a second instance. Alternatively, run one-shot `validate --state <path>` after each request.
@@ -85,20 +88,20 @@ The validator is quiet while idle, logs by request, and rejects a second instanc
 
 Use the project skill `$orchestrate-p4fnv-work` in the orchestrator task.
 
-1. Read `next`. Drain active features at a quality boundary; when required, create the checkpoint before scheduling its refactor. On idle, wait or report blocked dependencies.
+1. Read `next --available-models <list>`. Drain active features at a quality boundary; when required, create the checkpoint before scheduling its refactor. On idle, wait or report blocked dependencies.
 2. Create a worktree task with the selected `baseRef` and exact derived `agentProfile`. If unavailable, leave it pending; never substitute a costlier agent.
-3. Claim the selected task with the ready task ID and real worker thread ID. Send the returned assignment JSON unchanged to that task.
+3. Claim with the real thread ID plus `--model`, `--effort`, and `--max-child-agents 0`. Send the assignment unchanged.
 4. Keep workers bounded and fill slots by eligible priority; quality always takes precedence.
 5. On a result event, load it by request ID and return it to `workerThreadId`. Failures stay with the worker; infrastructure errors stay with the validator owner.
 6. Run `complete` only for the latest passing request. Use `block` or `requeue` with a reason.
 
 Wait for a real thread ID before claiming; never store a temporary client ID.
 
-Worker monitoring is event-driven. After dispatch, wait on worker task events with a bounded timeout; read queue/repository status only after an event or timeout. Do not poll worktree diffs for progress. A timeout is a health-check trigger, not evidence that the task failed.
+Worker monitoring is event-driven. Wait using `agentBudget.monitorTimeoutMs`; after a timeout perform one liveness check and double the wait up to `maximumMonitorTimeoutMs`. Read queue or repository state only after an event or timeout.
 
 ## Quality checkpoints
 
-The wave size defaults to four and accepts `1` to `20`. At a boundary the scheduler drains active features before creating a checkpoint; a final partial wave also requires one. `status.quality` exposes coverage and `handoffReady`.
+The threshold defaults to four risk units and accepts `1` to `20`. Implementation contributes one, complex work two, and mechanical work zero. Thus docs/test-only work does not buy a Sol checkpoint. At the threshold, or after the final partial non-mechanical wave, the scheduler drains all active features. `status.quality` exposes units, coverage, and `handoffReady`.
 
 `quality-checkpoint` creates two dependent tasks with immutable `sourceCommits` ranges. Its base is the merge base of source-task base SHAs, preventing sequential ranges from being applied twice:
 
@@ -126,8 +129,10 @@ npm run workflow -- request --state <absolute-state> --task <task-id> `
   --worktree $worktree --summary "Implemented and focused checks passed."
 ```
 
-The command verifies that the path belongs to the same Git repository, `HEAD` equals the submitted SHA, the worktree is clean, the base matches the assignment, and the commit descends from that base. It computes changed paths itself. The worker includes the returned request JSON in its final message, then waits for the validator report instead of running another worker's build.
+The command verifies repository, clean `HEAD`, base ancestry, and changed paths. It resolves `p4fnv-auto` from those paths. The worker returns the request ID, then waits for the compact validator event; load full JSON only for failure diagnosis.
 
 ## Handoff and integration
 
-Report completed task IDs, validated commit SHAs, validation profiles, quality coverage, and remaining blocked or active work. Final integration is ready only when `status.quality.handoffReady` is `true`. This workflow does not merge branches automatically: integration order and conflict resolution remain an explicit orchestrator or maintainer action. After rebasing, conflict resolution, or any new commit, request validation again because the previous result no longer covers the candidate.
+Report completed task IDs, validated SHAs, profiles, quality coverage, and blocked work. Integration is ready only at `handoffReady`; rebases or new commits require validation again.
+
+Run `cleanup --state <path>` first: it is always a dry-run. `--apply` removes only completed, registered worktrees owned by that state, preserving branches, the final candidate, and Cargo cache. `--remove-final` and `--remove-cargo` are separate explicit choices. Registered paths under the managed root that are not state-owned are reported for manual review and never deleted automatically.

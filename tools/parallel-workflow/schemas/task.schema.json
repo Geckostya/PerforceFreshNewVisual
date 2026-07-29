@@ -29,7 +29,12 @@
       "enum": ["implementation", "mechanical", "quality", "complex"]
     },
     "agentProfile": { "$ref": "#/$defs/agentProfile" },
+    "actualAgentProfile": { "$ref": "#/$defs/actualAgentProfile" },
+    "agentBudget": { "$ref": "#/$defs/agentBudget" },
+    "agentAvailability": { "$ref": "#/$defs/agentAvailability" },
     "reasoningEffort": { "enum": ["low", "medium", "high"] },
+    "qualityWeight": { "type": "number", "minimum": 0, "maximum": 2 },
+    "maxChildAgents": { "const": 0 },
     "resourceJustification": { "type": "string", "minLength": 1 },
     "dependsOn": {
       "type": "array",
@@ -69,8 +74,27 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
     },
     "validationProfile": {
-      "enum": ["p4fnv-fast", "p4fnv-full", "p4fnv-full-p4d"]
+      "enum": [
+        "p4fnv-auto",
+        "p4fnv-docs",
+        "p4fnv-frontend",
+        "p4fnv-rust",
+        "p4fnv-fast",
+        "p4fnv-full",
+        "p4fnv-full-p4d"
+      ]
     },
+    "resolvedValidationProfile": {
+      "enum": [
+        "p4fnv-docs",
+        "p4fnv-frontend",
+        "p4fnv-rust",
+        "p4fnv-fast",
+        "p4fnv-full",
+        "p4fnv-full-p4d"
+      ]
+    },
+    "worktreePath": { "type": "string", "minLength": 1 },
     "relevantPaths": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
@@ -108,6 +132,34 @@
         "model": { "enum": ["terra", "luna", "sol"] },
         "reasoningEffort": { "enum": ["low", "medium", "high"] },
         "maximumReasoningEffort": { "enum": ["low", "medium", "high"] }
+      }
+    },
+    "actualAgentProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "reasoningEffort"],
+      "properties": {
+        "model": { "enum": ["terra", "luna", "sol"] },
+        "reasoningEffort": { "enum": ["low", "medium", "high"] }
+      }
+    },
+    "agentBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxChildAgents", "monitorTimeoutMs", "maximumMonitorTimeoutMs"],
+      "properties": {
+        "maxChildAgents": { "const": 0 },
+        "monitorTimeoutMs": { "type": "integer", "minimum": 60000 },
+        "maximumMonitorTimeoutMs": { "type": "integer", "minimum": 60000 }
+      }
+    },
+    "agentAvailability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "status"],
+      "properties": {
+        "model": { "enum": ["terra", "luna", "sol"] },
+        "status": { "enum": ["available", "unavailable", "unchecked"] }
       }
     },
     "commitSha": {

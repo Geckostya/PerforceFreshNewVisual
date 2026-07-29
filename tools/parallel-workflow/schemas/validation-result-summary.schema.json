@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4fnv.local/schemas/parallel-workflow/validation-result-summary.schema.json",
+  "title": "P4FNV compact validation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "resultId",
+    "requestId",
+    "workflowId",
+    "taskId",
+    "taskKind",
+    "workerThreadId",
+    "commitSha",
+    "validationProfile",
+    "status",
+    "retryable",
+    "summary",
+    "durationMs",
+    "changedFileCount",
+    "warningCount",
+    "resultPath",
+    "logDirectory"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "resultId": { "type": "string", "minLength": 1 },
+    "requestId": { "type": "string", "minLength": 1 },
+    "workflowId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+    "taskKind": { "enum": ["feature", "refactor", "stabilization"] },
+    "qualityCheckpointId": { "type": "string", "minLength": 1 },
+    "workerThreadId": { "type": "string", "minLength": 1 },
+    "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "validationProfile": {
+      "enum": [
+        "p4fnv-docs",
+        "p4fnv-frontend",
+        "p4fnv-rust",
+        "p4fnv-fast",
+        "p4fnv-full",
+        "p4fnv-full-p4d"
+      ]
+    },
+    "status": { "enum": ["passed", "failed", "infrastructure-error"] },
+    "retryable": { "type": "boolean" },
+    "summary": { "type": "string", "minLength": 1 },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "changedFileCount": { "type": "integer", "minimum": 0 },
+    "warningCount": { "type": "integer", "minimum": 0 },
+    "resultPath": { "type": "string", "minLength": 1 },
+    "logDirectory": { "type": "string", "minLength": 1 },
+    "failedCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "exitCode", "timedOut", "logPath", "outputTail"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "exitCode": { "type": "integer" },
+        "timedOut": { "type": "boolean" },
+        "logPath": { "type": "string", "minLength": 1 },
+        "outputTail": { "type": "string" }
+      }
+    }
+  }
+}

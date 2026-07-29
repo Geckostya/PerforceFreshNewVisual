@@ -5,15 +5,18 @@ import {
   WorkflowError,
   blockTask,
   claimTask,
+  cleanupWorkflow,
   completeTask,
   createQualityCheckpoint,
   doctorWorkflow,
   enqueueTasks,
   getNextTask,
   getValidationResult,
+  getValidationResultSummary,
   initializeWorkflow,
   requeueTask,
   runValidator,
+  summarizeValidationResult,
   submitValidationRequest,
   workflowStatus,
 } from "./lib.mjs";
@@ -30,6 +33,7 @@ try {
         backlogFile: options.backlog,
         p4dTestServerRoot: options["p4d-root"],
         qualityCheckpointEvery: options["quality-every"],
+        qualityCheckpointUnits: options["quality-units"],
       });
       break;
     case "enqueue":
@@ -39,7 +43,9 @@ try {
       });
       break;
     case "next":
-      result = (await getNextTask(required(options, "state"))) ?? {
+      result = (await getNextTask(required(options, "state"), {
+        availableModels: options["available-models"],
+      })) ?? {
         schemaVersion: 1,
         status: "idle",
         reason: "No dependency-ready pending task.",
@@ -50,6 +56,9 @@ try {
         stateRoot: required(options, "state"),
         taskId: required(options, "task"),
         workerId: required(options, "worker"),
+        actualModel: required(options, "model"),
+        actualReasoningEffort: required(options, "effort"),
+        maxChildAgents: required(options, "max-child-agents"),
       });
       break;
     case "quality-checkpoint":
@@ -79,17 +88,39 @@ try {
       ) {
         throw new WorkflowError("--poll-ms must be an integer of at least 250.", "invalid_arguments");
       }
-      result = await runValidator({
-        stateRoot: required(options, "state"),
-        watch: Boolean(options.watch),
-        pollIntervalMs: options["poll-ms"] ? Number(options["poll-ms"]) : undefined,
-      });
+      {
+        const validatorState = required(options, "state");
+        const watch = Boolean(options.watch);
+        const results = await runValidator({
+          stateRoot: validatorState,
+          watch,
+          pollIntervalMs: options["poll-ms"] ? Number(options["poll-ms"]) : undefined,
+          onResult: watch
+            ? (item, stateRoot) => {
+                const payload = options.verbose
+                  ? item
+                  : summarizeValidationResult(item, stateRoot);
+                process.stdout.write(`${JSON.stringify(payload)}\n`);
+              }
+            : undefined,
+        });
+        result = watch
+          ? undefined
+          : options.verbose
+            ? results
+            : results.map((item) => summarizeValidationResult(item, validatorState));
+      }
       break;
     case "result":
-      result = await getValidationResult(
-        required(options, "state"),
-        required(options, "request"),
-      );
+      result = options.verbose
+        ? await getValidationResult(
+            required(options, "state"),
+            required(options, "request"),
+          )
+        : await getValidationResultSummary(
+            required(options, "state"),
+            required(options, "request"),
+          );
       break;
     case "complete":
       result = await completeTask({
@@ -113,11 +144,24 @@ try {
       });
       break;
     case "status":
-      result = await workflowStatus(required(options, "state"));
+      result = await workflowStatus(required(options, "state"), {
+        verbose: Boolean(options.verbose),
+        availableModels: options["available-models"],
+      });
       break;
     case "doctor":
-      result = await doctorWorkflow(required(options, "state"));
+      result = await doctorWorkflow(required(options, "state"), {
+        availableModels: options["available-models"],
+      });
       if (result.status !== "passed") process.exitCode = 1;
+      break;
+    case "cleanup":
+      result = await cleanupWorkflow({
+        stateRoot: required(options, "state"),
+        apply: Boolean(options.apply),
+        removeFinal: Boolean(options["remove-final"]),
+        removeCargo: Boolean(options["remove-cargo"]),
+      });
       break;
     case "help":
     case undefined:
@@ -127,7 +171,7 @@ try {
     default:
       throw new WorkflowError(`Unknown command ${command}.`, "unknown_command");
   }
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (result !== undefined) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 } catch (error) {
   const payload = {
     schemaVersion: 1,
@@ -148,7 +192,7 @@ function parseArguments(args) {
       throw new WorkflowError(`Unexpected argument ${token}.`, "invalid_arguments");
     }
     const name = token.slice(2);
-    if (name === "watch") {
+    if (["watch", "verbose", "apply", "remove-final", "remove-cargo"].includes(name)) {
       options[name] = true;
       continue;
     }
@@ -175,21 +219,23 @@ function helpText() {
 
 Usage:
   npm run workflow -- init --state <absolute-path> [--repo <path>] [--backlog <json>] \\
-    [--p4d-root <disposable-server-root>] [--quality-every <1-20>]
-  npm run workflow -- doctor --state <path>
+    [--p4d-root <disposable-server-root>] [--quality-units <1-20>]
+  npm run workflow -- doctor --state <path> --available-models <terra,luna,sol>
   npm run workflow -- enqueue --state <path> --file <backlog.json>
-  npm run workflow -- next --state <path>
+  npm run workflow -- next --state <path> [--available-models <terra,luna,sol>]
   npm run workflow -- quality-checkpoint --state <path> [--id <id>] \\
     [--sources <task-id,task-id>]
-  npm run workflow -- claim --state <path> --task <id> --worker <thread-id>
+  npm run workflow -- claim --state <path> --task <id> --worker <thread-id> \\
+    --model <terra|luna|sol> --effort <low|medium|high> --max-child-agents 0
   npm run workflow -- request --state <path> --task <id> --assignment <id> \\
     --commit <sha> --base <sha> --worktree <path> [--summary <text>]
-  npm run workflow -- validate --state <path> [--watch] [--poll-ms <milliseconds>]
-  npm run workflow -- result --state <path> --request <id>
+  npm run workflow -- validate --state <path> [--watch] [--poll-ms <milliseconds>] [--verbose]
+  npm run workflow -- result --state <path> --request <id> [--verbose]
   npm run workflow -- complete --state <path> --task <id> --request <id>
   npm run workflow -- block --state <path> --task <id> --reason <text>
   npm run workflow -- requeue --state <path> --task <id> --reason <text>
-  npm run workflow -- status --state <path>
+  npm run workflow -- status --state <path> [--verbose] [--available-models <list>]
+  npm run workflow -- cleanup --state <path> [--apply] [--remove-final] [--remove-cargo]
 
 Priority 1 is highest. Quality checkpoints pause new feature assignment and run refactoring
 before stabilization. The validator accepts only immutable commits and allow-listed profiles;

@@ -43,7 +43,25 @@
     "commitSha": { "$ref": "#/$defs/commitSha" },
     "baseSha": { "$ref": "#/$defs/commitSha" },
     "validationProfile": {
-      "enum": ["p4fnv-fast", "p4fnv-full", "p4fnv-full-p4d"]
+      "enum": [
+        "p4fnv-docs",
+        "p4fnv-frontend",
+        "p4fnv-rust",
+        "p4fnv-fast",
+        "p4fnv-full",
+        "p4fnv-full-p4d"
+      ]
+    },
+    "requestedValidationProfile": {
+      "enum": [
+        "p4fnv-auto",
+        "p4fnv-docs",
+        "p4fnv-frontend",
+        "p4fnv-rust",
+        "p4fnv-fast",
+        "p4fnv-full",
+        "p4fnv-full-p4d"
+      ]
     },
     "changedFiles": {
       "type": "array",

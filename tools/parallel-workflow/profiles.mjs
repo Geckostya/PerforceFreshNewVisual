@@ -1,52 +1,68 @@
+const npmCi = command("npm-ci", "Install locked dependencies", "npm", ["ci"], 15);
+const frontendTests = command(
+  "frontend-tests",
+  "Run frontend and workflow tests",
+  "npm",
+  ["test", "--", "--run"],
+  15,
+);
+const rustfmt = command(
+  "rustfmt",
+  "Check Rust formatting",
+  "cargo",
+  ["fmt", "--manifest-path", "src-tauri\\Cargo.toml", "--", "--check"],
+  5,
+);
+const rustTests = command(
+  "rust-tests",
+  "Run Rust tests",
+  "cargo",
+  ["test", "--manifest-path", "src-tauri\\Cargo.toml"],
+  30,
+);
+const clippy = command(
+  "clippy",
+  "Run Clippy with warnings denied",
+  "cargo",
+  [
+    "clippy",
+    "--manifest-path",
+    "src-tauri\\Cargo.toml",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings",
+  ],
+  30,
+);
+
+const docsProfile = Object.freeze([npmCi, frontendTests]);
+const frontendProfile = Object.freeze([
+  npmCi,
+  frontendTests,
+  command("web-build", "Type-check and build the web application", "npm", ["run", "build:web"], 15),
+]);
+const rustProfile = Object.freeze([rustfmt, rustTests, clippy]);
 const fastProfile = Object.freeze([
-    command("npm-ci", "Install locked dependencies", "npm", ["ci"], 15),
-    command("frontend-tests", "Run frontend tests", "npm", ["test", "--", "--run"], 15),
-    command(
-      "rustfmt",
-      "Check Rust formatting",
-      "cargo",
-      ["fmt", "--manifest-path", "src-tauri\\Cargo.toml", "--", "--check"],
-      5,
-    ),
-    command("debug-build", "Build the debug desktop application", "npm", ["run", "build:fast"], 30),
-  ]);
+  npmCi,
+  frontendTests,
+  rustfmt,
+  command("debug-build", "Build the debug desktop application", "npm", ["run", "build:fast"], 30),
+]);
 
 const fullProfile = Object.freeze([
-    command("npm-ci", "Install locked dependencies", "npm", ["ci"], 15),
-    command("frontend-tests", "Run frontend tests", "npm", ["test", "--", "--run"], 15),
-    command(
-      "rustfmt",
-      "Check Rust formatting",
-      "cargo",
-      ["fmt", "--manifest-path", "src-tauri\\Cargo.toml", "--", "--check"],
-      5,
-    ),
-    command(
-      "rust-tests",
-      "Run Rust tests",
-      "cargo",
-      ["test", "--manifest-path", "src-tauri\\Cargo.toml"],
-      30,
-    ),
-    command(
-      "clippy",
-      "Run Clippy with warnings denied",
-      "cargo",
-      [
-        "clippy",
-        "--manifest-path",
-        "src-tauri\\Cargo.toml",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings",
-      ],
-      30,
-    ),
-    command("release-build", "Build the release desktop application", "npm", ["run", "build"], 45),
-  ]);
+  npmCi,
+  frontendTests,
+  rustfmt,
+  rustTests,
+  clippy,
+  command("release-build", "Build the release desktop application", "npm", ["run", "build"], 45),
+]);
 
 export const validationProfiles = Object.freeze({
+  "p4fnv-docs": docsProfile,
+  "p4fnv-frontend": frontendProfile,
+  "p4fnv-rust": rustProfile,
   "p4fnv-fast": fastProfile,
   "p4fnv-full": fullProfile,
   "p4fnv-full-p4d": Object.freeze([

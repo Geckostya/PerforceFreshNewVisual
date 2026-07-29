@@ -13,7 +13,7 @@
       "The worker worktree is clean and the implementation is committed."
     ],
     "baseRef": "main",
-    "validationProfile": "p4fnv-fast",
+    "validationProfile": "p4fnv-auto",
     "relevantPaths": [
       "src/",
       "src-tauri/src/"
@@ -38,6 +38,6 @@
       "The owning contract is current and the fast validation profile passes."
     ],
     "baseRef": "main",
-    "validationProfile": "p4fnv-fast"
+    "validationProfile": "p4fnv-auto"
   }
 ]

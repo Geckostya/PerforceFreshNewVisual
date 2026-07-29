@@ -9,14 +9,19 @@ import {
   WorkflowError,
   assertManagedPath,
   claimTask,
+  cleanupWorkflow,
   createQualityCheckpoint,
   enqueueTasks,
   getNextTask,
+  inferPathValidationProfile,
   initializeWorkflow,
   normalizeTaskInput,
+  resolveValidationProfile,
   selectNextTask,
+  summarizeValidationResult,
   validationCargoTargetPath,
   validationWorktreePath,
+  workerWorktreePath,
   workflowStatus,
 } from "./lib.mjs";
 
@@ -66,6 +71,9 @@ describe("parallel workflow queue", () => {
       stateRoot,
       taskId: "first",
       workerId: "thread-1",
+      actualModel: "terra",
+      actualReasoningEffort: "medium",
+      maxChildAgents: 0,
     });
     expect(assignment.taskId).toBe("first");
     expect(assignment.taskKind).toBe("feature");
@@ -76,6 +84,11 @@ describe("parallel workflow queue", () => {
       reasoningEffort: "medium",
       maximumReasoningEffort: "medium",
     });
+    expect(assignment.agentBudget).toEqual({
+      maxChildAgents: 0,
+      monitorTimeoutMs: 1_200_000,
+      maximumMonitorTimeoutMs: 2_400_000,
+    });
 
     const status = await workflowStatus(stateRoot);
     expect(status.tasks).toMatchObject({
@@ -85,19 +98,21 @@ describe("parallel workflow queue", () => {
       blocked: 0,
       next: null,
     });
-    expect(status.validationCargoTargetRoot).toBe(
-      path.join(status.validationCheckoutRoot, "cargo-target"),
+    expect(status.paths).toBeUndefined();
+    const verboseStatus = await workflowStatus(stateRoot, { verbose: true });
+    expect(verboseStatus.paths.validationCargoTargetRoot).toBe(
+      path.join(verboseStatus.paths.validationCheckoutRoot, "cargo-target"),
     );
     expect(validationCargoTargetPath({
-      validationCheckoutRoot: status.validationCheckoutRoot,
-    })).toBe(status.validationCargoTargetRoot);
-    expect(status.validationWorktreePath).toBe(
-      path.join(status.validationCheckoutRoot, "checkout"),
+      validationCheckoutRoot: verboseStatus.paths.validationCheckoutRoot,
+    })).toBe(verboseStatus.paths.validationCargoTargetRoot);
+    expect(verboseStatus.paths.validationWorktreePath).toBe(
+      path.join(verboseStatus.paths.validationCheckoutRoot, "checkout"),
     );
     expect(status.orchestratorAgentProfile).toEqual(ORCHESTRATOR_AGENT_PROFILE);
     expect(validationWorktreePath({
-      validationCheckoutRoot: status.validationCheckoutRoot,
-    })).toBe(status.validationWorktreePath);
+      validationCheckoutRoot: verboseStatus.paths.validationCheckoutRoot,
+    })).toBe(verboseStatus.paths.validationWorktreePath);
   });
 
   it("pauses feature scheduling for refactoring and stabilization checkpoints", async () => {
@@ -130,9 +145,12 @@ describe("parallel workflow queue", () => {
       stateRoot,
       taskId: checkpoint.tasks[0].taskId,
       workerId: "quality-worker",
+      actualModel: "sol",
+      actualReasoningEffort: "medium",
+      maxChildAgents: 0,
     });
     expect(assignment.taskKind).toBe("refactor");
-    expect(assignment.validationProfile).toBe("p4fnv-fast");
+    expect(assignment.validationProfile).toBe("p4fnv-auto");
     expect(assignment.agentProfile).toEqual({
       model: "sol",
       reasoningEffort: "medium",
@@ -159,6 +177,9 @@ describe("parallel workflow queue", () => {
       stateRoot,
       taskId: stabilization.taskId,
       workerId: "stabilization-worker",
+      actualModel: "sol",
+      actualReasoningEffort: "medium",
+      maxChildAgents: 0,
     });
     expect(stabilizationAssignment.sourceCommits).toEqual([
       expect.objectContaining({ taskId: checkpoint.tasks[0].taskId, commitSha: head }),
@@ -213,6 +234,9 @@ describe("parallel workflow queue", () => {
       stateRoot,
       taskId: "active-feature",
       workerId: "active-worker",
+      actualModel: "terra",
+      actualReasoningEffort: "medium",
+      maxChildAgents: 0,
     });
     const head = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], {
       encoding: "utf8",
@@ -231,6 +255,9 @@ describe("parallel workflow queue", () => {
         stateRoot,
         taskId: "waiting-feature",
         workerId: "waiting-worker",
+        actualModel: "terra",
+        actualReasoningEffort: "medium",
+        maxChildAgents: 0,
       }),
     ).rejects.toMatchObject({ code: "quality_barrier" });
   });
@@ -310,6 +337,139 @@ describe("parallel workflow queue", () => {
     ).toThrowError(WorkflowError);
   });
 
+  it("attests the dispatched model and exposes unavailable families", async () => {
+    const stateRoot = await temporaryStateRoot();
+    await initializeWorkflow({ stateRoot, repoRoot: repositoryRoot });
+    await enqueueTasks({
+      stateRoot,
+      input: { ...task("mechanical-agent", 10, []), workClass: "mechanical" },
+    });
+
+    expect(await getNextTask(stateRoot, { availableModels: ["terra", "sol"] })).toMatchObject({
+      agentProfile: { model: "luna", reasoningEffort: "low" },
+      agentAvailability: { model: "luna", status: "unavailable" },
+      agentBudget: {
+        maxChildAgents: 0,
+        monitorTimeoutMs: 600_000,
+        maximumMonitorTimeoutMs: 1_200_000,
+      },
+    });
+    await expect(
+      claimTask({
+        stateRoot,
+        taskId: "mechanical-agent",
+        workerId: "wrong-worker",
+        actualModel: "terra",
+        actualReasoningEffort: "low",
+        maxChildAgents: 0,
+      }),
+    ).rejects.toMatchObject({ code: "agent_profile_mismatch" });
+    const assignment = await claimTask({
+      stateRoot,
+      taskId: "mechanical-agent",
+      workerId: "luna-worker",
+      actualModel: "luna",
+      actualReasoningEffort: "low",
+      maxChildAgents: 0,
+    });
+    expect(assignment.actualAgentProfile).toEqual({ model: "luna", reasoningEffort: "low" });
+  });
+
+  it("uses weighted quality units and exempts mechanical-only work", async () => {
+    const stateRoot = await temporaryStateRoot();
+    await initializeWorkflow({
+      stateRoot,
+      repoRoot: repositoryRoot,
+      qualityCheckpointUnits: 2,
+    });
+    const head = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    await seedCompletedFeature(stateRoot, "docs-only", 10, head, head, "mechanical");
+    expect(await getNextTask(stateRoot)).toBeNull();
+    expect((await workflowStatus(stateRoot)).quality).toMatchObject({
+      checkpointRequired: false,
+      completedRiskUnits: 0,
+      handoffReady: true,
+    });
+
+    await seedCompletedFeature(stateRoot, "complex-fix", 20, head, head, "complex");
+    expect(await getNextTask(stateRoot)).toMatchObject({
+      status: "quality-checkpoint-required",
+      sourceTaskIds: ["complex-fix"],
+    });
+  });
+
+  it("selects the smallest safe validation profile from changed paths", () => {
+    expect(inferPathValidationProfile(["Docs/PARALLEL_DEVELOPMENT.md"])).toBe("p4fnv-docs");
+    expect(inferPathValidationProfile(["src/app/App.tsx", "locales/en.json"])).toBe(
+      "p4fnv-frontend",
+    );
+    expect(inferPathValidationProfile(["src-tauri/src/lib.rs"])).toBe("p4fnv-rust");
+    expect(inferPathValidationProfile(["src/app/App.tsx", "src-tauri/src/lib.rs"])).toBe(
+      "p4fnv-fast",
+    );
+    expect(
+      resolveValidationProfile("p4fnv-auto", ["Docs/README.md"], "feature"),
+    ).toBe("p4fnv-docs");
+    expect(
+      resolveValidationProfile("p4fnv-auto", ["Docs/README.md"], "stabilization", {
+        p4dTestServerRoot: "C:\\disposable-p4d",
+      }),
+    ).toBe("p4fnv-full-p4d");
+  });
+
+  it("returns compact validation envelopes and safe cleanup plans", async () => {
+    const stateRoot = await temporaryStateRoot();
+    const initialized = await initializeWorkflow({ stateRoot, repoRoot: repositoryRoot });
+    const head = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    await seedCompletedFeature(stateRoot, "cleanup-candidate", 10, head);
+    const plan = await cleanupWorkflow({ stateRoot });
+    expect(plan).toMatchObject({
+      mode: "dry-run",
+      finalTaskId: "cleanup-candidate",
+      cargoTarget: { action: "keep" },
+    });
+    expect(plan.worktrees[0]).toMatchObject({
+      taskId: "cleanup-candidate",
+      action: "keep-final",
+    });
+    expect(workerWorktreePath(initialized.config)).toContain(
+      path.join(".tmp", "parallel-worktrees"),
+    );
+
+    const result = summarizeValidationResult(
+      {
+        schemaVersion: 1,
+        resultId: "result-1",
+        requestId: "request-1",
+        workflowId: "workflow-1",
+        taskId: "cleanup-candidate",
+        taskKind: "feature",
+        workerThreadId: "worker-1",
+        commitSha: head,
+        validationProfile: "p4fnv-docs",
+        status: "passed",
+        retryable: false,
+        summary: "Passed.",
+        durationMs: 10,
+        changedFiles: ["Docs/README.md"],
+        warnings: [],
+        commands: [{ id: "tests", status: "passed", outputTail: "large output" }],
+        logDirectory: path.join(stateRoot, "validation", "logs", "request-1"),
+      },
+      stateRoot,
+    );
+    expect(result).toMatchObject({
+      requestId: "request-1",
+      changedFileCount: 1,
+      warningCount: 0,
+    });
+    expect(result).not.toHaveProperty("commands");
+  });
+
   it("requires explicit disposable P4D configuration for writable validation", () => {
     expect(() =>
       normalizeTaskInput(
@@ -345,6 +505,7 @@ describe("parallel workflow queue", () => {
       "schemas/assignment.schema.json",
       "schemas/validation-request.schema.json",
       "schemas/validation-result.schema.json",
+      "schemas/validation-result-summary.schema.json",
       "examples/backlog.example.json",
     ];
     const parsed = await Promise.all(
@@ -369,17 +530,25 @@ function task(taskId, priority, dependsOn) {
     dependsOn,
     acceptanceCriteria: ["The task is complete."],
     baseRef: "HEAD",
-    validationProfile: "p4fnv-full",
+    validationProfile: "p4fnv-auto",
   };
 }
 
-async function seedCompletedFeature(stateRoot, taskId, priority, commitSha, baseSha = commitSha) {
+async function seedCompletedFeature(
+  stateRoot,
+  taskId,
+  priority,
+  commitSha,
+  baseSha = commitSha,
+  workClass = "implementation",
+) {
   const timestamp = new Date().toISOString();
   await fs.writeFile(
     path.join(stateRoot, "tasks", "completed", `${taskId}.json`),
     `${JSON.stringify(
       {
         ...task(taskId, priority, []),
+        workClass,
         sourceTaskIds: [],
         coveredFeatureTaskIds: [],
         relevantPaths: ["src/"],

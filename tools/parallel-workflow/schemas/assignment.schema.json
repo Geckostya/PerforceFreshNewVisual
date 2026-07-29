@@ -18,6 +18,8 @@
     "sourceCommits",
     "validationProfile",
     "agentProfile",
+    "actualAgentProfile",
+    "agentBudget",
     "claimedAt",
     "task"
   ],
@@ -70,10 +72,24 @@
       }
     },
     "validationProfile": {
-      "enum": ["p4fnv-fast", "p4fnv-full", "p4fnv-full-p4d"]
+      "enum": [
+        "p4fnv-auto",
+        "p4fnv-docs",
+        "p4fnv-frontend",
+        "p4fnv-rust",
+        "p4fnv-fast",
+        "p4fnv-full",
+        "p4fnv-full-p4d"
+      ]
     },
     "agentProfile": {
       "$ref": "./task.schema.json#/$defs/agentProfile"
+    },
+    "actualAgentProfile": {
+      "$ref": "./task.schema.json#/$defs/actualAgentProfile"
+    },
+    "agentBudget": {
+      "$ref": "./task.schema.json#/$defs/agentBudget"
     },
     "claimedAt": { "type": "string", "format": "date-time" },
     "task": {
