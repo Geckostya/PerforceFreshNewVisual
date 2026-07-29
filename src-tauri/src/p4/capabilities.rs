@@ -14,7 +14,15 @@ use super::runner::{
 pub(super) fn build(input: &ConnectionInput, info: &P4Info) -> CapabilitySnapshot {
     let cli_version = cli_version(input);
     let mut commands = BTreeMap::new();
-    for command in ["login2", "topology", "trust"] {
+    for command in [
+        "login2",
+        "topology",
+        "trust",
+        "integrate",
+        "copy",
+        "istat",
+        "streamlog",
+    ] {
         commands.insert(command.to_owned(), probe_help(input, command));
     }
     for (key, command, flag) in [

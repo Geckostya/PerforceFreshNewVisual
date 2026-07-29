@@ -103,8 +103,8 @@ fn operation_kinds_conflict(active: &str, candidate: &str) -> bool {
     if active == candidate {
         return true;
     }
-    matches!(active, "sync" | "submit" | "reconcile")
-        && matches!(candidate, "sync" | "submit" | "reconcile")
+    matches!(active, "sync" | "submit" | "reconcile" | "integrate")
+        && matches!(candidate, "sync" | "submit" | "reconcile" | "integrate")
 }
 
 #[cfg(test)]
@@ -209,6 +209,10 @@ mod tests {
         assert!(!registry.insert_if_kind_idle(
             "op-conflict".to_owned(),
             handle("submit", "server/alex/main")
+        ));
+        assert!(!registry.insert_if_kind_idle(
+            "op-integrate".to_owned(),
+            handle("integrate", "server/alex/main")
         ));
         assert!(
             registry.insert_if_kind_idle("op-4".to_owned(), handle("sync", "server/alex/other"))

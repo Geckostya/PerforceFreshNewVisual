@@ -75,9 +75,11 @@ Each successful connection builds an immutable capability snapshot inside `P4Inf
 
 Submitted filtering sends validated user/workspace values to bounded `p4 changes` queries. The Submitted screen enriches that page through `p4 describe -s -m 1` and longest stream-prefix matching; other consumers skip it. Selection uses `describe -s -m limit+1`, reporting truncation without an unbounded read; only explicit choice requests complete detail. Get This Revision streams exact `depotFile#rev` scopes through `p4 -x -` and shared safe sync. Cherry-pick rereads the change, verifies one source stream and the current target, then previews or applies `p4 integrate -S source -P target -Af source/...@=change` into an explicit pending changelist. Resolve, review, and submit remain separate decisions.
 
+Full stream integration is adjacent-stream-only. Merge down derives parent/source → child/target and uses `p4 integrate -S target -r -Af`; copy up derives child/source → parent/target and uses `p4 copy -S source -Af`. The backend requires the current workspace to be switched to the target, verifies the selected pending changelist, and returns a bounded server `-n` preview with an identity hashed from stream revisions, workspace, changelist, direction, and items. Apply rereads that preview immediately and rejects stale, partial, truncated, or empty plans. It runs as the shared `integrate` operation, conflicts with sync/submit/reconcile in the same workspace, and classifies completion only after opened-file read-back. The result remains pending: exact affected paths are handed to the existing Resolve workflow, while review and submit open the existing Changes/Submit surfaces and never confirm automatically.
+
 ## Short and long-running operations
 
-Short read requests return a DTO from an ordinary Tauri command. Long-running sync, submit, reconcile, and future integrate/large-transfer operations use one protocol:
+Short read requests return a DTO from an ordinary Tauri command. Long-running sync, submit, reconcile, integrate, and future large-transfer operations use one protocol:
 
 1. The frontend subscribes to operation events before starting the command.
 2. `start_*` creates a separate child process and returns `operation_id`.
@@ -97,7 +99,7 @@ Cancel does not mean rollback. Cancelling reconcile stops the child process and 
 | Reconcile preview/apply | migrated; validation/apply phases, partial item results, cancellation, recovery destination |
 | Shelf-preserving submit modes | compensation-safe command remains; operation events and typed step results are still required |
 | Stream switch | command remains separate from its follow-up Safe Sync; typed switch operation/read-back is still required |
-| Integrate | reserved operation kind/result DTO only; no integration workflow is implemented |
+| Integrate | migrated; stale preview identity, adjacent-stream/target-workspace gates, cancellation, per-file results, and pending-changelist read-back |
 
 ## Data and mutation safety
 

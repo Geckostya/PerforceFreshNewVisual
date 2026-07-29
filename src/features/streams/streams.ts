@@ -1,4 +1,24 @@
-import type { StreamPathRuleInput, StreamSummary } from "../../shared/models";
+import type { StreamIntegrationDirection, StreamPathRuleInput, StreamSummary } from "../../shared/models";
+
+export interface StreamIntegrationCandidate {
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+}
+
+export function streamIntegrationCandidates(streams: StreamSummary[], currentStream?: string): StreamIntegrationCandidate[] {
+  if (!currentStream) return [];
+  const current = streams.find((stream) => stream.path.toLowerCase() === currentStream.toLowerCase());
+  if (!current) return [];
+  const candidates: StreamIntegrationCandidate[] = [];
+  if (current.parent) {
+    candidates.push({ direction: "mergeDown", sourceStream: current.parent, targetStream: current.path });
+  }
+  for (const child of streams.filter((stream) => stream.parent?.toLowerCase() === current.path.toLowerCase())) {
+    candidates.push({ direction: "copyUp", sourceStream: child.path, targetStream: current.path });
+  }
+  return candidates;
+}
 
 export interface StreamTreeNode {
   stream: StreamSummary;

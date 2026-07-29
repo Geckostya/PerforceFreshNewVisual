@@ -79,6 +79,7 @@ interface Props {
   info: P4Info;
   onFileCountChange: (count: number) => void;
   initialChange?: string;
+  initialAction?: { id: number; change: string; openSubmit: boolean };
 }
 
 type DialogName =
@@ -106,11 +107,12 @@ type MenuTarget = { kind: "opened" | "shelved"; depotPath: string; change: strin
   change: string;
 };
 
-export function ChangesView({ connection, info, onFileCountChange, initialChange }: Props) {
+export function ChangesView({ connection, info, onFileCountChange, initialChange, initialAction }: Props) {
   const { language, t } = useLocale();
   const [selectedChange, setSelectedChange] = useState(initialChange || "default");
   const [selectedChanges, setSelectedChanges] = useState([initialChange || "default"]);
   const changeSelectionAnchor = useRef<string | undefined>(initialChange || "default");
+  const handledInitialAction = useRef<number | undefined>(undefined);
   const {
     changes,
     files,
@@ -348,6 +350,16 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     setSubmitPreflightReady(false);
     setDialog("submit");
   }
+
+  useEffect(() => {
+    if (!initialAction || handledInitialAction.current === initialAction.id || state !== "fresh") return;
+    if (currentGroup.id !== initialAction.change) {
+      selectChange(initialAction.change);
+      return;
+    }
+    handledInitialAction.current = initialAction.id;
+    if (initialAction.openSubmit && canSubmit && !mutationsBlocked) openSubmit();
+  }, [initialAction?.id, state, currentGroup.id, canSubmit, mutationsBlocked]);
 
   async function confirmSubmit(mode: SubmitMode) {
     if (mutationsBlocked) return;

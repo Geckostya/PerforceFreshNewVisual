@@ -34,7 +34,7 @@ list or tree | persistent inspector
 - Loading, empty, error, permission, stale, and partial states keep the same layout.
 - Long panes scroll internally. At minimum window size, stack panes or use a drawer without hiding the full path or primary action.
 
-File history is contextual to a selected file in Files; it is not a standalone screen with manual depot-path entry. Labels remains reachable through Go To/command palette without a main-sidebar entry. Submitted changes has a main-sidebar entry and opens on the current user's changes across all streams. Do not expose full merge-down/copy-up Integration or full Resolve before an end-to-end backend workflow exists.
+File history is contextual to a selected file in Files; it is not a standalone screen with manual depot-path entry. Labels remains reachable through Go To/command palette without a main-sidebar entry. Submitted changes has a main-sidebar entry and opens on the current user's changes across all streams.
 
 Every resource screen uses the same icon-only Refresh action in the heading. Its 32 px geometry and accessible localized name remain stable; the icon rotates while that screen refreshes, with motion disabled under `prefers-reduced-motion`, and no loading text replaces it.
 
@@ -46,6 +46,9 @@ Every resource screen uses the same icon-only Refresh action in the heading. Its
 - Moving a parent to `Unactual` includes descendants; ordinary restore affects only selected paths. Explicit descendant commands exist and stale paths are cleaned after a successful read.
 - Child stream creation is available from the heading and selected-stream summary, with `Create child stream` as a graph/tree context-menu accelerator that preselects the parent. The three-step dialog collects basics and Paths, lets the user type view paths or select existing directories inside the current workspace, requires a server-backed stream-form review before creation, and creates only the stream specification without switching or syncing the workspace.
 - Stream switching chooses independent local (`Shelve`/`Keep`) and content (`Download now`/`Keep as is`) strategies. Download uses safe sync, and a successful switch invalidates hidden Local Files state.
+- The selected-stream inspector shows Parent, Type, Paths, Remapped, Ignored, flow options, bounded spec history, and server-backed integration hints. Missing/permission-limited hints remain visibly unknown rather than inferred from versions.
+- Integration lists only adjacent routes whose target is the current workspace stream: parent → child is `Merge down`, child → parent is `Copy up`. Source, target, workspace, target changelist, revision scope, every previewed action, warnings, partial state, and truncation are explicit. Unknown capability permits preview; proven unsupported disables that route.
+- Apply is enabled only for a fresh, complete, non-empty server preview. It never resolves or submits. A terminal result offers explicit handoffs for the exact succeeded paths to the existing Resolve dialog and for the target changelist to Changes or the existing Submit dialog.
 
 ## Selection, keyboard, and drag-and-drop
 

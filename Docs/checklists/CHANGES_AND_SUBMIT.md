@@ -13,6 +13,7 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 - [x] P0 Submit preflight shows missing, unresolved, out-of-date, other-open/lock, jobs, stream spec, size, and server warnings.
 - [x] P0 Submitted screen defaults to the current user's changes across all streams, shows mapped streams, supports server-backed stream/user/workspace/job filters, details, exact safe retrieval, undo, and safe foreign-stream cherry-pick.
 - [x] P0 Typed resolve preview, keep-workspace/use-server/auto-safe/auto-merge, three-way text editor, bounded content, atomic save, and server read-back.
+- [x] P1 Stream integration hands exact succeeded paths to the existing Resolve preview and its pending changelist to existing Review/Submit; neither resolve nor submit is automatic.
 
 ## P0 gaps
 

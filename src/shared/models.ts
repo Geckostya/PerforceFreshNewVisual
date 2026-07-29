@@ -146,6 +146,51 @@ export interface StreamSummary {
   updated?: string;
 }
 
+export type StreamIntegrationDirection = "mergeDown" | "copyUp";
+export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; time?: string; description?: string; }
+export interface StreamIntegrationHint { direction: StreamIntegrationDirection; state: "supported" | "unsupported" | "unknown"; message: string; }
+export interface StreamDetail {
+  stream: StreamSummary;
+  parentView: string;
+  options: string[];
+  paths: string[];
+  remapped: string[];
+  ignored: string[];
+  history: StreamHistoryEntry[];
+  hints: StreamIntegrationHint[];
+  warnings: string[];
+}
+export interface StreamIntegrationInput {
+  connection: ConnectionInput;
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  targetChange: string;
+}
+export interface StreamIntegrationPreviewItem {
+  sourcePath: string;
+  targetPath: string;
+  localPath?: string;
+  action: string;
+  sourceStartRevision?: string;
+  sourceEndRevision?: string;
+  resolveType?: string;
+  fileType?: string;
+}
+export interface StreamIntegrationPreview {
+  identity: string;
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  targetWorkspace: string;
+  targetChange: string;
+  revisionScope: string;
+  items: StreamIntegrationPreviewItem[];
+  warnings: string[];
+  truncated: boolean;
+  partial: boolean;
+}
+
 export type CreateStreamType = "development" | "release" | "virtual" | "task";
 export type StreamPathKind = "share" | "isolate" | "import" | "exclude";
 

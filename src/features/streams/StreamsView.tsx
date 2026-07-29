@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { listStreams, normalizeAppError, openWorkspace, previewSync, switchStream } from "../../shared/api";
+import { inspectStream, listStreams, normalizeAppError, openWorkspace, previewSync, switchStream } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
 import { partitionArchived } from "../../shared/localArchive";
 import { useArchiveDragDrop } from "../../shared/useArchiveDragDrop";
 import { useLocalArchive } from "../../shared/useLocalArchive";
-import type { AppError, CapabilitySnapshot, ConnectionInput, P4Info, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
+import type { AppError, CapabilitySnapshot, ConnectionInput, P4Info, StreamDetail, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
 import type { ResourceFreshness } from "../../shared/models";
 import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
 import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/ItemList";
@@ -15,11 +15,12 @@ import { isContextMenuShortcut, selectionMode, updateSelection } from "../../sha
 import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, MenuButton, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
 import { useContextMenu } from "../../shared/useContextMenu";
-import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
+import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamIntegrationCandidates, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
 import { loadStreamPreferences, saveStreamPreferences, streamPreferencesStorageKey, type StreamPreferences } from "./streamPreferences";
 import { CreateStreamDialog } from "./CreateStreamDialog";
+import { StreamIntegrationDialog } from "./StreamIntegrationDialog";
 
-export function StreamsView({ connection, currentStream, capabilities, onSwitched }: { connection: ConnectionInput; currentStream?: string; capabilities?: CapabilitySnapshot; onSwitched: (info: P4Info) => void }) {
+export function StreamsView({ connection, currentStream, capabilities, onSwitched, onResolveIntegration, onReviewIntegration }: { connection: ConnectionInput; currentStream?: string; capabilities?: CapabilitySnapshot; onSwitched: (info: P4Info) => void; onResolveIntegration: (change: string, paths: string[]) => void; onReviewIntegration: (change: string, openSubmit: boolean) => void }) {
   const { t } = useLocale();
   const preferencesKey = streamPreferencesStorageKey(connection.port, connection.user, connection.client);
   const initialPreferences = loadStreamPreferences(preferencesKey);
@@ -32,6 +33,8 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
   const selectionAnchor = useRef<string | undefined>(undefined);
   const [switchTarget, setSwitchTarget] = useState<StreamSummary>();
   const [createParent, setCreateParent] = useState<string>();
+  const [integrationOpen, setIntegrationOpen] = useState(false);
+  const [streamDetail, setStreamDetail] = useState<StreamDetail>();
   const [localStrategy, setLocalStrategy] = useState<StreamLocalStrategy>("shelve");
   const [downloadNow, setDownloadNow] = useState(false);
   const [syncPreview, setSyncPreview] = useState<SyncPreview>();
@@ -94,6 +97,8 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
   const graph = useMemo(() => layoutStreamGraph(streams.filter((stream) => visible.has(stream.path))), [streams, visible]);
   const graphByPath = new Map(graph.nodes.map((node) => [node.stream.path, node]));
   const selectedStream = selectedPaths.length === 1 ? streams.find((stream) => stream.path === selectedPaths[0]) : undefined;
+  const integrationCandidates = useMemo(() => streamIntegrationCandidates(streams, currentStream), [streams, currentStream]);
+  const availableIntegrationCandidates = integrationCandidates.filter((candidate) => capabilities?.commands[candidate.direction === "mergeDown" ? "integrate" : "copy"]?.state !== "unsupported");
   const menu = streamMenu.menu?.target;
   const menuSelection = menu
     ? (selectedPaths.includes(menu.path) ? selectedPaths : [menu.path])
@@ -110,6 +115,16 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
       selectionAnchor.current = [...selectedPaths].reverse().find((path) => orderedPaths.includes(path));
     }
   }, [orderedPaths, selectedPaths]);
+
+  useEffect(() => {
+    setStreamDetail(undefined);
+    if (!selectedStream) return;
+    let active = true;
+    void inspectStream(connection, selectedStream.path)
+      .then((detail) => { if (active) setStreamDetail(detail); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [connection.port, connection.user, connection.client, selectedStream?.path]);
 
   function setUnactual(paths: string[], archived: boolean) {
     updateArchivedIds((current) => updateArchivedStreamPaths(streams, current, paths, archived));
@@ -286,7 +301,7 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
       </aside>
       <section className="stream-graph-pane" aria-label={t("streamGraph")}>
         <div className="column-heading"><strong>{t("streamGraph")}</strong><span>{graph.nodes.length}</span></div>
-        {selectedStream ? <div className="stream-selection-summary"><div><strong>{selectedStream.path}</strong><span>{selectedStream.description || selectedStream.streamType}</span></div><button data-agent-id="create-child-stream" className="secondary-button" type="button" disabled={freshness !== "fresh"} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream.path)}>{t("createChildStream")}</button></div> : selectedPaths.length > 1 ? <div className="stream-selection-summary"><strong>{selectedPaths.length} {t("streamsSelected")}</strong></div> : null}
+        {selectedStream ? <><div className="stream-selection-summary"><div><strong>{selectedStream.path}</strong><span>{selectedStream.description || selectedStream.streamType}</span></div><div className="button-row"><button data-agent-id="stream-integrate" className="primary-button" type="button" disabled={freshness !== "fresh" || availableIntegrationCandidates.length === 0} title={availableIntegrationCandidates.length === 0 ? t("streamIntegrationNoCandidates") : undefined} onClick={() => setIntegrationOpen(true)}>{t("streamIntegrate")}</button><button data-agent-id="create-child-stream" className="secondary-button" type="button" disabled={freshness !== "fresh"} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream.path)}>{t("createChildStream")}</button></div></div>{streamDetail && <section className="stream-detail-panel"><dl className="dialog-facts"><dt>{t("streamParent")}</dt><dd>{streamDetail.stream.parent || "—"}</dd><dt>{t("streamType")}</dt><dd>{streamDetail.stream.streamType}</dd><dt>{t("streamParentView")}</dt><dd>{streamDetail.parentView}</dd><dt>{t("streamOptions")}</dt><dd>{streamDetail.options.join(" · ") || "—"}</dd></dl><Details title={t("streamPaths")} values={streamDetail.paths} /><Details title={t("streamRemapped")} values={streamDetail.remapped} /><Details title={t("streamIgnored")} values={streamDetail.ignored} /><Details title={t("streamIntegrationHints")} values={streamDetail.hints.map((hint) => `${t(hint.direction === "mergeDown" ? "streamMergeDown" : "streamCopyUp")} · ${hint.state}: ${hint.message}`)} /><Details title={t("streamHistory")} values={streamDetail.history.map((entry) => `#${entry.revision} · ${entry.action}${entry.change ? ` · CL ${entry.change}` : ""}${entry.description ? ` · ${entry.description.split("\n")[0]}` : ""}`)} /><Details title={t("warnings")} values={streamDetail.warnings} /></section>}</> : selectedPaths.length > 1 ? <div className="stream-selection-summary"><strong>{selectedPaths.length} {t("streamsSelected")}</strong></div> : null}
         {graph.nodes.length ? <div className="stream-graph-scroll"><svg className="stream-graph" role="img" aria-label={t("streamGraph")} viewBox={`0 0 ${graph.width} ${graph.height}`} width={graph.width} height={graph.height}>
           <g className="stream-edges">{graph.edges.map((edge) => { const from = graphByPath.get(edge.from)!; const to = graphByPath.get(edge.to)!; return <path key={`${edge.from}-${edge.to}`} d={`M ${from.x + 190} ${from.y + 27} C ${from.x + 215} ${from.y + 27}, ${to.x - 25} ${to.y + 27}, ${to.x} ${to.y + 27}`} />; })}</g>
           {graph.nodes.map((node) => <g className={`stream-node ${streamTypeClass(node.stream.streamType)}${selectedPaths.includes(node.stream.path) ? " selected" : ""}${node.stream.path === currentStream ? " current" : ""}`} key={node.stream.path} transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} onClick={(event) => selectStream(node.stream.path, event)} onDoubleClick={() => beginSwitch(node.stream)} onContextMenu={(event) => openMenu(event, node.stream)} onKeyDown={(event) => { if (event.key === "Enter") beginSwitch(node.stream); if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, node.stream); }}>
@@ -320,7 +335,14 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
 
     {createParent && <CreateStreamDialog connection={connection} streams={streams} initialParent={createParent} onClose={() => setCreateParent(undefined)} onCreated={finishCreate} />}
 
+    {integrationOpen && currentStream && <StreamIntegrationDialog connection={connection} streams={streams} currentStream={currentStream} capabilities={capabilities} initialSource={selectedStream?.path} onClose={() => setIntegrationOpen(false)} onResolve={onResolveIntegration} onReview={onReviewIntegration} />}
+
     {syncPreview && <SyncPreviewDialog preview={syncPreview} busy={busy} acknowledged={syncAcknowledged} onAcknowledged={setSyncAcknowledged} onClose={() => setSyncPreview(undefined)} onConfirm={() => void runSync()} />}
     <SafeSyncConflictDialog sync={safeSync} />
   </View>;
+}
+
+function Details({ title, values }: { title: string; values: string[] }) {
+  if (values.length === 0) return null;
+  return <details><summary>{title} · {values.length}</summary><div className="file-selection-summary">{values.map((value, index) => <span key={`${index}-${value}`}>{value}</span>)}</div></details>;
 }

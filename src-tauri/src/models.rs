@@ -325,6 +325,85 @@ pub struct StreamSummary {
     pub updated: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamHistoryEntry {
+    pub revision: String,
+    pub action: String,
+    pub change: Option<String>,
+    pub user: Option<String>,
+    pub time: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamIntegrationHint {
+    pub direction: StreamIntegrationDirection,
+    pub state: CapabilityState,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamDetail {
+    pub stream: StreamSummary,
+    pub parent_view: String,
+    pub options: Vec<String>,
+    pub paths: Vec<String>,
+    pub remapped: Vec<String>,
+    pub ignored: Vec<String>,
+    pub history: Vec<StreamHistoryEntry>,
+    pub hints: Vec<StreamIntegrationHint>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum StreamIntegrationDirection {
+    MergeDown,
+    CopyUp,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamIntegrationInput {
+    pub connection: ConnectionInput,
+    pub direction: StreamIntegrationDirection,
+    pub source_stream: String,
+    pub target_stream: String,
+    pub target_change: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamIntegrationPreviewItem {
+    pub source_path: String,
+    pub target_path: String,
+    pub local_path: Option<String>,
+    pub action: String,
+    pub source_start_revision: Option<String>,
+    pub source_end_revision: Option<String>,
+    pub resolve_type: Option<String>,
+    pub file_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamIntegrationPreview {
+    pub identity: String,
+    pub direction: StreamIntegrationDirection,
+    pub source_stream: String,
+    pub target_stream: String,
+    pub target_workspace: String,
+    pub target_change: String,
+    pub revision_scope: String,
+    pub items: Vec<StreamIntegrationPreviewItem>,
+    pub warnings: Vec<String>,
+    pub truncated: bool,
+    pub partial: bool,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CreateStreamType {

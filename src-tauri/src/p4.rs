@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
     process::Command,
@@ -12,18 +13,21 @@ use std::{
 use serde_json::{Map, Value};
 
 use crate::models::{
-    AnnotationLine, AppError, AuthStage, ChangeExportResult, CherryPickPreviewItem, CliLogLevel,
-    ConnectionInput, CreateStreamInput, CreateStreamPreview, CreateStreamType, DepotDirectory,
-    DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
-    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem, ResolveApplyResult,
-    ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode, ResolvePreviewItem,
-    ResolveReadBackState, RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamPathKind,
-    StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
-    SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
-    SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SyncPreview, SyncPreviewItem,
-    TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
-    WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState,
-    WorkspaceSpec, WorkspaceSummary,
+    AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
+    CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
+    CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
+    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
+    ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide,
+    ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile,
+    StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
+    StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
+    StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
+    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
+    SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
+    SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
+    UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
+    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSpec,
+    WorkspaceSummary,
 };
 
 mod auth;
@@ -48,6 +52,7 @@ use trust::parse_trust_entries;
 use validation::*;
 
 const MAX_RECORDS: &str = "200";
+const MAX_INTEGRATION_PREVIEW_ITEMS: usize = 200;
 const MAX_HISTORY_RECORDS: &str = "5000";
 const MAX_SUBMITTED_DETAIL_PREVIEW_FILES: u32 = 1000;
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
@@ -498,6 +503,298 @@ fn form_single_value(lines: &[String], field: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+fn form_multiline_values(lines: &[String], field: &str) -> Vec<String> {
+    let prefix = format!("{field}:");
+    let Some(start) = lines.iter().position(|line| line.starts_with(&prefix)) else {
+        return Vec::new();
+    };
+    lines[start + 1..]
+        .iter()
+        .take_while(|line| line.starts_with('\t') || line.starts_with(' '))
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+pub fn inspect_stream(
+    input: &ConnectionInput,
+    stream_path: &str,
+) -> Result<StreamDetail, AppError> {
+    validate_stream_path(stream_path)?;
+    let stream = exact_stream(input, stream_path)?.ok_or_else(|| {
+        AppError::new(ErrorKind::Stale, "The selected stream no longer exists.")
+            .with_hint("Refresh Streams and select it again.")
+    })?;
+    let (path, mut command) = configured_command(input)?;
+    command.args(["stream", "-o", &stream.path]);
+    let output = command
+        .output()
+        .map_err(|error| launch_error(&path, error))?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    let lines = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    let mut warnings = Vec::new();
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "streamlog", "-m", "20", &stream.path]);
+    let history = match run_json_collecting_diagnostics(&path, &mut command) {
+        Ok((records, diagnostics, _)) => {
+            warnings.extend(diagnostics);
+            records
+                .into_iter()
+                .filter(|record| !is_message_record(record))
+                .map(|record| StreamHistoryEntry {
+                    revision: field(&record, &["rev", "Rev"]).unwrap_or_else(|| "?".to_owned()),
+                    action: field(&record, &["action", "Action"])
+                        .unwrap_or_else(|| "edit".to_owned()),
+                    change: field(&record, &["change", "Change"]),
+                    user: field(&record, &["user", "User"]),
+                    time: field(&record, &["time", "date", "Date"]),
+                    description: field(&record, &["desc", "Description"]),
+                })
+                .collect()
+        }
+        Err(error) => {
+            warnings.push(error.message);
+            Vec::new()
+        }
+    };
+
+    let mut hints = Vec::new();
+    for (direction, reverse) in [
+        (StreamIntegrationDirection::CopyUp, false),
+        (StreamIntegrationDirection::MergeDown, true),
+    ] {
+        let (path, mut command) = configured_command(input)?;
+        command.args(["-ztag", "-Mj", "istat", "-Af"]);
+        if reverse {
+            command.arg("-r");
+        }
+        command.arg(&stream.path);
+        match run_json_collecting_diagnostics(&path, &mut command) {
+            Ok((records, diagnostics, partial)) => {
+                let message = records
+                    .iter()
+                    .find_map(|record| field(record, &["data", "fmt"]))
+                    .or_else(|| diagnostics.first().cloned())
+                    .unwrap_or_else(|| "Server returned no integration status details.".to_owned());
+                hints.push(StreamIntegrationHint {
+                    direction,
+                    state: if partial {
+                        CapabilityState::Unknown
+                    } else {
+                        CapabilityState::Supported
+                    },
+                    message,
+                });
+                warnings.extend(diagnostics);
+            }
+            Err(error) => hints.push(StreamIntegrationHint {
+                direction,
+                state: CapabilityState::Unknown,
+                message: error.message,
+            }),
+        }
+    }
+
+    Ok(StreamDetail {
+        stream,
+        parent_view: form_single_value(&lines, "ParentView")
+            .unwrap_or_else(|| "inherit".to_owned()),
+        options: form_single_value(&lines, "Options")
+            .map(|value| value.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        paths: form_multiline_values(&lines, "Paths"),
+        remapped: form_multiline_values(&lines, "Remapped"),
+        ignored: form_multiline_values(&lines, "Ignored"),
+        history,
+        hints,
+        warnings,
+    })
+}
+
+fn validate_stream_integration(
+    input: &StreamIntegrationInput,
+) -> Result<(StreamSummary, StreamSummary, String), AppError> {
+    let client = required_client(&input.connection)?.to_owned();
+    validate_stream_path(&input.source_stream)?;
+    validate_stream_path(&input.target_stream)?;
+    validate_change(&input.target_change)?;
+    let source = exact_stream(&input.connection, &input.source_stream)?
+        .ok_or_else(|| AppError::new(ErrorKind::Stale, "The source stream no longer exists."))?;
+    let target = exact_stream(&input.connection, &input.target_stream)?
+        .ok_or_else(|| AppError::new(ErrorKind::Stale, "The target stream no longer exists."))?;
+    let relation_is_valid = match input.direction {
+        StreamIntegrationDirection::MergeDown => target
+            .parent
+            .as_deref()
+            .is_some_and(|parent| parent.eq_ignore_ascii_case(&source.path)),
+        StreamIntegrationDirection::CopyUp => source
+            .parent
+            .as_deref()
+            .is_some_and(|parent| parent.eq_ignore_ascii_case(&target.path)),
+    };
+    if !relation_is_valid {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The selected streams are no longer an adjacent parent/child pair for this direction.",
+        )
+        .with_hint("Refresh Streams and create a new preview."));
+    }
+    let current_stream = info(&input.connection)?.client_stream.unwrap_or_default();
+    if !current_stream.eq_ignore_ascii_case(&target.path) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The current workspace is not switched to the integration target stream.",
+        )
+        .with_hint(format!(
+            "Switch workspace {client} to {} before preview/apply.",
+            target.path
+        )));
+    }
+    if input.target_change != "default"
+        && !list_pending_changes(&input.connection)?
+            .iter()
+            .any(|change| change.id == input.target_change)
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The target pending changelist no longer exists in this workspace.",
+        )
+        .with_hint("Refresh changelists and create a new preview."));
+    }
+    Ok((source, target, client))
+}
+
+fn stream_integration_arguments(input: &StreamIntegrationInput, preview: bool) -> Vec<String> {
+    let mut arguments = vec!["-ztag".to_owned(), "-Mj".to_owned()];
+    match input.direction {
+        StreamIntegrationDirection::MergeDown => {
+            arguments.push("integrate".to_owned());
+            if preview {
+                arguments.push("-n".to_owned());
+            }
+            arguments.extend([
+                "-c".to_owned(),
+                input.target_change.clone(),
+                "-S".to_owned(),
+                input.target_stream.clone(),
+                "-r".to_owned(),
+                "-Af".to_owned(),
+            ]);
+        }
+        StreamIntegrationDirection::CopyUp => {
+            arguments.push("copy".to_owned());
+            if preview {
+                arguments.push("-n".to_owned());
+            }
+            arguments.extend([
+                "-c".to_owned(),
+                input.target_change.clone(),
+                "-S".to_owned(),
+                input.source_stream.clone(),
+                "-Af".to_owned(),
+            ]);
+        }
+    }
+    if preview {
+        arguments.extend([
+            "-m".to_owned(),
+            (MAX_INTEGRATION_PREVIEW_ITEMS + 1).to_string(),
+        ]);
+    }
+    arguments
+}
+
+pub fn preview_stream_integration(
+    input: &StreamIntegrationInput,
+) -> Result<StreamIntegrationPreview, AppError> {
+    let (source, target, client) = validate_stream_integration(input)?;
+    let (path, mut command) = configured_command(&input.connection)?;
+    command.args(stream_integration_arguments(input, true));
+    let (records, mut warnings, partial) = run_json_collecting_diagnostics(&path, &mut command)?;
+    let mut items = records
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .filter_map(|record| {
+            let target_path = field(record, &["depotFile", "toFile"])?;
+            Some(StreamIntegrationPreviewItem {
+                source_path: field(record, &["fromFile", "sourceFile"])
+                    .unwrap_or_else(|| source.path.clone()),
+                target_path,
+                local_path: field(record, &["path", "clientFile"]),
+                action: field(record, &["action", "how"]).unwrap_or_else(|| "integrate".to_owned()),
+                source_start_revision: field(record, &["startFromRev", "srev"]),
+                source_end_revision: field(record, &["endFromRev", "erev"]),
+                resolve_type: field(record, &["resolveType"]),
+                file_type: field(record, &["type"]),
+            })
+        })
+        .collect::<Vec<_>>();
+    let truncated = items.len() > MAX_INTEGRATION_PREVIEW_ITEMS;
+    items.truncate(MAX_INTEGRATION_PREVIEW_ITEMS);
+    if truncated {
+        warnings.push(format!(
+            "Preview is limited to {MAX_INTEGRATION_PREVIEW_ITEMS} files; apply is disabled."
+        ));
+    }
+    let mut hasher = DefaultHasher::new();
+    input.direction.hash(&mut hasher);
+    source.path.to_ascii_lowercase().hash(&mut hasher);
+    source.updated.hash(&mut hasher);
+    target.path.to_ascii_lowercase().hash(&mut hasher);
+    target.updated.hash(&mut hasher);
+    client.to_ascii_lowercase().hash(&mut hasher);
+    input.target_change.hash(&mut hasher);
+    items.hash(&mut hasher);
+    let identity = format!("stream-integration-{:016x}", hasher.finish());
+    Ok(StreamIntegrationPreview {
+        identity,
+        direction: input.direction,
+        source_stream: source.path,
+        target_stream: target.path,
+        target_workspace: client,
+        target_change: input.target_change.clone(),
+        revision_scope: "all eligible revisions".to_owned(),
+        items,
+        warnings,
+        truncated,
+        partial,
+    })
+}
+
+pub fn stream_integration_command(
+    input: &StreamIntegrationInput,
+    preview_identity: &str,
+) -> Result<(PathBuf, Command, StreamIntegrationPreview), AppError> {
+    let preview = preview_stream_integration(input)?;
+    if preview.identity != preview_identity {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The integration preview is stale because stream/workspace state changed.",
+        )
+        .with_hint("Run preview again before applying."));
+    }
+    if preview.partial || preview.truncated || preview.items.is_empty() {
+        return Err(AppError::new(
+            if preview.partial {
+                ErrorKind::PartialResult
+            } else {
+                ErrorKind::Conflict
+            },
+            "This integration preview cannot be applied safely.",
+        )
+        .with_hint("Refresh the preview and resolve its warnings first."));
+    }
+    let (path, mut command) = configured_command(&input.connection)?;
+    command.args(stream_integration_arguments(input, false));
+    Ok((path, command, preview))
 }
 
 pub fn switch_stream(
@@ -6567,5 +6864,76 @@ mod tests {
         );
         assert!(validate_stream_path("//Acme/dev").is_ok());
         assert!(validate_stream_path("//Acme/dev@42").is_err());
+    }
+
+    #[test]
+    fn builds_direction_specific_stream_integration_arguments() {
+        let connection = ConnectionInput {
+            p4_path: None,
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-dev".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let input = |direction, source: &str, target: &str| StreamIntegrationInput {
+            connection: connection.clone(),
+            direction,
+            source_stream: source.to_owned(),
+            target_stream: target.to_owned(),
+            target_change: "123".to_owned(),
+        };
+        assert_eq!(
+            stream_integration_arguments(
+                &input(
+                    StreamIntegrationDirection::MergeDown,
+                    "//Acme/main",
+                    "//Acme/dev"
+                ),
+                false
+            ),
+            [
+                "-ztag",
+                "-Mj",
+                "integrate",
+                "-c",
+                "123",
+                "-S",
+                "//Acme/dev",
+                "-r",
+                "-Af"
+            ]
+        );
+        assert_eq!(
+            stream_integration_arguments(
+                &input(
+                    StreamIntegrationDirection::CopyUp,
+                    "//Acme/dev",
+                    "//Acme/main"
+                ),
+                false
+            ),
+            [
+                "-ztag",
+                "-Mj",
+                "copy",
+                "-c",
+                "123",
+                "-S",
+                "//Acme/dev",
+                "-Af"
+            ]
+        );
+        let preview = stream_integration_arguments(
+            &input(
+                StreamIntegrationDirection::MergeDown,
+                "//Acme/main",
+                "//Acme/dev",
+            ),
+            true,
+        );
+        assert!(preview.contains(&"-n".to_owned()));
+        assert!(preview.contains(&"201".to_owned()));
     }
 }

@@ -49,6 +49,9 @@ import type {
   ResolveMode,
   StreamLocalStrategy,
   StreamSummary,
+  StreamDetail,
+  StreamIntegrationInput,
+  StreamIntegrationPreview,
   CreateStreamInput,
   CreateStreamPreview,
   UiAgentCommand,
@@ -168,6 +171,18 @@ export async function renameWorkspace(connection: ConnectionInput, from: string,
 
 export async function listStreams(input: ConnectionInput): Promise<StreamSummary[]> {
   return invoke<StreamSummary[]>("list_streams", { input });
+}
+
+export async function inspectStream(input: ConnectionInput, streamPath: string): Promise<StreamDetail> {
+  return invoke<StreamDetail>("inspect_stream", { input, streamPath });
+}
+
+export async function previewStreamIntegration(input: StreamIntegrationInput): Promise<StreamIntegrationPreview> {
+  return invoke<StreamIntegrationPreview>("preview_stream_integration", { input });
+}
+
+export async function startStreamIntegration(input: StreamIntegrationInput, previewIdentity: string): Promise<string> {
+  return invoke<string>("start_stream_integration", { input, previewIdentity });
 }
 
 export async function previewCreateStream(input: CreateStreamInput): Promise<CreateStreamPreview> {

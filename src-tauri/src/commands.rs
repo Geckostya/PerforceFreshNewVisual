@@ -5,17 +5,19 @@ use crate::{
         CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
         CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
         DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationDiagnostic,
-        OperationEvent, OperationEventKind, OperationItemResult, OperationReadBack,
-        OperationReadBackStatus, P4Detection, P4Info, PendingChange, PreviewUnshelveInput,
-        ReconcileItem, ReopenInput, ReshelveInput, ResolveApplyResult, ResolveContent,
-        ResolveInput, ResolveResultInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput,
-        SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
-        ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
-        SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFilterOptions,
-        SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem,
-        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
-        WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
+        OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
+        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
+        ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput,
+        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
+        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
+        StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
+        SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
+        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
+        TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
+        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
+        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -372,6 +374,25 @@ pub async fn rename_workspace(
 #[tauri::command]
 pub async fn list_streams(input: ConnectionInput) -> Result<Vec<StreamSummary>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_streams(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_stream(
+    input: ConnectionInput,
+    stream_path: String,
+) -> Result<StreamDetail, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::inspect_stream(&input, &stream_path))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_stream_integration(
+    input: StreamIntegrationInput,
+) -> Result<StreamIntegrationPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::preview_stream_integration(&input))
         .await
         .map_err(task_error)?
 }
@@ -880,6 +901,255 @@ fn operation_event(
         },
         retryable: false,
     }
+}
+
+fn integration_output_path(line: &str) -> Option<String> {
+    let record = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(line).ok()?;
+    ["depotFile", "toFile", "clientFile", "path"]
+        .iter()
+        .find_map(|key| {
+            record
+                .get(*key)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+}
+
+#[tauri::command]
+pub async fn start_stream_integration(
+    app: tauri::AppHandle,
+    registry: State<'_, OperationRegistry>,
+    input: StreamIntegrationInput,
+    preview_identity: String,
+) -> Result<String, AppError> {
+    let recovery_input = input.clone();
+    let (path, mut command, preview) = p4::stream_integration_command(&input, &preview_identity)?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (cancel, cancellation) = mpsc::channel();
+    let operation_id = registry.new_id();
+    let started_at_ms = operation_started_at_ms();
+    if !registry.insert_if_kind_idle(
+        operation_id.clone(),
+        OperationHandle {
+            kind: "integrate",
+            workspace: operation_workspace(&input.connection),
+            started_at_ms,
+            cancel,
+            cancelled: cancelled.clone(),
+        },
+    ) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Another workspace mutation is already running.",
+        ));
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            registry.remove(&operation_id);
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Could not start the stream integration command.",
+            )
+            .with_diagnostics(format!("{}: {error}", path.display())));
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let scope = format!("{} → {}", preview.source_stream, preview.target_stream);
+    let _ = app.emit(
+        "operation-event",
+        OperationEvent {
+            operation_id: operation_id.clone(),
+            operation_kind: "integrate".to_owned(),
+            kind: OperationEventKind::Started,
+            total_files: Some(preview.items.len() as u64),
+            scope: Some(scope.clone()),
+            phase: Some("apply".to_owned()),
+            ..operation_event(
+                &operation_id,
+                "integrate",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
+        },
+    );
+    let stdout_thread = stdout.map(|stdout| {
+        let app = app.clone();
+        let id = operation_id.clone();
+        let scope = scope.clone();
+        let total = preview.items.len() as u64;
+        thread::spawn(move || {
+            let mut paths = Vec::new();
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let Some(current_path) = integration_output_path(&line) else {
+                    continue;
+                };
+                paths.push(current_path.clone());
+                let _ = app.emit(
+                    "operation-event",
+                    OperationEvent {
+                        operation_id: id.clone(),
+                        operation_kind: "integrate".to_owned(),
+                        kind: OperationEventKind::Progress,
+                        processed: paths.len() as u64,
+                        total_files: Some(total),
+                        current_path: Some(current_path),
+                        scope: Some(scope.clone()),
+                        phase: Some("apply".to_owned()),
+                        ..operation_event(
+                            &id,
+                            "integrate",
+                            OperationEventKind::Progress,
+                            started_at_ms,
+                        )
+                    },
+                );
+            }
+            paths
+        })
+    });
+    let stderr_thread = stderr.map(|stderr| {
+        thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    });
+    let app_for_wait = app.clone();
+    let registry_for_wait = registry.inner().clone();
+    let id_for_wait = operation_id.clone();
+    thread::spawn(move || {
+        let process_success = wait_for_process(child, cancellation);
+        let was_cancelled = cancelled.load(Ordering::Acquire);
+        let output_paths = stdout_thread
+            .and_then(|worker| worker.join().ok())
+            .unwrap_or_default();
+        let stderr_text = stderr_thread
+            .and_then(|worker| worker.join().ok())
+            .unwrap_or_default();
+        let readback = p4::list_opened_files(&recovery_input.connection);
+        let expected = preview
+            .items
+            .iter()
+            .map(|item| item.target_path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let output_path_set = output_paths
+            .iter()
+            .map(|path| path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let confirmed = readback.as_ref().map(|opened| {
+            opened
+                .iter()
+                .filter(|item| {
+                    item.change == recovery_input.target_change
+                        && expected.contains(&item.depot_path.to_ascii_lowercase())
+                })
+                .map(|item| item.depot_path.to_ascii_lowercase())
+                .filter(|path| process_success || output_path_set.contains(path))
+                .collect::<BTreeSet<_>>()
+        });
+        let confirmed_count = confirmed.as_ref().map(BTreeSet::len).unwrap_or_default();
+        let kind = if readback.is_err() && (process_success || !output_paths.is_empty()) {
+            OperationEventKind::Unknown
+        } else if was_cancelled && confirmed_count > 0 {
+            OperationEventKind::Partial
+        } else if was_cancelled {
+            OperationEventKind::Cancelled
+        } else if process_success && confirmed_count == expected.len() {
+            OperationEventKind::Completed
+        } else if confirmed_count > 0 {
+            OperationEventKind::Partial
+        } else {
+            OperationEventKind::Failed
+        };
+        let item_results = preview
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let succeeded = confirmed
+                    .as_ref()
+                    .is_ok_and(|paths| paths.contains(&item.target_path.to_ascii_lowercase()));
+                OperationItemResult {
+                    item_id: format!("integration-{index}"),
+                    path: Some(item.target_path.clone()),
+                    status: if succeeded {
+                        OperationItemStatus::Succeeded
+                    } else if was_cancelled {
+                        OperationItemStatus::Skipped
+                    } else {
+                        OperationItemStatus::Failed
+                    },
+                    reason: (!succeeded).then(|| {
+                        if readback.is_err() {
+                            "Authoritative read-back failed."
+                        } else {
+                            "Target file was not confirmed in the pending changelist."
+                        }
+                        .to_owned()
+                    }),
+                    compensation: OperationCompensationStatus::NotRequired,
+                    recovery_action_id: Some("refresh_changes".to_owned()),
+                }
+            })
+            .collect::<Vec<_>>();
+        let read_back = OperationReadBack {
+            status: if readback.is_ok() {
+                OperationReadBackStatus::Succeeded
+            } else {
+                OperationReadBackStatus::Unknown
+            },
+            affected_state: vec![
+                "opened_files".to_owned(),
+                "pending_changes".to_owned(),
+                "resolve_state".to_owned(),
+            ],
+            message: Some(match &readback {
+                Ok(_) => format!(
+                    "Confirmed {confirmed_count} of {} previewed files in CL {}.",
+                    expected.len(),
+                    recovery_input.target_change
+                ),
+                Err(error) => format!(
+                    "Integration may have changed server state, but read-back failed: {}",
+                    error.message
+                ),
+            }),
+        };
+        let message = match kind {
+            OperationEventKind::Completed => {
+                Some("Integration is pending. Resolve and review it before submit.".to_owned())
+            }
+            OperationEventKind::Cancelled if stderr_text.trim().is_empty() => {
+                Some("Integration was cancelled before any target file was confirmed.".to_owned())
+            }
+            _ if !stderr_text.trim().is_empty() => Some(stderr_text),
+            _ => read_back.message.clone(),
+        };
+        let _ = app_for_wait.emit(
+            "operation-event",
+            OperationEvent {
+                operation_id: id_for_wait.clone(),
+                operation_kind: "integrate".to_owned(),
+                kind: kind.clone(),
+                processed: confirmed_count as u64,
+                total_files: Some(expected.len() as u64),
+                message: message.clone(),
+                scope: Some(scope),
+                phase: Some("read_back".to_owned()),
+                diagnostics: bounded_operation_diagnostics(message.as_deref()),
+                item_results,
+                read_back,
+                ..operation_event(&id_for_wait, "integrate", kind, started_at_ms)
+            },
+        );
+        registry_for_wait.remove(&id_for_wait);
+    });
+    Ok(operation_id)
 }
 
 fn sync_operation_scope(scopes: &[String]) -> String {

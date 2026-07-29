@@ -21,7 +21,7 @@ type WorkspaceDraft = { name: string; root: string; stream: string; description:
 
 const emptyDraft: WorkspaceDraft = { name: "", root: "", stream: "", description: "" };
 
-export function WorkspaceView({ connection, info, initialScope, sourceControl, onNavigateDepot, onDeleted, onRenamed }: { connection: ConnectionInput; info: P4Info; initialScope?: string; sourceControl?: ReactNode; onNavigateDepot?: (scope: string) => void; onDeleted?: () => void; onRenamed?: (name: string) => void }) {
+export function WorkspaceView({ connection, info, initialScope, initialResolveRequest, sourceControl, onNavigateDepot, onDeleted, onRenamed }: { connection: ConnectionInput; info: P4Info; initialScope?: string; initialResolveRequest?: { id: number; change: string; paths: string[] }; sourceControl?: ReactNode; onNavigateDepot?: (scope: string) => void; onDeleted?: () => void; onRenamed?: (name: string) => void }) {
   const { t, language } = useLocale();
   const initialWorkspaceScope = initialScope?.trim() || "//...";
   const initialLazyRoot = workspaceLazyRoot(connection, initialWorkspaceScope);
@@ -58,6 +58,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [deleteLocalPath, setDeleteLocalPath] = useState<string>();
   const workspaceMenu = useContextMenu<{ file: WorkspaceFile; paths: string[] }>();
   const selectionAnchor = useRef<string | undefined>(undefined);
+  const handledResolveRequest = useRef<number | undefined>(undefined);
   const [filter, setFilter] = useState<WorkspaceFilter>("all");
   const [viewMode, setViewMode] = useState<"list" | "tree">("tree");
   const [query, setQuery] = useState("");
@@ -391,6 +392,13 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     } catch (reason) { setError(normalizeAppError(reason)); }
     finally { setBusy(false); }
   }
+
+  useEffect(() => {
+    if (!initialResolveRequest || handledResolveRequest.current === initialResolveRequest.id) return;
+    handledResolveRequest.current = initialResolveRequest.id;
+    setChange(initialResolveRequest.change);
+    void showResolvePreview("autoSafe", initialResolveRequest.paths);
+  }, [initialResolveRequest?.id]);
 
   async function applyResolve() {
     if (!pendingResolveMode || !pendingResolvePaths.length) return;
