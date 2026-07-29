@@ -383,7 +383,7 @@ describe("parallel workflow queue", () => {
       repoRoot: repositoryRoot,
       qualityCheckpointUnits: 2,
     });
-    const head = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], {
+    const head = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "main"], {
       encoding: "utf8",
     }).trim();
     await seedCompletedFeature(stateRoot, "docs-only", 10, head, head, "mechanical");
