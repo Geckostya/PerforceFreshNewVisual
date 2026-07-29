@@ -1,23 +1,27 @@
 :root {
   font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  color: #20242b;
-  background: #f3f3f0;
+  color: #1c222c;
+  background: #f3f5f9;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   color-scheme: light dark;
 
-  --bg: #f3f3f0;
-  --surface: #fafaf8;
+  --bg: #f3f5f9;
+  --surface: #f8f9fc;
   --surface-raised: #ffffff;
-  --surface-muted: #eeeeea;
-  --text: #20242b;
-  --text-secondary: #626a75;
-  --text-tertiary: #858c96;
-  --border: #d7d9d7;
-  --border-strong: #c3c6c5;
+  --surface-muted: #edf0f5;
+  --surface-sunken: #f1f3f7;
+  --surface-inspector: #fafbfe;
+  --text: #1c222c;
+  --text-primary: #1c222c;
+  --text-secondary: #5f6876;
+  --text-tertiary: #818a98;
+  --muted: #818a98;
+  --border: #dde2ea;
+  --border-strong: #c9d0db;
   --accent: #4b65d5;
   --accent-hover: #3f57c1;
-  --accent-soft: #e8ebfb;
+  --accent-soft: #e7ebfc;
   --depot-accent: #3979a8;
   --depot-soft: #e5f0f7;
   --success: #267a55;
@@ -27,6 +31,14 @@
   --danger: #b64343;
   --danger-soft: #f8e8e7;
   --focus: #637be6;
+  --sidebar-bg: #e6e9ef;
+  --sidebar-hover: #d9dee7;
+  --sidebar-active: #4b65d5;
+  --sidebar-border: #cbd2dc;
+  --sidebar-text: #66717f;
+  --sidebar-text-strong: #252c36;
+  --panel-shadow: 0 8px 28px rgb(29 38 55 / 8%);
+  --control-shadow: 0 1px 2px rgb(29 38 55 / 8%);
 
   /* Shared Windows desktop size system. */
   --font-caption: 12px;
@@ -95,17 +107,21 @@ summary {
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  color: #e7e8ea;
-  background: #17191d;
-  --bg: #17191d;
-  --surface: #1d2025;
-  --surface-raised: #22262c;
-  --surface-muted: #292d33;
-  --text: #e7e8ea;
-  --text-secondary: #a8afb9;
-  --text-tertiary: #7f8792;
-  --border: #343941;
-  --border-strong: #484e58;
+  color: #e9ebef;
+  background: #14171c;
+  --bg: #14171c;
+  --surface: #1a1e24;
+  --surface-raised: #20252d;
+  --surface-muted: #292f38;
+  --surface-sunken: #171a20;
+  --surface-inspector: #1c2129;
+  --text: #e9ebef;
+  --text-primary: #e9ebef;
+  --text-secondary: #aab2be;
+  --text-tertiary: #7f8996;
+  --muted: #7f8996;
+  --border: #343b46;
+  --border-strong: #495260;
   --accent: #8c9df0;
   --accent-hover: #a0aff8;
   --accent-soft: #2b345e;
@@ -118,6 +134,14 @@ summary {
   --danger: #ec8e8e;
   --danger-soft: #462728;
   --focus: #9cacfa;
+  --sidebar-bg: #0d1118;
+  --sidebar-hover: #1b2230;
+  --sidebar-active: #465bbd;
+  --sidebar-border: #252d3a;
+  --sidebar-text: #9da8b8;
+  --sidebar-text-strong: #f2f5f8;
+  --panel-shadow: 0 10px 34px rgb(0 0 0 / 24%);
+  --control-shadow: 0 1px 2px rgb(0 0 0 / 28%);
 }
 
 @media (prefers-reduced-motion: reduce) {
