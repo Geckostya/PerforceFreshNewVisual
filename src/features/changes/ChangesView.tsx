@@ -25,7 +25,6 @@ import {
   saveRevertPreference,
   shelveFiles,
   startSubmit,
-  submitChange,
   submitPreflight,
   unlockFiles,
   unshelveFiles,
@@ -350,34 +349,32 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
         }
         setSubmitPreflightReady(true);
       }
-      if (mode === "local") {
-        await startObservedOperation(
-          "submit",
-          () => startSubmit(connection, currentGroup.id, currentGroup.isDefault ? submitDescription : undefined, mode),
-          (event) => {
-            if (!isOperationTerminal(event.kind)) return;
-            if (event.kind === "completed") setNotice(t("submitSucceeded"));
-            else if (event.kind === "cancelled") setNotice(t("submitCancelled"));
-            else setError({ kind: event.kind === "partial" ? "partial_result" : "command_failed", message: event.message || (event.kind === "unknown" ? t("operationUnknown") : t("operationFailed")), hints: [] });
-            refreshData();
-          },
-        );
-        setDialog(undefined);
-        return;
-      }
-      const outcome = await submitChange(
-        connection,
-        currentGroup.id,
-        currentGroup.isDefault ? submitDescription : undefined,
-        mode,
+      await startObservedOperation(
+        "submit",
+        () => startSubmit(connection, currentGroup.id, currentGroup.isDefault ? submitDescription : undefined, mode),
+        (event) => {
+          if (!isOperationTerminal(event.kind)) return;
+          const outcome = event.submitOutcome;
+          if (event.kind === "completed") {
+            setSelectedChange(outcome?.preservedLocalChange ?? "default");
+            fileSelection.clear();
+            setNotice(outcome?.preservedLocalChange
+              ? `${t("submitShelfPreserved")} CL ${outcome.preservedLocalChange}.`
+              : t("submitSucceeded"));
+          } else if (event.kind === "cancelled") {
+            setNotice(t("submitCancelled"));
+          } else {
+            setError({
+              kind: event.kind === "partial" ? "partial_result" : "command_failed",
+              message: event.message || (event.kind === "unknown" ? t("submitOutcomeUnknown") : t("operationFailed")),
+              hints: outcome?.recoveryActions || [],
+            });
+          }
+          refreshData();
+        },
       );
       setDialog(undefined);
-      setSelectedChange(outcome.preservedLocalChange ?? "default");
-      fileSelection.clear();
-      setNotice(outcome.preservedLocalChange
-        ? `${t("submitShelfPreserved")} CL ${outcome.preservedLocalChange}.`
-        : t("submitSucceeded"));
-      refreshData();
+      return;
     } catch (reason) {
       setDialog(undefined);
       refreshData();

@@ -272,6 +272,7 @@ export interface OperationEvent {
   scopes?: string[];
   phase?: "scan" | "validate" | "apply" | string;
   reconcileItems?: ReconcileItem[];
+  submitOutcome?: SubmitOutcome;
   diagnostics?: OperationDiagnostic[];
   itemResults?: OperationItemResult[];
   readBack?: OperationReadBack;
@@ -450,7 +451,9 @@ export interface UiAgentResponse {
   error?: string;
 }
 
-export type ResolveMode = "yours" | "theirs" | "autoSafe" | "autoMerge";
+export type ResolveMode = "yours" | "theirs" | "autoSafe" | "autoMerge" | "editResult";
+export type ResolveConflictKind = "text" | "binary" | "move_name" | "filetype_attribute" | "stream_spec" | "unknown";
+export type ResolveReadBackState = "pending" | "resolved" | "unknown";
 
 export interface SyncPreviewItem {
   depotPath: string;
@@ -480,7 +483,29 @@ export interface ReconcileItem {
   localModified?: string;
 }
 
-export interface ResolvePreviewItem { depotPath: string; action: string; detail?: string; }
+export interface ResolvePreviewItem {
+  depotPath: string;
+  clientPath?: string;
+  localPath?: string;
+  action: string;
+  detail?: string;
+  conflictKind: ResolveConflictKind;
+  baseIdentifier?: string;
+  sourceIdentifier?: string;
+  workspaceIdentifier: string;
+  allowedActions: ResolveMode[];
+  readBack: ResolveReadBackState;
+}
+export interface ResolveApplyItem { depotPath: string; state: ResolveReadBackState; reason?: string; }
+export interface ResolveApplyResult { items: ResolveApplyItem[]; }
+export interface ResolveContentSide { identifier: string; text?: string; binary: boolean; truncated: boolean; }
+export interface ResolveContent {
+  depotPath: string;
+  localPath: string;
+  base: ResolveContentSide;
+  source: ResolveContentSide;
+  workspace: ResolveContentSide;
+}
 
 export interface RevertPreviewItem { depotPath: string; action: string; }
 
@@ -508,6 +533,10 @@ export type SubmitMode =
 
 export interface SubmitOutcome {
   preservedLocalChange?: string;
+  terminal: "submitted" | "pending" | "unknown";
+  affectedChange?: string;
+  recoveryActions: string[];
+  steps: Array<{ step: string; status: string; detail?: string }>;
 }
 
 export interface SubmitPreflightIssue {

@@ -44,6 +44,8 @@ import type {
   WorkspaceMappingBatch,
   ReconcileItem,
   ResolvePreviewItem,
+  ResolveApplyResult,
+  ResolveContent,
   RevertPreviewItem,
   ResolveMode,
   StreamLocalStrategy,
@@ -321,12 +323,20 @@ export async function unlockFiles(connection: ConnectionInput, change: string, d
   return invoke("unlock_files", { input: { connection, change, depotPaths } });
 }
 
-export async function resolveFiles(connection: ConnectionInput, depotPaths: string[], mode: ResolveMode): Promise<void> {
-  return invoke("resolve_files", { input: { connection, depotPaths, mode } });
+export async function resolveFiles(connection: ConnectionInput, depotPaths: string[], mode: ResolveMode): Promise<ResolveApplyResult> {
+  return invoke<ResolveApplyResult>("resolve_files", { input: { connection, depotPaths, mode } });
 }
 
 export async function previewResolve(connection: ConnectionInput, depotPaths: string[]): Promise<ResolvePreviewItem[]> {
   return invoke<ResolvePreviewItem[]>("preview_resolve", { input: connection, depotPaths });
+}
+
+export async function loadResolveContent(connection: ConnectionInput, depotPath: string): Promise<ResolveContent> {
+  return invoke<ResolveContent>("load_resolve_content", { input: connection, depotPath });
+}
+
+export async function saveResolveResult(connection: ConnectionInput, depotPath: string, localPath: string, result: string): Promise<ResolveApplyResult> {
+  return invoke<ResolveApplyResult>("save_resolve_result", { input: { connection, depotPath, localPath, result } });
 }
 
 export async function moveFile(connection: ConnectionInput, change: string, source: string, destination: string): Promise<void> {

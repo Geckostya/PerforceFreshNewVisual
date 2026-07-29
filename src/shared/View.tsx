@@ -148,18 +148,19 @@ export function Modal({ title, busy, wide, onClose, children }: { title: ReactNo
   </section></div>;
 }
 
-export function ActionDialog({ title, confirmLabel, busy, confirmDisabled, danger, onClose, onConfirm, children }: {
+export function ActionDialog({ title, confirmLabel, busy, confirmDisabled, danger, wide, onClose, onConfirm, children }: {
   title: string;
   confirmLabel: string;
   busy: boolean;
   confirmDisabled?: boolean;
   danger?: boolean;
+  wide?: boolean;
   onClose: () => void;
   onConfirm: () => void;
   children: ReactNode;
 }) {
   const { t } = useLocale();
-  return <Modal title={title} busy={busy} onClose={onClose}><div className="dialog-body">{children}</div><div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button><button className={danger ? "danger-button" : "primary-button"} type="button" onClick={onConfirm} disabled={busy || confirmDisabled}>{confirmLabel}</button></div></Modal>;
+  return <Modal title={title} busy={busy} wide={wide} onClose={onClose}><div className="dialog-body">{children}</div><div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button><button className={danger ? "danger-button" : "primary-button"} type="button" onClick={onConfirm} disabled={busy || confirmDisabled}>{confirmLabel}</button></div></Modal>;
 }
 
 export function ContextMenu({ x, y, onSelect, children }: { x: number; y: number; onSelect: () => void; children: ReactNode }) {

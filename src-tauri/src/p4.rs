@@ -15,9 +15,11 @@ use crate::models::{
     AnnotationLine, AppError, AuthStage, ChangeExportResult, CherryPickPreviewItem, CliLogLevel,
     ConnectionInput, CreateStreamInput, CreateStreamPreview, CreateStreamType, DepotDirectory,
     DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
-    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
-    RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode,
-    SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
+    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem, ResolveApplyResult,
+    ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode, ResolvePreviewItem,
+    ResolveReadBackState, RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamPathKind,
+    StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
+    SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
     SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SyncPreview, SyncPreviewItem,
     TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
     WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState,
@@ -2046,7 +2048,7 @@ pub fn resolve_files(
     input: &ConnectionInput,
     paths: &[String],
     mode: &ResolveMode,
-) -> Result<(), AppError> {
+) -> Result<ResolveApplyResult, AppError> {
     required_client(input)?;
     validate_depot_paths(paths)?;
     if paths.is_empty() {
@@ -2056,7 +2058,10 @@ pub fn resolve_files(
     command.args(["-ztag", "-Mj", "resolve", resolve_mode_flag(mode)]);
     command.args(paths);
     run_json(&path, &mut command)?;
-    Ok(())
+    Ok(match preview_resolve(input, paths) {
+        Ok(pending) => resolve_read_back(paths, &pending),
+        Err(error) => resolve_unknown_read_back(paths, &error.message),
+    })
 }
 
 pub fn preview_resolve(
@@ -2071,7 +2076,7 @@ pub fn preview_resolve(
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "resolve", "-n"]);
     command.args(paths);
-    let records = run_json(&path, &mut command)?;
+    let records = run_json_allowing_empty_match(&path, &mut command)?;
     Ok(parse_resolve_preview(&records))
 }
 
@@ -2080,14 +2085,237 @@ fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewIt
         .iter()
         .filter(|record| !is_message_record(record))
         .filter_map(|record| {
+            let conflict_kind = classify_resolve_conflict(record);
+            let allowed_actions = resolve_allowed_actions(&conflict_kind);
             Some(ResolvePreviewItem {
                 depot_path: field(record, &["depotFile", "clientFile", "path"])?,
                 action: field(record, &["how", "action", "status"])
                     .unwrap_or_else(|| "resolve".to_owned()),
                 detail: field(record, &["fromFile", "baseFile", "type"]),
+                client_path: field(record, &["clientFile"]),
+                local_path: field(record, &["path"]),
+                conflict_kind,
+                base_identifier: revision_identifier(
+                    record,
+                    "baseFile",
+                    &["baseRev", "baseRevision"],
+                ),
+                source_identifier: revision_identifier(
+                    record,
+                    "fromFile",
+                    &["endFromRev", "fromRev", "sourceRev"],
+                ),
+                workspace_identifier: field(record, &["path", "clientFile", "depotFile"])
+                    .unwrap_or_else(|| "workspace".to_owned()),
+                allowed_actions,
+                read_back: ResolveReadBackState::Pending,
             })
         })
         .collect()
+}
+
+fn revision_identifier(
+    record: &Map<String, Value>,
+    path_field: &str,
+    revision_fields: &[&str],
+) -> Option<String> {
+    let path = field(record, &[path_field])?;
+    if path.contains('#') || path.contains('@') {
+        return Some(path);
+    }
+    field(record, revision_fields)
+        .map(|revision| format!("{path}#{}", revision.trim_start_matches('#')))
+        .or(Some(path))
+}
+
+fn classify_resolve_conflict(record: &Map<String, Value>) -> ResolveConflictKind {
+    let description = ["resolveType", "type", "how", "action", "status"]
+        .into_iter()
+        .filter_map(|name| field(record, &[name]))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if description.contains("stream") {
+        ResolveConflictKind::StreamSpec
+    } else if description.contains("move") || description.contains("rename") {
+        ResolveConflictKind::MoveName
+    } else if description.contains("attribute") || description.contains("filetype") {
+        ResolveConflictKind::FiletypeAttribute
+    } else if description.contains("binary") || description.contains("utf16") {
+        ResolveConflictKind::Binary
+    } else if description.contains("text")
+        || description.contains("content")
+        || record.contains_key("fromFile")
+        || record.contains_key("baseFile")
+    {
+        ResolveConflictKind::Text
+    } else {
+        ResolveConflictKind::Unknown
+    }
+}
+
+fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
+    match kind {
+        ResolveConflictKind::Text => vec![
+            ResolveMode::Yours,
+            ResolveMode::Theirs,
+            ResolveMode::AutoSafe,
+            ResolveMode::AutoMerge,
+            ResolveMode::EditResult,
+        ],
+        _ => vec![ResolveMode::Yours, ResolveMode::Theirs],
+    }
+}
+
+fn resolve_read_back(paths: &[String], pending: &[ResolvePreviewItem]) -> ResolveApplyResult {
+    ResolveApplyResult {
+        items: paths
+            .iter()
+            .map(|path| {
+                let unresolved = pending.iter().any(|item| item.depot_path == *path);
+                ResolveApplyItem {
+                    depot_path: path.clone(),
+                    state: if unresolved {
+                        ResolveReadBackState::Pending
+                    } else {
+                        ResolveReadBackState::Resolved
+                    },
+                    reason: unresolved
+                        .then(|| "Server still reports a pending resolve.".to_owned()),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn resolve_unknown_read_back(paths: &[String], reason: &str) -> ResolveApplyResult {
+    ResolveApplyResult {
+        items: paths
+            .iter()
+            .map(|path| ResolveApplyItem {
+                depot_path: path.clone(),
+                state: ResolveReadBackState::Unknown,
+                reason: Some(format!(
+                    "Resolve was applied, but read-back failed: {reason}"
+                )),
+            })
+            .collect(),
+    }
+}
+
+const MAX_RESOLVE_TEXT_BYTES: usize = 2 * 1024 * 1024;
+
+pub fn load_resolve_content(
+    input: &ConnectionInput,
+    root: &Path,
+    depot_path: &str,
+) -> Result<ResolveContent, AppError> {
+    let preview = preview_resolve(input, &[depot_path.to_owned()])?
+        .into_iter()
+        .find(|item| item.depot_path == depot_path)
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Resolve больше не требуется."))?;
+    if preview.conflict_kind != ResolveConflictKind::Text {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Этот тип конфликта нельзя открыть в текстовом resolve editor.",
+        ));
+    }
+    let local_path = preview.local_path.as_deref().ok_or_else(|| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Сервер не вернул локальный путь файла.",
+        )
+    })?;
+    let root = fs::canonicalize(root)
+        .map_err(|error| local_file_error("Не удалось проверить root workspace.", error))?;
+    let local_path = validated_recovery_target(&root, local_path)?;
+    let workspace_bytes = fs::read(&local_path)
+        .map_err(|error| local_file_error("Не удалось прочитать workspace-файл.", error))?;
+    let base = load_resolve_side(input, preview.base_identifier.as_deref(), "base")?;
+    let source = load_resolve_side(input, preview.source_identifier.as_deref(), "source")?;
+    let workspace = resolve_content_side(preview.workspace_identifier, workspace_bytes);
+    Ok(ResolveContent {
+        depot_path: preview.depot_path,
+        local_path: local_path.to_string_lossy().into_owned(),
+        base,
+        source,
+        workspace,
+    })
+}
+
+fn load_resolve_side(
+    input: &ConnectionInput,
+    identifier: Option<&str>,
+    label: &str,
+) -> Result<ResolveContentSide, AppError> {
+    let identifier = identifier.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            format!("Сервер не вернул {label} revision для text resolve."),
+        )
+    })?;
+    if !identifier.starts_with("//") || identifier.contains(['\r', '\n']) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Сервер вернул некорректный revision identifier.",
+        ));
+    }
+    let (path, mut command) = configured_command(input)?;
+    command.args(["print", "-q", identifier]);
+    Ok(resolve_content_side(
+        identifier.to_owned(),
+        run_binary(&path, &mut command)?,
+    ))
+}
+
+fn resolve_content_side(identifier: String, bytes: Vec<u8>) -> ResolveContentSide {
+    let truncated = bytes.len() > MAX_RESOLVE_TEXT_BYTES;
+    let bounded = &bytes[..bytes.len().min(MAX_RESOLVE_TEXT_BYTES)];
+    let binary = bounded.contains(&0) || std::str::from_utf8(bounded).is_err();
+    ResolveContentSide {
+        identifier,
+        text: (!binary && !truncated).then(|| String::from_utf8_lossy(bounded).into_owned()),
+        binary,
+        truncated,
+    }
+}
+
+pub fn save_resolve_result(
+    input: &ConnectionInput,
+    root: &Path,
+    depot_path: &str,
+    local_path: &str,
+    result: &str,
+) -> Result<ResolveApplyResult, AppError> {
+    required_client(input)?;
+    validate_depot_path(depot_path)?;
+    if result.len() > MAX_RESOLVE_TEXT_BYTES || result.contains('\0') {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Результат text resolve превышает лимит или содержит binary-данные.",
+        ));
+    }
+    let preview = preview_resolve(input, &[depot_path.to_owned()])?
+        .into_iter()
+        .find(|item| item.depot_path == depot_path)
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Resolve больше не требуется."))?;
+    if preview.conflict_kind != ResolveConflictKind::Text
+        || preview.local_path.as_deref() != Some(local_path)
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Resolve preview изменился; обновите его перед сохранением.",
+        ));
+    }
+    let root = fs::canonicalize(root)
+        .map_err(|error| local_file_error("Не удалось проверить root workspace.", error))?;
+    let target = validated_recovery_target(&root, local_path)?;
+    let temporary = recovery_temporary_path(&target)?;
+    fs::write(&temporary, result.as_bytes()).map_err(|error| {
+        local_file_error("Не удалось записать временный resolve result.", error)
+    })?;
+    replace_recovery_file(&temporary, &target)?;
+    resolve_files(input, &[depot_path.to_owned()], &ResolveMode::EditResult)
 }
 
 fn resolve_mode_flag(mode: &ResolveMode) -> &'static str {
@@ -2096,6 +2324,7 @@ fn resolve_mode_flag(mode: &ResolveMode) -> &'static str {
         ResolveMode::Theirs => "-at",
         ResolveMode::AutoSafe => "-as",
         ResolveMode::AutoMerge => "-am",
+        ResolveMode::EditResult => "-ae",
     }
 }
 
@@ -2809,18 +3038,19 @@ pub fn submit_change(
     match mode {
         SubmitMode::Local => {
             submit_local(input, change, description)?;
-            Ok(SubmitOutcome {
-                preserved_local_change: None,
-            })
+            Ok(submit_outcome(input, change, None, &["submit_local"]))
         }
         SubmitMode::Shelf => submit_shelf_preserving_local(input, change),
         SubmitMode::LocalDeleteShelf => {
             validate_numbered_change(change)?;
             delete_shelf_files(input, change, &[])?;
             submit_local(input, change, None)?;
-            Ok(SubmitOutcome {
-                preserved_local_change: None,
-            })
+            Ok(submit_outcome(
+                input,
+                change,
+                None,
+                &["delete_shelf", "submit_local"],
+            ))
         }
         SubmitMode::LocalUpdateShelf => {
             validate_numbered_change(change)?;
@@ -2845,34 +3075,83 @@ pub fn submit_change(
                 }
                 return Err(error);
             }
-            Ok(SubmitOutcome {
-                preserved_local_change: None,
-            })
+            Ok(submit_outcome(
+                input,
+                change,
+                None,
+                &["update_shelf", "delete_shelf", "submit_local"],
+            ))
         }
     }
 }
 
-pub fn submit_readback_hint(input: &ConnectionInput, change: &str) -> String {
+pub fn submit_readback(input: &ConnectionInput, change: &str) -> SubmitReadBack {
     let pending = list_pending_changes(input)
         .ok()
         .is_some_and(|changes| changes.iter().any(|item| item.id == change));
     if pending {
-        return format!(
-            "Submit read-back: CL {change} remains pending; local work was not confirmed as submitted."
-        );
+        return SubmitReadBack {
+            outcome: SubmitTerminalOutcome::Pending,
+            affected_change: Some(change.to_owned()),
+            message: format!(
+                "Submit read-back: CL {change} remains pending; local work was not confirmed as submitted."
+            ),
+            recovery_actions: vec![
+                "Refresh Changes and rerun submit preflight before retrying.".to_owned(),
+            ],
+        };
     }
     if change != "default"
         && query_submitted_change(input, change)
             .ok()
             .is_some_and(|changes| changes.iter().any(|item| item.id == change))
     {
-        return format!(
-            "Submit read-back: CL {change} is visible as submitted; refresh History before retrying."
-        );
+        return SubmitReadBack {
+            outcome: SubmitTerminalOutcome::Submitted,
+            affected_change: Some(change.to_owned()),
+            message: format!("Submit read-back: CL {change} is visible as submitted."),
+            recovery_actions: Vec::new(),
+        };
     }
-    format!(
-        "Submit read-back: result for CL {change} is unknown; refresh Changes and History before retrying."
-    )
+    SubmitReadBack {
+        outcome: SubmitTerminalOutcome::Unknown,
+        affected_change: None,
+        message: format!(
+            "Submit read-back: result for CL {change} is unknown; refresh Changes and History before retrying."
+        ),
+        recovery_actions: vec![
+            "Refresh Changes and History; do not retry submit until server state is known."
+                .to_owned(),
+            "Run submit preflight again after refresh.".to_owned(),
+        ],
+    }
+}
+
+pub fn submit_readback_hint(input: &ConnectionInput, change: &str) -> String {
+    submit_readback(input, change).message
+}
+
+fn submit_outcome(
+    input: &ConnectionInput,
+    change: &str,
+    preserved_local_change: Option<String>,
+    completed_steps: &[&str],
+) -> SubmitOutcome {
+    let read_back = submit_readback(input, change);
+    SubmitOutcome {
+        preserved_local_change,
+        terminal: read_back.outcome,
+        affected_change: read_back.affected_change,
+        recovery_actions: read_back.recovery_actions,
+        steps: completed_steps
+            .iter()
+            .map(|step| SubmitStepResult {
+                step: (*step).to_owned(),
+                status: "completed".to_owned(),
+                detail: None,
+            })
+            .collect(),
+    }
 }
 
 fn query_submitted_change(
@@ -3699,9 +3978,7 @@ fn submit_shelf_preserving_local(
         .collect::<Vec<_>>();
     if local_files.is_empty() {
         submit_shelf_direct(input, change)?;
-        return Ok(SubmitOutcome {
-            preserved_local_change: None,
-        });
+        return Ok(submit_outcome(input, change, None, &["submit_shelf"]));
     }
 
     let recovery_description = format!("Local work preserved before submitting shelf CL {change}");
@@ -3740,9 +4017,12 @@ fn submit_shelf_preserving_local(
         return Err(error);
     }
 
-    Ok(SubmitOutcome {
-        preserved_local_change: Some(recovery_change),
-    })
+    Ok(submit_outcome(
+        input,
+        change,
+        Some(recovery_change),
+        &["create_recovery_change", "move_local_files", "submit_shelf"],
+    ))
 }
 
 fn create_shelf_from_all(input: &ConnectionInput, change: &str) -> Result<(), AppError> {
@@ -5514,6 +5794,7 @@ mod tests {
         assert_eq!(resolve_mode_flag(&ResolveMode::Theirs), "-at");
         assert_eq!(resolve_mode_flag(&ResolveMode::AutoSafe), "-as");
         assert_eq!(resolve_mode_flag(&ResolveMode::AutoMerge), "-am");
+        assert_eq!(resolve_mode_flag(&ResolveMode::EditResult), "-ae");
     }
 
     #[test]
@@ -5549,7 +5830,56 @@ mod tests {
         assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
         assert_eq!(items[0].action, "vs");
         assert_eq!(items[0].detail.as_deref(), Some("//Acme/main/a.txt#8"));
+        assert_eq!(items[0].conflict_kind, ResolveConflictKind::Text);
+        assert!(items[0].allowed_actions.contains(&ResolveMode::EditResult));
         assert_eq!(items[1].action, "copy");
+        assert_eq!(items[1].conflict_kind, ResolveConflictKind::Unknown);
+        assert!(!items[1].allowed_actions.contains(&ResolveMode::AutoMerge));
+    }
+
+    #[test]
+    fn classifies_specialized_resolves_without_exposing_text_editor() {
+        let items = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/a.bin","type":"binary"}
+{"depotFile":"//Acme/main/name.txt","how":"move resolve"}
+{"depotFile":"//Acme/main/type.txt","resolveType":"filetype resolve"}
+{"depotFile":"//Acme/main/stream","resolveType":"stream spec"}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(items[0].conflict_kind, ResolveConflictKind::Binary);
+        assert_eq!(items[1].conflict_kind, ResolveConflictKind::MoveName);
+        assert_eq!(
+            items[2].conflict_kind,
+            ResolveConflictKind::FiletypeAttribute
+        );
+        assert_eq!(items[3].conflict_kind, ResolveConflictKind::StreamSpec);
+        assert!(
+            items
+                .iter()
+                .all(|item| !item.allowed_actions.contains(&ResolveMode::EditResult))
+        );
+    }
+
+    #[test]
+    fn post_mutation_readback_distinguishes_pending_resolved_and_unknown() {
+        let paths = vec![
+            "//Acme/main/a.txt".to_owned(),
+            "//Acme/main/b.txt".to_owned(),
+        ];
+        let pending = parse_resolve_preview(
+            &parse_json_lines(r#"{"depotFile":"//Acme/main/a.txt","type":"text"}"#).unwrap(),
+        );
+        let result = resolve_read_back(&paths, &pending);
+        assert_eq!(result.items[0].state, ResolveReadBackState::Pending);
+        assert_eq!(result.items[1].state, ResolveReadBackState::Resolved);
+        assert!(
+            resolve_unknown_read_back(&paths, "offline")
+                .items
+                .iter()
+                .all(|item| item.state == ResolveReadBackState::Unknown)
+        );
     }
 
     #[test]

@@ -542,6 +542,8 @@ pub struct OperationEvent {
     pub phase: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reconcile_items: Option<Vec<ReconcileItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submit_outcome: Option<SubmitOutcome>,
     pub diagnostics: Vec<OperationDiagnostic>,
     pub item_results: Vec<OperationItemResult>,
     pub read_back: OperationReadBack,
@@ -725,9 +727,75 @@ pub struct ReconcileItem {
 #[serde(rename_all = "camelCase")]
 pub struct ResolvePreviewItem {
     pub depot_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    pub conflict_kind: ResolveConflictKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_identifier: Option<String>,
+    pub workspace_identifier: String,
+    pub allowed_actions: Vec<ResolveMode>,
+    pub read_back: ResolveReadBackState,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveConflictKind {
+    Text,
+    Binary,
+    MoveName,
+    FiletypeAttribute,
+    StreamSpec,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveReadBackState {
+    Pending,
+    Resolved,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveApplyItem {
+    pub depot_path: String,
+    pub state: ResolveReadBackState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveApplyResult {
+    pub items: Vec<ResolveApplyItem>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveContentSide {
+    pub identifier: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub binary: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveContent {
+    pub depot_path: String,
+    pub local_path: String,
+    pub base: ResolveContentSide,
+    pub source: ResolveContentSide,
+    pub workspace: ResolveContentSide,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -921,6 +989,36 @@ pub enum SubmitMode {
 pub struct SubmitOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preserved_local_change: Option<String>,
+    pub terminal: SubmitTerminalOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affected_change: Option<String>,
+    pub recovery_actions: Vec<String>,
+    pub steps: Vec<SubmitStepResult>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitTerminalOutcome {
+    Submitted,
+    Pending,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitStepResult {
+    pub step: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmitReadBack {
+    pub outcome: SubmitTerminalOutcome,
+    pub affected_change: Option<String>,
+    pub message: String,
+    pub recovery_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1080,6 +1178,15 @@ pub struct ResolveInput {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ResolveResultInput {
+    pub connection: ConnectionInput,
+    pub depot_path: String,
+    pub local_path: String,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct MoveInput {
     pub connection: ConnectionInput,
     pub change: String,
@@ -1087,13 +1194,14 @@ pub struct MoveInput {
     pub destination: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ResolveMode {
     Yours,
     Theirs,
     AutoSafe,
     AutoMerge,
+    EditResult,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

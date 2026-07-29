@@ -13,6 +13,7 @@ import { isContextMenuShortcut, selectionMode, updateSelection } from "../../sha
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
+import { ResolveDialog } from "./ResolveDialog";
 import { buildWorkspaceTree, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, toggleReconcileSelection, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
 type WorkspaceDialog = "details" | "create" | "edit" | "rename" | "delete";
@@ -40,6 +41,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [pendingResolveMode, setPendingResolveMode] = useState<ResolveMode>();
   const [pendingResolvePaths, setPendingResolvePaths] = useState<string[]>([]);
   const [resolvePreview, setResolvePreview] = useState<ResolvePreviewItem[]>([]);
+  const [resolveEditorItem, setResolveEditorItem] = useState<ResolvePreviewItem>();
   const [workspaceSpec, setWorkspaceSpec] = useState<WorkspaceSpec>();
   const [workspaceDialog, setWorkspaceDialog] = useState<WorkspaceDialog>();
   const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>(emptyDraft);
@@ -381,7 +383,33 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     setPendingResolveMode(undefined);
     setPendingResolvePaths([]);
     setResolvePreview([]);
-    await run(() => resolveFiles(connection, paths, mode), t("resolveSucceeded"));
+    setBusy(true);
+    setError(undefined);
+    try {
+      const readBack = await resolveFiles(connection, paths, mode);
+      const pending = readBack.items.filter((item) => item.state !== "resolved");
+      await refreshLoadedDirectories();
+      if (pending.length) {
+        setError({ kind: "partial_result", message: t("resolveStillPending"), hints: pending.map((item) => item.depotPath) });
+      } else {
+        setNotice(t("resolveSucceeded"));
+      }
+    } catch (reason) { setError(normalizeAppError(reason)); }
+    finally { setBusy(false); }
+  }
+
+  async function showResolveEditor(path: string) {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const item = (await previewResolve(connection, [path])).find((candidate) => candidate.depotPath === path);
+      if (!item || item.conflictKind !== "text" || !item.allowedActions.includes("editResult")) {
+        setError({ kind: "command_failed", message: t("resolveEditorUnsupportedContent"), hints: [] });
+        return;
+      }
+      setResolveEditorItem(item);
+    } catch (reason) { setError(normalizeAppError(reason)); }
+    finally { setBusy(false); }
   }
 
   async function copyPath(path: string) {
@@ -716,6 +744,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("theirs", menu.paths)}>{t("resolveAcceptServer")}</MenuButton>}
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoSafe", menu.paths)}>{t("resolveAutoSafe")}</MenuButton>}
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoMerge", menu.paths)}>{t("resolveAutoMerge")}</MenuButton>}
+      {menuCanResolve && menu.paths.length === 1 && <MenuButton onClick={() => void showResolveEditor(menu.paths[0])}>{t("resolveEditor")}</MenuButton>}
       {menuCanRevert && <MenuButton danger onClick={() => void openRevert(menu.paths)}>{t("revertSelected")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.localPath && <MenuButton danger onClick={() => setDeleteLocalPath(menu.file.localPath)}>{t("deleteLocally")}</MenuButton>}
     </ContextMenu>}
@@ -724,7 +753,9 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
 
     {reconcileCandidates && <ActionDialog title={t("reconcilePreviewTitle")} confirmLabel={t("applyReconcile")} busy={busy} confirmDisabled={!reconcileSelected.length || reconcileStale} onClose={() => setReconcileCandidates(undefined)} onConfirm={() => void applyReconcile()}><p>{reconcileStale ? t("reconcileStaleBody") : t("reconcilePreviewBody")}</p>{reconcileStale && <button className="secondary-button" type="button" onClick={() => void showReconcilePreview()}>{t("refreshReconcilePreview")}</button>}<div className="resource-detail-list">{reconcileCandidates.length ? reconcileGroups.map((group) => <section key={group.action} className="reconcile-group"><h3>{t(`reconcileGroup_${group.action}` as never)} · {group.items.length}</h3>{group.items.map((item) => { const disabled = item.ignored || item.unsafeItem || item.action === "unsafe"; const reasons = item.reasons.map((reason) => t(`reconcileReason_${reason}` as never)).join(" · "); return <SelectableRow aria-disabled={disabled} selected={reconcileSelected.some((selectedItem) => selectedItem.stableId === item.stableId)} className="resource-entry preview-select" key={item.stableId} onClick={() => setReconcileSelected((current) => toggleReconcileSelection(current, item))}><ItemRowCopy primary={item.depotPath} secondary={<>{t(`reconcileGroup_${item.action}` as never)}{item.localPath ? ` · ${item.localPath}` : ""}{reasons ? ` · ${reasons}` : ""}</>} /></SelectableRow>; })}</section>) : <CompactEmpty text={t("noReconcileChanges")} />}</div></ActionDialog>}
 
-    {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length} onClose={() => { setPendingResolveMode(undefined); setPendingResolvePaths([]); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={item.depotPath}><span><strong>{item.depotPath}</strong><small>{item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
+    {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length || resolvePreview.some((item) => !item.allowedActions.includes(pendingResolveMode))} onClose={() => { setPendingResolveMode(undefined); setPendingResolvePaths([]); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={`${item.depotPath}-${item.conflictKind}-${item.action}`}><span><strong>{item.depotPath}</strong><small>{t(`resolveKind_${item.conflictKind}` as never)} · {item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
+
+    {resolveEditorItem && <ResolveDialog connection={connection} item={resolveEditorItem} onClose={() => setResolveEditorItem(undefined)} onResolved={() => { setResolveEditorItem(undefined); setNotice(t("resolveSucceeded")); void refreshLoadedDirectories(); }} onError={setError} />}
 
     {renameDestination !== undefined && selectedFile && <ActionDialog title={t("renameFile")} confirmLabel={t("renameFile")} busy={busy} confirmDisabled={!renameDestination.trim() || renameDestination.trim() === selectedFile.depotPath} onClose={() => setRenameDestination(undefined)} onConfirm={() => void applyRename()}><p>{selectedFile.depotPath}</p><label className="field"><span className="field-label">{t("renameDestinationPrompt")}</span><input autoFocus value={renameDestination} onChange={(event) => setRenameDestination(event.target.value)} /></label></ActionDialog>}
 

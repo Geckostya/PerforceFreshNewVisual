@@ -79,6 +79,8 @@ pub fn run() {
             commands::unlock_files,
             commands::resolve_files,
             commands::preview_resolve,
+            commands::load_resolve_content,
+            commands::save_resolve_result,
             commands::move_file,
             commands::start_reconcile,
             commands::start_reconcile_preview,

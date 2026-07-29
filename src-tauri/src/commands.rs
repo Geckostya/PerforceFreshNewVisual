@@ -8,10 +8,12 @@ use crate::{
         FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationDiagnostic,
         OperationEvent, OperationEventKind, OperationItemResult, OperationReadBack,
         OperationReadBackStatus, P4Detection, P4Info, PendingChange, PreviewUnshelveInput,
-        ReconcileItem, ReopenInput, ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem,
+        ReconcileItem, ReopenInput, ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput,
+        ResolveResultInput, RevertInput, RevertPreviewItem,
         SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput,
         ShelveInput, ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
-        SubmitPreflightSummary, SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput,
+        SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail,
+        SubmittedFilterOptions, SwitchStreamInput,
         SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput,
         UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
         WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary,
@@ -839,6 +841,16 @@ fn bounded_operation_diagnostics(message: Option<&str>) -> Vec<OperationDiagnost
         .collect()
 }
 
+fn submitted_change_from_record(
+    record: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let value = record.get("submittedChange")?;
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_u64().map(|value| value.to_string()))
+}
+
 fn operation_event(
     operation_id: &str,
     operation_kind: &str,
@@ -860,6 +872,7 @@ fn operation_event(
         scopes: None,
         phase: None,
         reconcile_items: None,
+        submit_outcome: None,
         diagnostics: Vec::new(),
         item_results: Vec::new(),
         read_back: OperationReadBack {
@@ -1125,11 +1138,135 @@ pub async fn start_submit(
     input: SubmitInput,
 ) -> Result<String, AppError> {
     if !matches!(input.mode, SubmitMode::Local) {
-        return Err(AppError::new(
-            ErrorKind::CommandFailed,
-            "This submit mode uses the compensation-safe workflow.",
-        )
-        .with_hint("Use the standard submit action for shelf-preserving modes."));
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (cancel, cancellation) = mpsc::channel();
+        let operation_id = registry.new_id();
+        let started_at_ms = operation_started_at_ms();
+        if !registry.insert_if_kind_idle(
+            operation_id.clone(),
+            OperationHandle {
+                kind: "submit",
+                workspace: operation_workspace(&input.connection),
+                started_at_ms,
+                cancel,
+                cancelled: cancelled.clone(),
+            },
+        ) {
+            return Err(AppError::new(
+                ErrorKind::Conflict,
+                "A submit operation is already running for this workspace.",
+            ));
+        }
+        let _ = app.emit(
+            "operation-event",
+            OperationEvent {
+                phase: Some("apply".to_owned()),
+                ..operation_event(
+                    &operation_id,
+                    "submit",
+                    OperationEventKind::Started,
+                    started_at_ms,
+                )
+            },
+        );
+        let app_for_wait = app.clone();
+        let registry_for_wait = registry.inner().clone();
+        let id_for_wait = operation_id.clone();
+        thread::spawn(move || {
+            let _keep_cancellation_open = cancellation;
+            let result = p4::submit_change(
+                &input.connection,
+                &input.change,
+                input.description.as_deref(),
+                &input.mode,
+            );
+            let was_cancelled = cancelled.load(Ordering::Acquire);
+            let (kind, message, diagnostics, read_back, submit_outcome) = match result {
+                Ok(outcome) => {
+                    let kind = match outcome.terminal {
+                        SubmitTerminalOutcome::Submitted => OperationEventKind::Completed,
+                        SubmitTerminalOutcome::Pending if was_cancelled => {
+                            OperationEventKind::Cancelled
+                        }
+                        SubmitTerminalOutcome::Pending => OperationEventKind::Partial,
+                        SubmitTerminalOutcome::Unknown => OperationEventKind::Unknown,
+                    };
+                    let message = (!outcome.recovery_actions.is_empty())
+                        .then(|| outcome.recovery_actions.join(" "));
+                    let diagnostics = bounded_operation_diagnostics(message.as_deref());
+                    let status = match outcome.terminal {
+                        SubmitTerminalOutcome::Submitted | SubmitTerminalOutcome::Pending => {
+                            OperationReadBackStatus::Succeeded
+                        }
+                        SubmitTerminalOutcome::Unknown => OperationReadBackStatus::Unknown,
+                    };
+                    (
+                        kind,
+                        message.clone(),
+                        diagnostics,
+                        OperationReadBack {
+                            status,
+                            affected_state: vec![
+                                "pending_changes".to_owned(),
+                                "submitted_changes".to_owned(),
+                                "shelves".to_owned(),
+                                "opened_files".to_owned(),
+                            ],
+                            message,
+                        },
+                        Some(outcome),
+                    )
+                }
+                Err(error) => {
+                    let readback = p4::submit_readback(&input.connection, &input.change);
+                    let kind = match readback.outcome {
+                        SubmitTerminalOutcome::Submitted => OperationEventKind::Partial,
+                        SubmitTerminalOutcome::Pending if was_cancelled => {
+                            OperationEventKind::Cancelled
+                        }
+                        SubmitTerminalOutcome::Pending => OperationEventKind::Failed,
+                        SubmitTerminalOutcome::Unknown => OperationEventKind::Unknown,
+                    };
+                    let message = Some(format!("{}\n{}", error.message, readback.message));
+                    (
+                        kind,
+                        message.clone(),
+                        bounded_operation_diagnostics(message.as_deref()),
+                        OperationReadBack {
+                            status: if matches!(readback.outcome, SubmitTerminalOutcome::Unknown) {
+                                OperationReadBackStatus::Unknown
+                            } else {
+                                OperationReadBackStatus::Succeeded
+                            },
+                            affected_state: vec![
+                                "pending_changes".to_owned(),
+                                "submitted_changes".to_owned(),
+                                "shelves".to_owned(),
+                                "opened_files".to_owned(),
+                            ],
+                            message: Some(readback.message),
+                        },
+                        None,
+                    )
+                }
+            };
+            let _ = app_for_wait.emit(
+                "operation-event",
+                OperationEvent {
+                    operation_id: id_for_wait.clone(),
+                    operation_kind: "submit".to_owned(),
+                    kind: kind.clone(),
+                    message,
+                    phase: Some("validate".to_owned()),
+                    diagnostics,
+                    read_back,
+                    submit_outcome,
+                    ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
+                },
+            );
+            registry_for_wait.remove(&id_for_wait);
+        });
+        return Ok(operation_id);
     }
     let (path, mut command) = p4::submit_command(
         &input.connection,
@@ -1207,22 +1344,25 @@ pub async fn start_submit(
         let id_for_output = operation_id.clone();
         thread::spawn(move || {
             let mut processed = 0;
+            let mut submitted_change = None;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
                 }
                 processed += 1;
-                let current_path =
-                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&line)
-                        .ok()
-                        .and_then(|record| {
-                            ["depotFile", "clientFile", "path"].iter().find_map(|key| {
-                                record
-                                    .get(*key)
-                                    .and_then(|value| value.as_str())
-                                    .map(str::to_owned)
-                            })
-                        });
+                let record =
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&line).ok();
+                if let Some(value) = record.as_ref().and_then(submitted_change_from_record) {
+                    submitted_change = Some(value);
+                }
+                let current_path = record.and_then(|record| {
+                    ["depotFile", "clientFile", "path"].iter().find_map(|key| {
+                        record
+                            .get(*key)
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned)
+                    })
+                });
                 let _ = app_for_output.emit(
                     "operation-event",
                     OperationEvent {
@@ -1249,7 +1389,7 @@ pub async fn start_submit(
                     },
                 );
             }
-            processed
+            (processed, submitted_change)
         })
     });
     let app_for_wait = app.clone();
@@ -1260,31 +1400,43 @@ pub async fn start_submit(
     thread::spawn(move || {
         let success = wait_for_process(child, cancellation);
         let was_cancelled = cancelled.load(Ordering::Acquire);
-        let processed = stdout_thread
+        let (processed, submitted_change) = stdout_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
         let stderr_text = stderr_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
-        let readback = p4::submit_readback_hint(&connection, &change);
-        let readback_submitted = readback.contains("is visible as submitted");
-        let readback_pending = readback.contains("remains pending");
-        let message = (!success && !was_cancelled).then(|| {
+        let readback_change = submitted_change.as_deref().unwrap_or(&change);
+        let readback = p4::submit_readback(&connection, readback_change);
+        let submit_outcome = SubmitOutcome {
+            preserved_local_change: None,
+            terminal: readback.outcome,
+            affected_change: readback.affected_change.clone(),
+            recovery_actions: readback.recovery_actions.clone(),
+            steps: vec![SubmitStepResult {
+                step: "submit_local".to_owned(),
+                status: if success { "completed" } else { "uncertain" }.to_owned(),
+                detail: None,
+            }],
+        };
+        let message = if !success && !was_cancelled {
             let detail = stderr_text.trim();
-            if detail.is_empty() {
-                readback.clone()
+            Some(if detail.is_empty() {
+                readback.message.clone()
             } else {
-                format!("{detail}\n{readback}")
-            }
-        });
-        let kind = if readback_submitted {
-            OperationEventKind::Completed
-        } else if was_cancelled && readback_pending {
-            OperationEventKind::Cancelled
-        } else if !success && readback_pending {
-            OperationEventKind::Failed
+                format!("{detail}\n{}", readback.message)
+            })
+        } else if !matches!(readback.outcome, SubmitTerminalOutcome::Submitted) {
+            Some(readback.message.clone())
         } else {
-            OperationEventKind::Unknown
+            None
+        };
+        let kind = match readback.outcome {
+            SubmitTerminalOutcome::Submitted => OperationEventKind::Completed,
+            SubmitTerminalOutcome::Pending if was_cancelled => OperationEventKind::Cancelled,
+            SubmitTerminalOutcome::Pending if !success => OperationEventKind::Failed,
+            SubmitTerminalOutcome::Pending => OperationEventKind::Partial,
+            SubmitTerminalOutcome::Unknown => OperationEventKind::Unknown,
         };
         let diagnostics = bounded_operation_diagnostics(message.as_deref());
         let _ = app_for_wait.emit(
@@ -1303,12 +1455,14 @@ pub async fn start_submit(
                 scopes: None,
                 phase: None,
                 reconcile_items: None,
+                submit_outcome: Some(submit_outcome),
                 diagnostics,
                 read_back: OperationReadBack {
-                    status: if readback_submitted || readback_pending {
-                        OperationReadBackStatus::Succeeded
-                    } else {
-                        OperationReadBackStatus::Unknown
+                    status: match readback.outcome {
+                        SubmitTerminalOutcome::Submitted | SubmitTerminalOutcome::Pending => {
+                            OperationReadBackStatus::Succeeded
+                        }
+                        SubmitTerminalOutcome::Unknown => OperationReadBackStatus::Unknown,
                     },
                     affected_state: vec![
                         "pending_changes".to_owned(),
@@ -1316,7 +1470,7 @@ pub async fn start_submit(
                         "shelves".to_owned(),
                         "opened_files".to_owned(),
                     ],
-                    message: Some(readback),
+                    message: Some(readback.message),
                 },
                 retryable: false,
                 ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
@@ -1394,9 +1548,42 @@ async fn run_file_operation(
 }
 
 #[tauri::command]
-pub async fn resolve_files(input: ResolveInput) -> Result<(), AppError> {
+pub async fn resolve_files(input: ResolveInput) -> Result<ResolveApplyResult, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::resolve_files(&input.connection, &input.depot_paths, &input.mode)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn load_resolve_content(
+    input: ConnectionInput,
+    depot_path: String,
+    roots: State<'_, WorkspaceRootRegistry>,
+) -> Result<ResolveContent, AppError> {
+    let root = roots.root(&input)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::load_resolve_content(&input, &root, &depot_path)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_resolve_result(
+    input: ResolveResultInput,
+    roots: State<'_, WorkspaceRootRegistry>,
+) -> Result<ResolveApplyResult, AppError> {
+    let root = roots.root(&input.connection)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_resolve_result(
+            &input.connection,
+            &root,
+            &input.depot_path,
+            &input.local_path,
+            &input.result,
+        )
     })
     .await
     .map_err(task_error)?
@@ -2414,8 +2601,8 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 mod tests {
     use super::{
         bounded_operation_diagnostics, operation_event, parse_sync_output_record,
-        sync_operation_scope, sync_operation_succeeded, validate_reveal_path,
-        workspace_stream_view_paths,
+        submitted_change_from_record, sync_operation_scope, sync_operation_succeeded,
+        validate_reveal_path, workspace_stream_view_paths,
     };
     use crate::models::OperationEventKind;
     use std::fs;
@@ -2468,6 +2655,25 @@ mod tests {
         assert_eq!(value["startedAtMs"], 42);
         assert_eq!(value["readBack"]["status"], "not_required");
         assert_eq!(value["retryable"], false);
+    }
+
+    #[test]
+    fn submit_output_uses_only_the_server_returned_change_id() {
+        let string_record = serde_json::json!({ "submittedChange": "104" });
+        let number_record = serde_json::json!({ "submittedChange": 105 });
+        let unrelated = serde_json::json!({ "change": "106" });
+        assert_eq!(
+            submitted_change_from_record(string_record.as_object().unwrap()).as_deref(),
+            Some("104")
+        );
+        assert_eq!(
+            submitted_change_from_record(number_record.as_object().unwrap()).as_deref(),
+            Some("105")
+        );
+        assert_eq!(
+            submitted_change_from_record(unrelated.as_object().unwrap()),
+            None
+        );
     }
 
     #[test]
