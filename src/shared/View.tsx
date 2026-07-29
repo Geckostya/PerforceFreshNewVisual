@@ -4,7 +4,7 @@ import { useLocale } from "./i18n";
 import type { AppError } from "./models";
 import { formatEta, operationProgress, useActiveOperation } from "./operations";
 
-export function View({ id, title, subtitle, actions, statusBarActions, operationLabel, operationDetail, operationRatio, error, notice, onDismissNotice, className = "", children }: {
+export function View({ id, title, subtitle, actions, statusBarActions, operationLabel, operationDetail, operationRatio, error, notice, busy = false, onDismissNotice, className = "", children }: {
   id: string;
   title: string;
   subtitle?: ReactNode;
@@ -15,6 +15,7 @@ export function View({ id, title, subtitle, actions, statusBarActions, operation
   operationRatio?: number;
   error?: AppError;
   notice?: string;
+  busy?: boolean;
   onDismissNotice?: () => void;
   className?: string;
   children: ReactNode;
@@ -44,10 +45,11 @@ export function View({ id, title, subtitle, actions, statusBarActions, operation
     detail={operationDetail}
     ratio={operationRatio}
   /> : null;
-  return <section className={`resource-view ${className}`.trim()} aria-labelledby={id}>
+  return <section className={`resource-view ${className}`.trim()} aria-labelledby={id} aria-busy={busy || undefined}>
+    <span className="sr-only" role="status" aria-live="polite">{title}</span>
     <header className="view-header">
       <div className="view-heading">
-        <div className="view-title"><h1 id={id}>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>
+        <div className="view-title"><h1 id={id} data-pane-entry tabIndex={-1}>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>
         {actions && <div className="view-actions">{actions}</div>}
       </div>
       {statusBarActions ? <div className="view-status-bar" data-agent-id="files-status-bar">
@@ -96,6 +98,11 @@ export function CompactEmpty({ text }: { text: string }) {
   return <div className="compact-empty">{text}</div>;
 }
 
+export function BoundedListNotice({ count }: { count: number }) {
+  const { t } = useLocale();
+  return <p className="bounded-list-notice" role="status">{t("boundedListNotice")} {count}. {t("boundedListHint")}</p>;
+}
+
 export function Modal({ title, busy, wide, onClose, children }: { title: ReactNode; busy: boolean; wide?: boolean; onClose: () => void; children: ReactNode }) {
   const { t } = useLocale();
   const titleId = useId();
@@ -138,7 +145,8 @@ export function Modal({ title, busy, wide, onClose, children }: { title: ReactNo
     document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       document.removeEventListener("keydown", handleKeyDown, true);
-      returnFocus?.focus();
+      const target = returnFocus?.isConnected && returnFocus !== document.body ? returnFocus : document.querySelector<HTMLElement>("[data-focus-fallback]");
+      target?.focus();
     };
   }, []);
 
@@ -182,7 +190,8 @@ export function ContextMenu({ x, y, onSelect, children }: { x: number; y: number
     return () => {
       window.removeEventListener("pointerdown", closeOnPointerDown);
       document.removeEventListener("keydown", closeOnEscape, true);
-      returnFocus?.focus();
+      const target = returnFocus?.isConnected && returnFocus !== document.body ? returnFocus : document.querySelector<HTMLElement>("[data-focus-fallback]");
+      target?.focus();
     };
   }, []);
 

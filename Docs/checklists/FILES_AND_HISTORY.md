@@ -20,7 +20,7 @@ Current status for Local Files, Depot Files, retrieval, file lifecycle, history,
 - [ ] Add server-side history filters and incremental cursors without a hidden global scan.
 - [ ] Compare folder/changelist states as added/changed/deleted/type-changed sets.
 - [ ] Follow rename and integration records without heuristic path joins.
-- [ ] Measure exceptional directories/lists and add virtualization only where incremental loading is insufficient.
+- [x] Measure exceptional directories/lists and add virtualization only where incremental loading is insufficient; current bounded and lazy paths remain below that threshold and expose partial limits instead.
 
 ## P1 content tools
 

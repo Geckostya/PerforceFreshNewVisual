@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Archive, ClipboardList, EyeOff, FolderTree, GitBranch, History as HistoryIcon, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
+import { Archive, CircleHelp, ClipboardList, EyeOff, FolderTree, GitBranch, History as HistoryIcon, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
 import { ConnectionScreen, type ConnectedSession } from "../features/connection/ConnectionScreen";
 import { clearCliLog, listWorkspaces, loadLocales, loadSettings, logout, normalizeAppError, openWorkspace } from "../shared/api";
 import { CliLogCenter } from "../shared/CliLogCenter";
@@ -13,8 +13,9 @@ import { connectionToAutoOpen } from "./startup";
 import "./app.css";
 import { classifyGoTo } from "./goTo";
 import { CommandPalette } from "./CommandPalette";
-import { ActionDialog } from "../shared/View";
+import { ActionDialog, Modal } from "../shared/View";
 import { connectionForServer } from "../shared/connection";
+import { focusNextPane } from "../shared/focus";
 
 const ChangesView = lazy(() => import("../features/changes/ChangesView").then((module) => ({ default: module.ChangesView })));
 const WorkspaceView = lazy(() => import("../features/workspace/WorkspaceView").then((module) => ({ default: module.WorkspaceView })));
@@ -53,6 +54,7 @@ function AppContent() {
   const [workspaceOptions, setWorkspaceOptions] = useState<WorkspaceSummary[]>([]);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<AppError>();
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const goToInputRef = useRef<HTMLInputElement>(null);
   const handleFileCount = useCallback((count: number) => setFileCount(count), []);
 
@@ -95,6 +97,10 @@ function AppContent() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
         event.preventDefault();
         goToInputRef.current?.focus();
+        return;
+      }
+      if (event.key === "F6") {
+        if (focusNextPane(event.shiftKey)) event.preventDefault();
         return;
       }
       if (editing || !(event.ctrlKey || event.metaKey)) return;
@@ -170,7 +176,7 @@ function AppContent() {
 
   return (
     <div className={`app workspace-app${cliLogOpen ? " cli-log-open" : ""}`} data-agent-screen={view}>
-      <header className="app-header">
+      <header className="app-header" data-focus-pane>
         <div className="brand-area"><button className="sidebar-header-toggle" type="button" title={t(sidebar === "hidden" ? "showSidebar" : sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} aria-label={t(sidebar === "hidden" ? "showSidebar" : sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} onClick={() => setSidebar((state) => state === "hidden" ? "compact" : state === "compact" ? "expanded" : "compact")}><NavIcon name="menu" /></button><div className="brand" aria-label="P4FNV"><span className="brand-mark" aria-hidden="true">P4</span>P4FNV</div></div>
         <div className="session-context" title={session.info.serverAddress}>
           <span>{session.connection.user}</span><span aria-hidden="true">/</span><label className="session-workspace-picker"><span className="sr-only">{t("switchWorkspace")}</span><select value={session.connection.client} onChange={(event) => void switchWorkspace(event.target.value)} disabled={workspaceBusy}><option value={session.connection.client}>{session.connection.client}</option>{workspaceOptions.filter((item) => item.name !== session.connection.client).map((item) => <option value={item.name} key={item.name}>{item.name}</option>)}</select></label>
@@ -182,6 +188,7 @@ function AppContent() {
           <button className="link-button" type="submit">{t("goTo")}</button>
         </form>
         <div className="header-actions">
+          <button data-agent-id="shortcut-help" data-focus-fallback className="link-button" type="button" title={t("keyboardShortcuts")} onClick={() => setShortcutHelpOpen(true)}><CircleHelp className="ui-icon" aria-hidden="true" />{t("shortcuts")}</button>
           <ThemePicker />
           <LanguagePicker />
           <button className="link-button" type="button" title={t("logoutHint")} onClick={() => setLogoutConfirmOpen(true)} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>
@@ -192,7 +199,7 @@ function AppContent() {
       {logoutError && <div className="top-error" role="alert"><strong>{logoutError.message}</strong><span>{logoutError.hints[0]}</span></div>}
       {workspaceSwitchError && <div className="top-error" role="alert"><strong>{workspaceSwitchError.message}</strong><span>{workspaceSwitchError.hints[0]}</span></div>}
       <div className={`workspace-shell sidebar-${sidebar}`}>
-        {sidebar !== "hidden" && <aside className="main-sidebar">
+        {sidebar !== "hidden" && <aside className="main-sidebar" data-focus-pane tabIndex={-1}>
           <nav aria-label={t("mainNavigation")}>
             <button className={`nav-item${view === "workspace" ? " active" : ""}`} type="button" title={t("filesTitle")} aria-label={t("filesTitle")} onClick={() => setView("workspace")}><NavIcon name="files" /><span className="nav-label">{t("filesTitle")}</span></button>
             <button className={`nav-item${view === "changes" ? " active" : ""}`} type="button" title={t("myChanges")} aria-label={t("myChanges")} onClick={() => setView("changes")}><NavIcon name="changes" /><span className="nav-label">{t("myChanges")}</span><small>{fileCount}</small></button>
@@ -204,7 +211,7 @@ function AppContent() {
           </nav>
           <div><div className="sidebar-controls"><button type="button" title={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} aria-label={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} onClick={() => setSidebar((state) => state === "compact" ? "expanded" : "compact")}><NavIcon name={sidebar === "compact" ? "expand" : "collapse"} /></button><button type="button" title={t("hideSidebar")} aria-label={t("hideSidebar")} onClick={() => setSidebar("hidden")}><NavIcon name="hide" /></button></div><div className="workspace-identity"><span>{t("workspaceLabel")}</span><strong>{session.connection.client}</strong><small>{session.info.clientStream || session.info.clientRoot}</small></div></div>
         </aside>}
-        <main className="workspace-main">
+        <main className="workspace-main" data-focus-pane tabIndex={-1}>
           <Suspense fallback={<div className="compact-empty" role="status">{t("loadingFiles")}</div>}>
             <div className="workspace-view-host" hidden={view !== "workspace" || filesSource !== "local"}>
               <WorkspaceView connection={session.connection} info={session.info} initialScope={workspaceScope} sourceControl={<FilesSourceControl source="local" setSource={setFilesSource} />} onNavigateDepot={(scope) => { setDepotScope(scope); setFilesSource("depot"); }} onDeleted={exitWorkspace} onRenamed={(name) => setSession((current) => current ? { ...current, connection: { ...current.connection, client: name }, info: { ...current.info, clientName: name } } : current)} />
@@ -219,10 +226,25 @@ function AppContent() {
         else if (actionId === "refresh_streams") setView("streams");
         else setView("workspace");
       }} />
-      <CommandPalette onNavigate={(target) => { if (target === "depot") { setFilesSource("depot"); setView("workspace"); } else setView(target); }} onFocusGoTo={() => goToInputRef.current?.focus()} />
+      <CommandPalette onNavigate={(target) => { if (target === "depot") { setFilesSource("depot"); setView("workspace"); } else setView(target); }} onFocusGoTo={() => goToInputRef.current?.focus()} onShowShortcuts={() => setShortcutHelpOpen(true)} />
+      {shortcutHelpOpen && <ShortcutHelpDialog onClose={() => setShortcutHelpOpen(false)} />}
       {logoutConfirmOpen && <ActionDialog danger title={t("logout")} confirmLabel={t("logout")} busy={logoutBusy} onClose={() => setLogoutConfirmOpen(false)} onConfirm={() => void signOut()}><p>{t("logoutConfirm")}</p></ActionDialog>}
     </div>
   );
+}
+
+function ShortcutHelpDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useLocale();
+  const shortcuts = [
+    ["Ctrl/Cmd+K", t("shortcutCommandPalette")],
+    ["Ctrl/Cmd+L", t("shortcutGoTo")],
+    ["Ctrl/Cmd+1…5", t("shortcutMainViews")],
+    ["F6 / Shift+F6", t("shortcutPanes")],
+    ["↑ ↓ Home End PageUp PageDown", t("shortcutCollections")],
+    ["Context menu / Shift+F10", t("shortcutContextMenu")],
+    ["Esc", t("shortcutClose")],
+  ];
+  return <Modal title={t("keyboardShortcuts")} busy={false} onClose={onClose}><dl className="shortcut-list">{shortcuts.map(([keys, description]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{description}</dd></div>)}</dl></Modal>;
 }
 
 function FilesSourceControl({ source, setSource }: { source: "local" | "depot"; setSource: (source: "local" | "depot") => void }) {

@@ -17,7 +17,7 @@ Do not invent a staging area, false Git commit graph, or universal Undo. Get Rev
 
 ## Shell and resource screens
 
-The persistent shell exposes server/user/workspace context, Go To, language, theme, Sign out, Close workspace, the main navigation, and non-overlapping Operations/CLI diagnostics. Theme defaults to the operating-system preference; explicit Light or Dark selection persists across launches. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation and Go To focus, not a hidden catalog of feature actions.
+The persistent shell exposes server/user/workspace context, Go To, language, theme, Sign out, Close workspace, the main navigation, shortcut help, and non-overlapping Operations/CLI diagnostics. Theme defaults to the operating-system preference; explicit Light or Dark selection persists across launches. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation, Go To focus, and shortcut help, not a hidden catalog of feature actions.
 
 Resource screens share this structure:
 
@@ -57,6 +57,8 @@ Mandatory keyboard paths:
 
 - `Ctrl/Cmd+K` command palette and `Ctrl/Cmd+L` Go To;
 - `Ctrl/Cmd+1..5` Files, My Changes, Streams, Shelves, and Jobs;
+- `F6`/`Shift+F6` to move focus forward/backward between visible application panes;
+- Arrow Up/Down, Home/End, and Page Up/Page Down to move focus within a shared list or tree; Arrow Left/Right collapse and expand focused tree branches;
 - `ContextMenu` or `Shift+F10` for a focused row;
 - `Escape` for a safely closable menu/dialog;
 - predictable Tab/Shift+Tab order and focus restoration.
@@ -74,7 +76,7 @@ No action is drag-only, hover-only, or color-only.
 - Show kind, scope, status, processed count, current path, and bounded diagnostics. Partial/unknown outcomes expose succeeded/failed/skipped counts, compensation state, read-back state, and a safe screen-specific recovery action. Do not invent totals, percentage, or ETA.
 - Render a progress bar only when the backend provides a real total. With no measurable total, show the current phase/count/path beside the spinner instead of adding an indeterminate bar that repeats the same activity signal.
 - Cancel is not rollback. Retry only an idempotent read or a newly confirmed mutation; never retry an unknown result automatically.
-- Announce start, cancel request, and terminal outcome through one polite `aria-live` region. Progress ticks are not announced.
+- Announce start, cancel request, completion, and cancellation politely. Announce failed, partial, and unknown outcomes assertively. Progress ticks are not announced.
 - Errors state what did not happen, why, and the safe next action. Warnings/errors remain in the bounded CLI log until viewed or cleared.
 
 My Changes and Streams keep their last successful resource snapshot readable when Refresh fails. Their mutation controls reference one accessible stale-state explanation and remain disabled until a controlled Refresh succeeds; selection and local presentation cleanup continue only from authoritative IDs.
@@ -115,6 +117,7 @@ Use the tokens in `src/index.css` and shared selectors in `src/app/app.css`; do 
 
 - Use semantic controls and list/tree/table roles with visible focus. Expose selection, expansion, busy, error, and terminal operation state to assistive technology.
 - Keep queries scoped and bounded. Use pagination/incremental loading; add virtualization only after measurement and without breaking selection or accessibility.
+- When a server or inline display limit may omit records, show that partial state next to the collection and name the filtering or incremental-loading path.
 - Show local loading feedback after 300 ms; move long work to Operations Center.
 - Verify keyboard-only use, Windows Narrator for key flows, English/Russian, long content, minimum window size, and 100/125/200% scale.
 

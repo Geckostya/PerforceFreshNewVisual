@@ -107,6 +107,12 @@ export function isOperationTerminal(status: OperationEventKind): boolean {
   return !isOperationActive(status);
 }
 
+export function operationAnnouncementPriority(status: OperationEventKind): "none" | "polite" | "assertive" {
+  if (status === "progress") return "none";
+  if (status === "failed" || status === "partial" || status === "unknown") return "assertive";
+  return "polite";
+}
+
 export function useActiveOperation(operationKind: string): OperationSnapshot | undefined {
   const [items, setItems] = useState<OperationSnapshot[]>([]);
   useEffect(() => {

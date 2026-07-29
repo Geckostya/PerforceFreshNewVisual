@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationEvent } from "./models";
-import { isOperationActive, isOperationTerminal, operationConnectionKey, operationProgress, reduceOperationSnapshots, startObservedOperation } from "./operations";
+import { isOperationActive, isOperationTerminal, operationAnnouncementPriority, operationConnectionKey, operationProgress, reduceOperationSnapshots, startObservedOperation } from "./operations";
 
 const eventApi = vi.hoisted(() => ({ listen: vi.fn(), unlisten: vi.fn() }));
 
@@ -16,6 +16,15 @@ const event = (operationId: string, kind: OperationEvent["kind"], processed = 0)
 });
 
 describe("operation snapshots", () => {
+  it("announces terminal problems assertively without repeating progress", () => {
+    expect(operationAnnouncementPriority("progress")).toBe("none");
+    expect(operationAnnouncementPriority("started")).toBe("polite");
+    expect(operationAnnouncementPriority("completed")).toBe("polite");
+    expect(operationAnnouncementPriority("failed")).toBe("assertive");
+    expect(operationAnnouncementPriority("partial")).toBe("assertive");
+    expect(operationAnnouncementPriority("unknown")).toBe("assertive");
+  });
+
   beforeEach(() => {
     eventApi.listen.mockReset();
     eventApi.unlisten.mockReset();

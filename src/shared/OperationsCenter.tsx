@@ -4,7 +4,7 @@ import { Activity, X } from "lucide-react";
 import { cancelOperation, startSync } from "./api";
 import { useLocale } from "./i18n";
 import type { ConnectionInput, OperationEvent } from "./models";
-import { formatEta, isOperationActive, operationConnectionKey, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
+import { formatEta, isOperationActive, operationAnnouncementPriority, operationConnectionKey, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
 import { ActionDialog } from "./View";
 
 export function OperationsCenter({ connection, onRecover }: {
@@ -19,7 +19,8 @@ export function OperationsCenter({ connection, onRecover }: {
   const [cancelling, setCancelling] = useState<string[]>([]);
   const [retryBusy, setRetryBusy] = useState(false);
   const [retryCandidate, setRetryCandidate] = useState<OperationSnapshot>();
-  const [announcement, setAnnouncement] = useState("");
+  const [politeAnnouncement, setPoliteAnnouncement] = useState("");
+  const [assertiveAnnouncement, setAssertiveAnnouncement] = useState("");
   const connectionKey = operationConnectionKey(connection);
   const connectionKeyRef = useRef(connectionKey);
   connectionKeyRef.current = connectionKey;
@@ -40,13 +41,21 @@ export function OperationsCenter({ connection, onRecover }: {
           setCancelling((current) => [...new Set([...current, event.payload.operationId])]);
         }
         if (!isOperationActive(event.payload.kind)) setCancelling((current) => current.filter((id) => id !== event.payload.operationId));
-        if (event.payload.kind !== "progress") {
+        const priority = operationAnnouncementPriority(event.payload.kind);
+        if (priority !== "none") {
           const outcome = event.payload.kind === "started"
             ? t("operationStarted")
             : event.payload.kind === "cancel_requested"
               ? t("operationCancelRequested")
               : operationStatusLabel(event.payload.kind);
-          setAnnouncement(`${operationLabel(event.payload.operationKind)}: ${outcome}`);
+          const announcement = `${operationLabel(event.payload.operationKind)}: ${outcome}`;
+          if (priority === "assertive") {
+            setPoliteAnnouncement("");
+            setAssertiveAnnouncement(announcement);
+          } else {
+            setAssertiveAnnouncement("");
+            setPoliteAnnouncement(announcement);
+          }
         }
         setOpen(true);
       }
@@ -122,8 +131,8 @@ export function OperationsCenter({ connection, onRecover }: {
   }
 
   if (items.length === 0) return null;
-  return <><div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div><div className={`operations-center${open ? " open" : ""}`}>
-    {open && <section className="operations-panel" aria-label={t("operationsCenter")}>
+  return <><div className="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div><div className="sr-only" aria-live="assertive" aria-atomic="true">{assertiveAnnouncement}</div><div className={`operations-center${open ? " open" : ""}`} data-focus-pane>
+    {open && <section data-agent-id="operations-panel" className="operations-panel" role="region" aria-label={t("operationsCenter")} aria-busy={activeCount > 0 || undefined} tabIndex={-1}>
       <header><div><strong>{t("operationsCenter")}</strong><span>{activeCount} {t("operationsActive")}</span></div><button type="button" onClick={() => setOpen(false)} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></header>
       <div className="operations-list">
         {retryError && <p className="error-banner" role="alert">{t("operationRetryFailed")}</p>}
@@ -136,7 +145,7 @@ export function OperationsCenter({ connection, onRecover }: {
         </article>; })}
       </div>
     </section>}
-    <button className={`operations-toggle${activeCount > 0 ? " active" : ""}`} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={t("operationsCenter")}>
+    <button data-agent-id="operations-toggle" data-pane-entry className={`operations-toggle${activeCount > 0 ? " active" : ""}`} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={t("operationsCenter")}>
       <Activity className="ui-icon" aria-hidden="true" />{activeCount > 0 ? `${activeCount} ${t("operationsActive")}` : t("operationsCenter")}
     </button>
   </div>{retryCandidate && <ActionDialog title={t("retryOperation")} confirmLabel={t("retryOperation")} busy={retryBusy} onClose={() => setRetryCandidate(undefined)} onConfirm={() => void retry(retryCandidate)}><p>{t("operationRetryConfirm")}</p>{retryCandidate.scope && <strong>{retryCandidate.scope}</strong>}</ActionDialog>}</>;

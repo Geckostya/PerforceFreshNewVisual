@@ -5,7 +5,8 @@ import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, DepotFile, Label, SyncPreview } from "../../shared/models";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDetails, useSafeSync } from "../../shared/SafeSync";
-import { CompactEmpty, EmptyState, View } from "../../shared/View";
+import { BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
+import { INLINE_DETAIL_LIMIT, SERVER_LIST_LIMIT } from "../../shared/scale";
 
 export function LabelsView({ connection, initialSearch }: { connection: ConnectionInput; initialSearch?: string }) {
   const { t } = useLocale();
@@ -73,6 +74,7 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
     id="labels-title"
     title={t("labelsTitle")}
     subtitle={t("labelsBody")}
+    busy={busy || detailBusy}
     error={error}
     notice={notice}
     operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
@@ -83,6 +85,7 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
       <label className="field"><span className="field-label">{t("labelsSearch")}</span><input value={query} placeholder={t("labelsSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void load(); }} /></label>
       <span className="selection-count">{visibleLabels.length} / {labels.length} {t("labelsCount")}</span>
     </div>
+    {labels.length >= SERVER_LIST_LIMIT && <BoundedListNotice count={SERVER_LIST_LIMIT} />}
     <div className="resource-workbench">
       <div className="resource-list">
         <div className="column-heading"><strong>{t("labelsTitle")}</strong><span>{visibleLabels.length}</span></div>
@@ -96,7 +99,7 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
         {!selectedLabel ? <EmptyState title={t("labelsTitle")} body={t("labelsBody")} /> : <div className="inspector-content">
           <div><h2>{selectedLabel.name}</h2><p>{selectedLabel.description || t("labelNoDescription")}</p></div>
           <dl className="file-facts"><dt>{t("factUser")}</dt><dd>{selectedLabel.owner || "—"}</dd><dt>{t("labelUpdated")}</dt><dd>{selectedLabel.update || "—"}</dd><dt>{t("filesLabel")}</dt><dd>{detailBusy ? t("loadingFiles") : labelFiles.length}</dd></dl>
-          {detailBusy ? <CompactEmpty text={t("loadingLabelDetails")} /> : <div className="resource-detail-list">{labelFiles.slice(0, 100).map((file) => <div className="resource-detail-row" key={`${file.depotPath}-${file.revision}`}><span><strong>{file.depotPath}</strong><small>{file.revision ? `#${file.revision}` : ""}</small></span></div>)}</div>}
+          {detailBusy ? <CompactEmpty text={t("loadingLabelDetails")} /> : <><div className="resource-detail-list">{labelFiles.slice(0, INLINE_DETAIL_LIMIT).map((file) => <div className="resource-detail-row" key={`${file.depotPath}-${file.revision}`}><span><strong>{file.depotPath}</strong><small>{file.revision ? `#${file.revision}` : ""}</small></span></div>)}</div>{labelFiles.length > INLINE_DETAIL_LIMIT && <BoundedListNotice count={INLINE_DETAIL_LIMIT} />}</>}
           <button className="primary-button" type="button" onClick={() => void showLabelSync()} disabled={detailBusy || safeSync.phase !== "idle"}>{t("previewLabelSync")}</button>
           {syncPreviewState && <div className="inline-preview"><strong>{t("syncPreviewTitle")}</strong><SyncPreviewDetails preview={syncPreviewState} acknowledged={syncAcknowledged} onAcknowledged={setSyncAcknowledged} /><button className="primary-button" type="button" onClick={() => void applyLabelSync()} disabled={detailBusy || !syncPreviewState.items.length || (syncPreviewState.modifiedFiles.length > 0 && !syncAcknowledged)}>{t("syncNow")}</button></div>}
         </div>}

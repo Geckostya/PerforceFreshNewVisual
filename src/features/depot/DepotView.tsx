@@ -131,6 +131,7 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
     id="depot-title"
     title={t("depotTitle")}
     subtitle={t("depotOverviewBody")}
+    busy={overviewBusy || busy || Boolean(fullHistory?.busy)}
     error={error}
     notice={notice}
     operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}

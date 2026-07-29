@@ -549,6 +549,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       id="changes-title"
       title={t("myChanges")}
       subtitle={info.clientRoot || info.clientStream || connection.client}
+      busy={state === "loading" || actionRunning}
       error={error}
       notice={notice}
       operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}

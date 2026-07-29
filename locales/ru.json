@@ -933,6 +933,17 @@
     "factDepotModes": "Режимы depot",
     "streamsCapabilityStream": "Текущий workspace привязан к stream; сервер остаётся последней проверкой каждой операции.",
     "streamsCapabilityClassic": "Текущий workspace — classic; для stream-действий нужно выбрать или переключить stream workspace.",
-    "streamsCapabilityUnknown": "Привязку workspace проверить не удалось; безопасные действия всё равно можно отправить на проверку серверу."
+    "streamsCapabilityUnknown": "Привязку workspace проверить не удалось; безопасные действия всё равно можно отправить на проверку серверу.",
+    "boundedListNotice": "Сервер вернул записей:",
+    "boundedListHint": "Возможны другие результаты; уточните фильтры и обновите список.",
+    "keyboardShortcuts": "Сочетания клавиш",
+    "shortcuts": "Клавиши",
+    "shortcutCommandPalette": "Открыть палитру команд",
+    "shortcutGoTo": "Перейти к полю «К объекту»",
+    "shortcutMainViews": "Открыть основной раздел",
+    "shortcutPanes": "Перемещать фокус между областями приложения",
+    "shortcutCollections": "Перемещать фокус внутри списка или дерева",
+    "shortcutContextMenu": "Открыть контекстное меню выбранного элемента",
+    "shortcutClose": "Закрыть меню или диалог"
   }
 }

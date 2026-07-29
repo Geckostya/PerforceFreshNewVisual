@@ -1,4 +1,4 @@
-export type PaletteCommandId = "workspace" | "changes" | "streams" | "history" | "depot" | "jobs" | "labels" | "shelves" | "goTo";
+export type PaletteCommandId = "workspace" | "changes" | "streams" | "history" | "depot" | "jobs" | "labels" | "shelves" | "goTo" | "shortcuts";
 
 export interface PaletteCommand {
   id: PaletteCommandId;

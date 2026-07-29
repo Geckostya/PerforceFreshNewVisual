@@ -12,7 +12,8 @@ import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/Ite
 import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
-import { ActionDialog, CompactEmpty, ContextMenu, MenuButton, View } from "../../shared/View";
+import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, MenuButton, View } from "../../shared/View";
+import { SERVER_LIST_LIMIT } from "../../shared/scale";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
 import { loadStreamPreferences, saveStreamPreferences, streamPreferencesStorageKey, type StreamPreferences } from "./streamPreferences";
@@ -253,8 +254,9 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
     })}
   </ul>;
 
-  return <View id="streams-title" title={t("streamsTitle")} subtitle={`${t("streamsBody")} ${t(capabilities?.workspaceKind === "stream" ? "streamsCapabilityStream" : capabilities?.workspaceKind === "classic" ? "streamsCapabilityClassic" : "streamsCapabilityUnknown")}`} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<><button data-agent-id="create-stream" className="primary-button" type="button" disabled={freshness !== "fresh" || busy || streams.length === 0} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream?.path || currentStream || streams[0]?.path)}>{t("createStream")}</button><RefreshButton busy={busy} onClick={() => void load()} /></>}>
+  return <View id="streams-title" title={t("streamsTitle")} subtitle={`${t("streamsBody")} ${t(capabilities?.workspaceKind === "stream" ? "streamsCapabilityStream" : capabilities?.workspaceKind === "classic" ? "streamsCapabilityClassic" : "streamsCapabilityUnknown")}`} busy={busy} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<><button data-agent-id="create-stream" className="primary-button" type="button" disabled={freshness !== "fresh" || busy || streams.length === 0} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream?.path || currentStream || streams[0]?.path)}>{t("createStream")}</button><RefreshButton busy={busy} onClick={() => void load()} /></>}>
     {freshness !== "fresh" && freshness !== "loading" && <p className="notice-banner" id="streams-stale-reason" role="status">{t("staleMutationBlocked")}</p>}
+    {streams.length >= SERVER_LIST_LIMIT && <BoundedListNotice count={SERVER_LIST_LIMIT} />}
     <div className="streams-workbench">
       <aside className="streams-tree-pane">
         <div className="column-heading">

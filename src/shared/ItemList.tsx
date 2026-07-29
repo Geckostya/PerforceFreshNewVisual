@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from "react";
 import { ChevronRight, LoaderCircle } from "lucide-react";
+import { focusCollectionItem } from "./selection";
 
 type SelectionRole = "button" | "option" | "treeitem";
 
@@ -15,13 +16,19 @@ export interface SelectableRowProps extends Omit<ButtonHTMLAttributes<HTMLButton
   selectionRole?: SelectionRole;
 }
 
-export function SelectableRow({ selected, selectionRole = "button", className = "", type = "button", ...props }: SelectableRowProps) {
+export function SelectableRow({ selected, selectionRole = "button", className = "", type = "button", onKeyDown, ...props }: SelectableRowProps) {
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    onKeyDown?.(event);
+    if (!event.defaultPrevented && focusCollectionItem(event.currentTarget, event.key)) event.preventDefault();
+  }
   return <button
     {...props}
     {...selectionState(selectionRole, selected)}
     type={type}
+    data-keyboard-item="true"
     role={selectionRole === "button" ? undefined : selectionRole}
     className={`item-row${selected ? " selected" : ""}${className ? ` ${className}` : ""}`}
+    onKeyDown={handleKeyDown}
   />;
 }
 
@@ -38,6 +45,10 @@ export function SelectableSurface({ selected, selectionRole = "button", classNam
   const resolvedRole = role || selectionRole;
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     onKeyDown?.(event);
+    if (!event.defaultPrevented && focusCollectionItem(event.currentTarget, event.key)) {
+      event.preventDefault();
+      return;
+    }
     if (!event.defaultPrevented && onClick && isSurfaceActivationKey(event.key)) {
       event.preventDefault();
       event.currentTarget.click();
@@ -47,6 +58,7 @@ export function SelectableSurface({ selected, selectionRole = "button", classNam
     {...props}
     {...selectionState(selectionRole, selected)}
     role={resolvedRole}
+    data-keyboard-item="true"
     tabIndex={tabIndex}
     className={`item-row${selected ? " selected" : ""}${className ? ` ${className}` : ""}`}
     onClick={onClick}
@@ -99,18 +111,36 @@ export interface TreeItemRowProps {
 
 export function TreeItemRow({ depth, selected, busy = false, className = "", selectClassName = "", disclosure, icon, primary, secondary, trailing, agentId, agentIgnored, selectProps = {} }: TreeItemRowProps) {
   const style = { "--item-depth": depth } as CSSProperties;
+  const { onKeyDown, ...restSelectProps } = selectProps;
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    onKeyDown?.(event);
+    if (event.defaultPrevented) return;
+    if (event.key === "ArrowRight" && disclosure?.onToggle && disclosure.expanded === false) {
+      event.preventDefault();
+      disclosure.onToggle();
+      return;
+    }
+    if (event.key === "ArrowLeft" && disclosure?.onToggle && disclosure.expanded === true) {
+      event.preventDefault();
+      disclosure.onToggle();
+      return;
+    }
+    if (focusCollectionItem(event.currentTarget, event.key)) event.preventDefault();
+  }
   return <div className={`item-row tree-item-row${selected ? " selected" : ""}${className ? ` ${className}` : ""}`} style={style} aria-busy={busy || undefined}>
     <TreeDisclosure {...disclosure} />
     <button
-      {...selectProps}
+      {...restSelectProps}
       data-agent-id={agentId}
       data-agent-ignored={agentIgnored}
       className={`tree-item-select${selectClassName ? ` ${selectClassName}` : ""}`}
       type="button"
+      data-keyboard-item="true"
       role="treeitem"
       aria-level={depth + 1}
       aria-selected={selected}
       aria-expanded={disclosure?.onToggle ? disclosure.expanded : undefined}
+      onKeyDown={handleKeyDown}
     >
       {icon}
       <ItemRowCopy primary={primary} secondary={secondary} />

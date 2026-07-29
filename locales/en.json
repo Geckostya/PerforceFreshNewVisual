@@ -933,6 +933,17 @@
     "factDepotModes": "Depot modes",
     "streamsCapabilityStream": "The current workspace is stream-bound; the server remains authoritative for each action.",
     "streamsCapabilityClassic": "The current workspace is classic; stream-bound actions require selecting or switching to a stream workspace.",
-    "streamsCapabilityUnknown": "Workspace binding could not be verified; safe actions may still be attempted and checked by the server."
+    "streamsCapabilityUnknown": "Workspace binding could not be verified; safe actions may still be attempted and checked by the server.",
+    "boundedListNotice": "The server returned records:",
+    "boundedListHint": "More may exist; narrow the filters and refresh to continue searching.",
+    "keyboardShortcuts": "Keyboard shortcuts",
+    "shortcuts": "Shortcuts",
+    "shortcutCommandPalette": "Open the command palette",
+    "shortcutGoTo": "Focus Go To",
+    "shortcutMainViews": "Open a main view",
+    "shortcutPanes": "Move focus between application panes",
+    "shortcutCollections": "Move focus within a list or tree",
+    "shortcutContextMenu": "Open the selected item's context menu",
+    "shortcutClose": "Close a menu or dialog"
   }
 }

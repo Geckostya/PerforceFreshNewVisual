@@ -9,7 +9,7 @@ import { RefreshButton } from "../../shared/RefreshButton";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { ItemRowCopy, SelectableRow, SelectableSurface, TreeItemRow } from "../../shared/ItemList";
-import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
+import { isContextMenuShortcut, retainAvailableSelection, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
@@ -98,6 +98,8 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     setDirectoryPaths([...directories]);
     setIgnoredDirectoryPaths(ignoredDirectories);
     setFiles(nextFiles);
+    setSelected((current) => retainAvailableSelection(current, nextFiles.map((file) => file.depotPath)));
+    setSelectedFolders((current) => retainAvailableSelection(current, [...directories]));
     setLoadingDirectoryPaths(new Set(loadingDirectories.current));
     setLoadedDirectoryPaths(new Set(loadedDirectories.current));
   }
@@ -212,19 +214,25 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     if (loadSequence.current === sequence) setBusy(false);
   }
 
-  async function loadEager(nextScope: string) {
+  async function loadEager(nextScope: string, preserveSelection = false) {
     const sequence = ++loadSequence.current;
     setBusy(true);
     setError(undefined);
-    setSelected([]);
-    setSelectedFolders([]);
-    setExpandedFolders(new Set());
-    setCollapsedFolders(new Set());
+    if (!preserveSelection) {
+      setSelected([]);
+      setSelectedFolders([]);
+      setExpandedFolders(new Set());
+      setCollapsedFolders(new Set());
+    }
     lazyRoot.current = undefined;
     const key = workspaceFileCacheKey(connection, nextScope);
     let cached = loadWorkspaceFileCache(key);
     setFiles(cached);
     setDirectoryPaths(workspaceDirectoryPaths(cached));
+    if (preserveSelection && cached.length) {
+      setSelected((current) => retainAvailableSelection(current, cached.map((file) => file.depotPath)));
+      setSelectedFolders((current) => retainAvailableSelection(current, workspaceDirectoryPaths(cached)));
+    }
     setIgnoredDirectoryPaths(new Set());
     setLoadingDirectoryPaths(new Set());
     setLoadedDirectoryPaths(new Set());
@@ -234,6 +242,10 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
       cached = persisted;
       setFiles(cached);
       setDirectoryPaths(workspaceDirectoryPaths(cached));
+      if (preserveSelection && cached.length) {
+        setSelected((current) => retainAvailableSelection(current, cached.map((file) => file.depotPath)));
+        setSelectedFolders((current) => retainAvailableSelection(current, workspaceDirectoryPaths(cached)));
+      }
     }
     const cachedVersion = loadWorkspaceStatusVersion(key);
     try {
@@ -249,6 +261,10 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
         if (loadSequence.current !== sequence) return;
         setFiles(nextFiles);
         setDirectoryPaths(workspaceDirectoryPaths(nextFiles));
+        if (preserveSelection) {
+          setSelected((current) => retainAvailableSelection(current, nextFiles.map((file) => file.depotPath)));
+          setSelectedFolders((current) => retainAvailableSelection(current, workspaceDirectoryPaths(nextFiles)));
+        }
         await saveWorkspaceFileCache(key, nextFiles);
       }
     } catch (reason) {
@@ -258,15 +274,15 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     }
   }
 
-  async function load(nextScope = scope) {
+  async function load(nextScope = scope, preserveSelection = false) {
     const nextRoot = workspaceLazyRoot(connection, nextScope);
     if (nextRoot) await loadLazy(nextRoot);
-    else await loadEager(nextScope);
+    else await loadEager(nextScope, preserveSelection);
   }
 
   async function refreshLoadedDirectories() {
     const root = lazyRoot.current;
-    if (!root) return load();
+    if (!root) return load(scope, true);
     setBusy(true);
     setError(undefined);
     statusVersionRequest.current = statusVersion(root);
@@ -671,6 +687,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     id="workspace-files-title"
     title={t("filesTitle")}
     subtitle={`${info.clientRoot || connection.client} · ${t("workspaceFilesBody")}`}
+    busy={busy}
     error={error}
     notice={notice}
     operationLabel={reconcileOperation ? reconcilePhase : safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
