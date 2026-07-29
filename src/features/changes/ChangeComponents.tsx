@@ -1,5 +1,4 @@
 import { useLocale, type TranslationKey } from "../../shared/i18n";
-import { RefreshCw } from "lucide-react";
 import type { SubmitMode, SubmitPreflightIssue, SubmitPreflightSummary } from "../../shared/models";
 import { Modal } from "../../shared/View";
 import { ChangelistDescription, ChangelistDescriptionEditor } from "../../shared/ChangelistDescription";
@@ -66,10 +65,6 @@ export function FileSelectionSummary({ paths }: { paths: string[] }) {
 
 export function CheckField({ checked, onChange, label, body }: { checked: boolean; onChange: (checked: boolean) => void; label: string; body: string }) {
   return <label className="check-field"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span><strong>{label}</strong><small>{body}</small></span></label>;
-}
-
-export function RefreshIcon() {
-  return <RefreshCw className="ui-icon" aria-hidden="true" />;
 }
 
 export function fileName(path: string) {

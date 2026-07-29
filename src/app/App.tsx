@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Archive, ClipboardList, EyeOff, FolderTree, GitBranch, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
+import { Archive, ClipboardList, EyeOff, FolderTree, GitBranch, History as HistoryIcon, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
 import { ConnectionScreen, type ConnectedSession } from "../features/connection/ConnectionScreen";
 import { clearCliLog, listWorkspaces, loadLocales, loadSettings, logout, normalizeAppError, openWorkspace } from "../shared/api";
 import { CliLogCenter } from "../shared/CliLogCenter";
@@ -7,6 +7,8 @@ import { OperationsCenter } from "../shared/OperationsCenter";
 import type { AppError, WorkspaceSummary } from "../shared/models";
 import { LocaleProvider, useLocale } from "../shared/i18n";
 import { LanguagePicker } from "../shared/LanguagePicker";
+import { ThemePicker } from "../shared/ThemePicker";
+import { ThemeProvider, useTheme } from "../shared/theme";
 import { connectionToAutoOpen } from "./startup";
 import "./app.css";
 import { classifyGoTo } from "./goTo";
@@ -24,11 +26,12 @@ const ShelvesView = lazy(() => import("../features/shelves/ShelvesView").then((m
 const StreamsView = lazy(() => import("../features/streams/StreamsView").then((module) => ({ default: module.StreamsView })));
 
 export function App() {
-  return <LocaleProvider><AppContent /></LocaleProvider>;
+  return <ThemeProvider><LocaleProvider><AppContent /></LocaleProvider></ThemeProvider>;
 }
 
 function AppContent() {
   const { setLocales, t } = useLocale();
+  const { setTheme } = useTheme();
   const [session, setSession] = useState<ConnectedSession>();
   const [startup, setStartup] = useState<"loading" | "ready">("loading");
   const [autoOpenError, setAutoOpenError] = useState<AppError>();
@@ -59,6 +62,7 @@ function AppContent() {
       .then(async ([settings, catalog]) => {
         if (!active) return;
         setLocales(catalog.locales, settings.language);
+        setTheme(settings.theme);
         const connection = connectionToAutoOpen(settings);
         if (!connection) return;
         try {
@@ -178,6 +182,7 @@ function AppContent() {
           <button className="link-button" type="submit">{t("goTo")}</button>
         </form>
         <div className="header-actions">
+          <ThemePicker />
           <LanguagePicker />
           <button className="link-button" type="button" title={t("logoutHint")} onClick={() => setLogoutConfirmOpen(true)} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>
           <button className="link-button" type="button" title={t("exitWorkspaceHint")} onClick={exitWorkspace}>{t("exitWorkspace")}</button>
@@ -191,6 +196,7 @@ function AppContent() {
           <nav aria-label={t("mainNavigation")}>
             <button className={`nav-item${view === "workspace" ? " active" : ""}`} type="button" title={t("filesTitle")} aria-label={t("filesTitle")} onClick={() => setView("workspace")}><NavIcon name="files" /><span className="nav-label">{t("filesTitle")}</span></button>
             <button className={`nav-item${view === "changes" ? " active" : ""}`} type="button" title={t("myChanges")} aria-label={t("myChanges")} onClick={() => setView("changes")}><NavIcon name="changes" /><span className="nav-label">{t("myChanges")}</span><small>{fileCount}</small></button>
+            <button data-agent-id="nav-submitted" className={`nav-item${view === "history" ? " active" : ""}`} type="button" title={t("submittedHistory")} aria-label={t("submittedHistory")} onClick={() => setView("history")}><NavIcon name="history" /><span className="nav-label">{t("submittedHistory")}</span></button>
             <button className={`nav-item${view === "streams" ? " active" : ""}`} type="button" title={t("streamsTitle")} aria-label={t("streamsTitle")} onClick={() => setView("streams")}><NavIcon name="streams" /><span className="nav-label">{t("streamsTitle")}</span></button>
             <span className="nav-separator" role="separator" />
             <button className={`nav-item${view === "shelves" ? " active" : ""}`} type="button" title={t("shelvesTitle")} aria-label={t("shelvesTitle")} onClick={() => setView("shelves")}><NavIcon name="shelves" /><span className="nav-label">{t("shelvesTitle")}</span></button>
@@ -203,7 +209,7 @@ function AppContent() {
             <div className="workspace-view-host" hidden={view !== "workspace" || filesSource !== "local"}>
               <WorkspaceView connection={session.connection} info={session.info} initialScope={workspaceScope} sourceControl={<FilesSourceControl source="local" setSource={setFilesSource} />} onDeleted={exitWorkspace} onRenamed={(name) => setSession((current) => current ? { ...current, connection: { ...current.connection, client: name }, info: { ...current.info, clientName: name } } : current)} />
             </div>
-            {view === "changes" ? <ChangesView connection={session.connection} info={session.info} onFileCountChange={handleFileCount} initialChange={changeTarget} /> : view === "workspace" ? filesSource === "depot" ? <DepotView connection={session.connection} initialScope={depotScope} sourceControl={<FilesSourceControl source="depot" setSource={setFilesSource} />} /> : null : view === "streams" ? <StreamsView connection={session.connection} currentStream={session.info.clientStream} onSwitched={(info) => setSession((current) => current ? { ...current, info } : current)} /> : view === "history" ? <HistoryView connection={session.connection} /> : view === "jobs" ? <JobsView connection={session.connection} initialSearch={jobSearch} /> : view === "labels" ? <LabelsView connection={session.connection} initialSearch={labelSearch} /> : <ShelvesView connection={session.connection} />}
+            {view === "changes" ? <ChangesView connection={session.connection} info={session.info} onFileCountChange={handleFileCount} initialChange={changeTarget} /> : view === "workspace" ? filesSource === "depot" ? <DepotView connection={session.connection} initialScope={depotScope} sourceControl={<FilesSourceControl source="depot" setSource={setFilesSource} />} /> : null : view === "streams" ? <StreamsView connection={session.connection} currentStream={session.info.clientStream} onSwitched={(info) => setSession((current) => current ? { ...current, info } : current)} /> : view === "history" ? <HistoryView connection={session.connection} info={session.info} /> : view === "jobs" ? <JobsView connection={session.connection} initialSearch={jobSearch} /> : view === "labels" ? <LabelsView connection={session.connection} initialSearch={labelSearch} /> : <ShelvesView connection={session.connection} />}
           </Suspense>
         </main>
       </div>
@@ -220,11 +226,12 @@ function FilesSourceControl({ source, setSource }: { source: "local" | "depot"; 
   return <div className="segmented-control files-source-control" role="tablist" aria-label={t("filesSource")}><button data-agent-id="files-source-local" type="button" role="tab" aria-selected={source === "local"} className={source === "local" ? "active" : ""} onClick={() => setSource("local")}>{t("localFiles")}</button><button data-agent-id="files-source-depot" type="button" role="tab" aria-selected={source === "depot"} className={source === "depot" ? "active" : ""} onClick={() => setSource("depot")}>{t("depotFiles")}</button></div>;
 }
 
-function NavIcon({ name }: { name: "menu" | "files" | "changes" | "streams" | "shelves" | "jobs" | "expand" | "collapse" | "hide" }) {
+function NavIcon({ name }: { name: "menu" | "files" | "changes" | "history" | "streams" | "shelves" | "jobs" | "expand" | "collapse" | "hide" }) {
   const icons: Record<typeof name, LucideIcon> = {
     menu: Menu,
     files: FolderTree,
     changes: ListChecks,
+    history: HistoryIcon,
     streams: GitBranch,
     shelves: Archive,
     jobs: ClipboardList,

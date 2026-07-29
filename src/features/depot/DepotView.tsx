@@ -6,6 +6,7 @@ import { SelectableSurface } from "../../shared/ItemList";
 import { useLocale } from "../../shared/i18n";
 import type { AppError, ConnectionInput, FileRevision, PendingChange, SyncPreview } from "../../shared/models";
 import { PathActions } from "../../shared/PathActions";
+import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
 import { isContextMenuShortcut } from "../../shared/selection";
 import { CompactEmpty, ContextMenu, ErrorBanner, MenuButton, Modal, View } from "../../shared/View";
@@ -33,6 +34,7 @@ type FullHistoryState = {
 export function DepotView({ connection, initialScope, sourceControl }: { connection: ConnectionInput; initialScope?: string; sourceControl?: ReactNode }) {
   const { t } = useLocale();
   const [overviewRefreshKey, setOverviewRefreshKey] = useState(0);
+  const [overviewBusy, setOverviewBusy] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError>();
   const depotMenu = useContextMenu<DepotResourceTarget>();
@@ -133,13 +135,14 @@ export function DepotView({ connection, initialScope, sourceControl }: { connect
     notice={notice}
     operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
     onDismissNotice={() => setNotice("")}
-    actions={<button className="secondary-button" type="button" onClick={() => setOverviewRefreshKey((value) => value + 1)}>{t("refresh")}</button>}
+    actions={<RefreshButton busy={overviewBusy} onClick={() => setOverviewRefreshKey((value) => value + 1)} />}
     statusBarActions={sourceControl}
   >
     <DepotOverview
       connection={connection}
       refreshKey={overviewRefreshKey}
       initialScope={initialScope}
+      onBusyChange={setOverviewBusy}
       onDownload={(target) => void showSyncPreview(resourceTarget(target).syncScope)}
       onContextMenu={(target, position) => depotMenu.openAt(resourceTarget(target), position)}
     />

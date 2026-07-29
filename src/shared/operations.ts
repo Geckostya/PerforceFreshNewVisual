@@ -11,16 +11,20 @@ export interface OperationSnapshot {
   processedBytes: number;
   totalBytes?: number;
   startedAt: number;
+  phaseStartedAt: number;
   currentPath?: string;
   message?: string;
   scope?: string;
   scopes?: string[];
+  phase?: string;
   retryable: boolean;
 }
 
 export function reduceOperationSnapshots(current: OperationSnapshot[], event: OperationEvent): OperationSnapshot[] {
   const next = [...current];
   const index = next.findIndex((item) => item.operationId === event.operationId);
+  const previous = index < 0 ? undefined : next[index];
+  const now = Date.now();
   const snapshot: OperationSnapshot = {
     operationId: event.operationId,
     operationKind: event.operationKind,
@@ -29,11 +33,13 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
     totalFiles: event.totalFiles,
     processedBytes: event.processedBytes,
     totalBytes: event.totalBytes,
-    startedAt: index < 0 ? Date.now() : next[index].startedAt,
+    startedAt: previous?.startedAt ?? now,
+    phaseStartedAt: previous && previous.phase === event.phase ? previous.phaseStartedAt : now,
     currentPath: event.currentPath,
     message: event.message,
-    scope: event.scope,
-    scopes: event.scopes,
+    scope: event.scope ?? previous?.scope,
+    scopes: event.scopes ?? previous?.scopes,
+    phase: event.phase ?? previous?.phase,
     retryable: event.retryable,
   };
   if (index < 0) next.push(snapshot);
@@ -46,8 +52,8 @@ export function operationProgress(item: OperationSnapshot, now = Date.now()): { 
   const useBytes = Boolean(item.totalBytes && item.processedBytes > 0);
   const completed = useBytes ? item.processedBytes : item.processed;
   const total = useBytes ? item.totalBytes : item.totalFiles;
-  const ratio = total && completed > 0 ? Math.min(1, completed / total) : undefined;
-  const elapsedSeconds = Math.max(0, now - item.startedAt) / 1000;
+  const ratio = total ? Math.min(1, completed / total) : undefined;
+  const elapsedSeconds = Math.max(0, now - item.phaseStartedAt) / 1000;
   const etaSeconds = total && completed > 0 && completed < total && elapsedSeconds >= 2
     ? Math.round(elapsedSeconds * (total - completed) / completed)
     : undefined;

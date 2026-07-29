@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { normalizeAppError, previewSync, repairSyncHaveList, startSync } from "./api";
 import { useLocale } from "./i18n";
-import type { AppError, ConnectionInput, OperationEvent, SyncPreview } from "./models";
+import type { AppError, ConnectionInput, OperationEvent, SyncPreview, SyncPreviewItem } from "./models";
 import { startObservedOperation, useActiveOperation } from "./operations";
 import { Modal } from "./View";
 
@@ -17,6 +17,13 @@ export function updateOverwritePaths(current: string[], path: string, overwrite:
 
 export function overwritePathsAfterForce(kind: OperationEvent["kind"], paths: string[]): string[] {
   return kind === "completed" ? [] : paths;
+}
+
+export function exactOverwriteScopes(paths: string[], items: SyncPreviewItem[]): string[] {
+  return paths.map((path) => {
+    const item = items.find((candidate) => candidate.depotPath.toLowerCase() === path.toLowerCase());
+    return item?.revision && /^\d+$/.test(item.revision) ? `${path}#${item.revision}` : path;
+  });
 }
 
 export interface SafeSyncController {
@@ -39,6 +46,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
   const [phase, setPhase] = useState<SyncPhase>("idle");
   const [conflicts, setConflicts] = useState<string[]>([]);
   const [overwritePaths, setOverwritePaths] = useState<string[]>([]);
+  const [conflictItems, setConflictItems] = useState<SyncPreviewItem[]>([]);
 
   async function refresh() {
     try {
@@ -70,6 +78,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
         void refresh();
         setConflicts(remaining.writableFiles);
         setOverwritePaths([]);
+        setConflictItems(remaining.items);
         setPhase("idle");
         return;
       }
@@ -89,6 +98,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     callbacks.setNotice("");
     setConflicts([]);
     setOverwritePaths([]);
+    setConflictItems([]);
     setPhase("syncing");
     try {
       await startObservedOperation("sync", () => startSync(connection, scopes), (event) => {
@@ -105,6 +115,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     const remaining = overwritePathsAfterForce(event.kind, paths);
     setConflicts(remaining);
     setOverwritePaths(remaining);
+    if (remaining.length === 0) setConflictItems([]);
     await refresh();
     setPhase("idle");
     if (event.kind === "cancelled") {
@@ -123,14 +134,16 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     const selectedOverwritePaths = overwriteOverride ?? overwritePaths;
     if (selectedOverwritePaths.length === 0) {
       setConflicts([]);
+      setConflictItems([]);
       callbacks.setNotice(t("syncKeptWritableFiles"));
       await refresh();
       return;
     }
     setPhase("forcing");
     callbacks.setError(undefined);
+    const selectedOverwriteScopes = exactOverwriteScopes(selectedOverwritePaths, conflictItems);
     try {
-      await startObservedOperation("sync", () => startSync(connection, selectedOverwritePaths, true), (event) => {
+      await startObservedOperation("sync", () => startSync(connection, selectedOverwriteScopes, true), (event) => {
         if (!["completed", "failed", "cancelled"].includes(event.kind)) return;
         void finishForcedSync(event, selectedOverwritePaths);
       });
@@ -169,19 +182,21 @@ export function SyncPreviewDetails({ preview, acknowledged, onAcknowledged }: {
   </>;
 }
 
-export function SyncPreviewDialog({ preview, busy, acknowledged, onAcknowledged, onClose, onConfirm }: {
+export function SyncPreviewDialog({ preview, busy, acknowledged, onAcknowledged, title, confirmLabel, onClose, onConfirm }: {
   preview?: SyncPreview;
   busy: boolean;
   acknowledged: boolean;
   onAcknowledged: (acknowledged: boolean) => void;
+  title?: string;
+  confirmLabel?: string;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   const { t } = useLocale();
-  return <Modal title={t("syncPreviewTitle")} busy={busy} onClose={onClose}>
+  return <Modal title={title || t("syncPreviewTitle")} busy={busy} onClose={onClose}>
     {preview ? <>
       <div className="dialog-body"><SyncPreviewDetails preview={preview} acknowledged={acknowledged} onAcknowledged={onAcknowledged} /></div>
-      <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button><button className="primary-button" type="button" onClick={onConfirm} disabled={busy || preview.items.length === 0 || (preview.modifiedFiles.length > 0 && !acknowledged)}>{t("syncNow")}</button></div>
+      <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button><button className="primary-button" type="button" onClick={onConfirm} disabled={busy || preview.items.length === 0 || (preview.modifiedFiles.length > 0 && !acknowledged)}>{confirmLabel || t("syncNow")}</button></div>
     </> : <div className="dialog-body sync-preview-loading" role="status"><span className="folder-loading-indicator" aria-hidden="true" /><div><strong>{t("preparingUpdate")}</strong><p>{t("preparingUpdateBody")}</p></div></div>}
   </Modal>;
 }

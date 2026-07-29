@@ -22,7 +22,9 @@ import type {
   SubmitOutcome,
   SubmitPreflightSummary,
   SubmittedChangeDetail,
+  SubmittedFilterOptions,
   ChangeExportResult,
+  CherryPickPreviewItem,
   UndoPreviewItem,
   UnshelvePreview,
   WorkspaceSummary,
@@ -33,10 +35,10 @@ import type {
   DepotFile,
   DepotSummary,
   TrustEntry,
+  ThemeMode,
   SyncPreview,
   WorkspaceFile,
   WorkspaceLocalBatch,
-  ReconcileItem,
   ResolvePreviewItem,
   RevertPreviewItem,
   ResolveMode,
@@ -91,6 +93,10 @@ export async function loadSettings(): Promise<AppSettings> {
 
 export async function saveLanguage(language: string): Promise<void> {
   return invoke("save_language", { language });
+}
+
+export async function saveTheme(theme: ThemeMode): Promise<void> {
+  return invoke("save_theme", { theme });
 }
 
 export async function saveRevertPreference(deleteAddedFiles: boolean): Promise<void> {
@@ -177,12 +183,24 @@ export async function unfixJob(input: ConnectionInput, change: string, job: stri
   return invoke<Fix[]>("unfix_job", { input, change, job });
 }
 
-export async function listSubmittedChanges(input: ConnectionInput, scope: string, limit = 100, job?: string): Promise<PendingChange[]> {
-  return invoke<PendingChange[]>("list_submitted_changes", { input, scope, limit, job: job?.trim() || undefined });
+export async function listSubmittedChanges(input: ConnectionInput, scope: string, limit = 100, job?: string, user?: string, client?: string, includeStreams = false): Promise<PendingChange[]> {
+  return invoke<PendingChange[]>("list_submitted_changes", {
+    input,
+    scope,
+    limit,
+    job: job?.trim() || undefined,
+    user: user?.trim() || undefined,
+    client: client?.trim() || undefined,
+    includeStreams,
+  });
 }
 
-export async function describeChange(input: ConnectionInput, change: string): Promise<SubmittedChangeDetail> {
-  return invoke<SubmittedChangeDetail>("describe_change", { input, change });
+export async function listSubmittedFilterOptions(input: ConnectionInput): Promise<SubmittedFilterOptions> {
+  return invoke<SubmittedFilterOptions>("list_submitted_filter_options", { input });
+}
+
+export async function describeChange(input: ConnectionInput, change: string, maxFiles?: number): Promise<SubmittedChangeDetail> {
+  return invoke<SubmittedChangeDetail>("describe_change", { input, change, maxFiles });
 }
 
 export async function previewUndo(input: ConnectionInput, sourceChange: string): Promise<UndoPreviewItem[]> {
@@ -191,6 +209,14 @@ export async function previewUndo(input: ConnectionInput, sourceChange: string):
 
 export async function undoChange(input: ConnectionInput, sourceChange: string, targetChange: string): Promise<void> {
   return invoke("undo_change", { input, sourceChange, targetChange });
+}
+
+export async function previewCherryPick(input: ConnectionInput, sourceChange: string, sourceStream: string, targetStream: string, targetChange: string): Promise<CherryPickPreviewItem[]> {
+  return invoke<CherryPickPreviewItem[]>("preview_cherry_pick", { input, sourceChange, sourceStream, targetStream, targetChange });
+}
+
+export async function cherryPickChange(input: ConnectionInput, sourceChange: string, sourceStream: string, targetStream: string, targetChange: string): Promise<void> {
+  return invoke("cherry_pick_change", { input, sourceChange, sourceStream, targetStream, targetChange });
 }
 
 export async function listShelvedChanges(input: ConnectionInput): Promise<PendingChange[]> {
@@ -265,12 +291,12 @@ export async function moveFile(connection: ConnectionInput, change: string, sour
   return invoke("move_file", { input: { connection, change, source, destination } });
 }
 
-export async function reconcileFiles(connection: ConnectionInput, change: string, depotPaths: string[] = []): Promise<void> {
-  return invoke("reconcile_files", { input: { connection, change, depotPaths } });
+export async function startReconcile(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<string> {
+  return invoke<string>("start_reconcile", { input: { connection, change, depotPaths } });
 }
 
-export async function previewReconcile(input: ConnectionInput, scope?: string): Promise<ReconcileItem[]> {
-  return invoke<ReconcileItem[]>("preview_reconcile", { input, scope });
+export async function startReconcilePreview(input: ConnectionInput, scope?: string): Promise<string> {
+  return invoke<string>("start_reconcile_preview", { input, scope });
 }
 
 export async function listShelvedFiles(

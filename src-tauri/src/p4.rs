@@ -11,13 +11,14 @@ use std::{
 use serde_json::{Map, Value};
 
 use crate::models::{
-    AnnotationLine, AppError, ChangeExportResult, CliLogLevel, ConnectionInput, DepotDirectory,
-    DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
-    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
-    RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamSummary, SubmitMode, SubmitOutcome,
-    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmittedChangeDetail,
-    SubmittedFile, SyncPreview, SyncPreviewItem, TrustEntry, UndoPreviewItem, UnshelveConflict,
-    UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
+    AnnotationLine, AppError, ChangeExportResult, CherryPickPreviewItem, CliLogLevel,
+    ConnectionInput, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
+    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
+    ResolveMode, ResolvePreviewItem, RevertPreviewItem, ShelvedFile, StreamLocalStrategy,
+    StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
+    SubmitPreflightSummary, SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions,
+    SyncPreview, SyncPreviewItem, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview,
+    WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
 };
 
 mod jobs;
@@ -38,6 +39,7 @@ use validation::*;
 
 const MAX_RECORDS: &str = "200";
 const MAX_HISTORY_RECORDS: &str = "5000";
+const MAX_SUBMITTED_DETAIL_PREVIEW_FILES: u32 = 1000;
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RECOVERY_WORKERS: usize = 4;
 const IGNORE_DIRECTORY_PROBE: &str = "__p4fnv_ignore_probe__";
@@ -539,6 +541,9 @@ pub fn list_submitted_changes(
     scope: &str,
     limit: u32,
     job: Option<&str>,
+    user: Option<&str>,
+    client: Option<&str>,
+    include_streams: bool,
 ) -> Result<Vec<PendingChange>, AppError> {
     required_client(input)?;
     validate_depot_path(scope)?;
@@ -568,7 +573,74 @@ pub fn list_submitted_changes(
     } else {
         &limit
     };
-    command.args([
+    command.args(submitted_change_arguments(
+        scope,
+        query_limit,
+        user,
+        client,
+    )?);
+    let changes = parse_pending_changes(&run_json(&path, &mut command)?)?;
+    let mut changes = match job_change_ids {
+        Some(ids) => filter_changes_by_ids(changes, &ids, requested_limit),
+        None => changes,
+    };
+    if include_streams && !changes.is_empty() {
+        enrich_submitted_streams(input, &mut changes)?;
+    }
+    Ok(changes)
+}
+
+fn enrich_submitted_streams(
+    input: &ConnectionInput,
+    changes: &mut [PendingChange],
+) -> Result<(), AppError> {
+    let (path, mut command) = configured_command(input)?;
+    let mut arguments = ["-ztag", "-Mj", "describe", "-s", "-m", "1"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    arguments.extend(changes.iter().map(|change| change.id.clone()));
+    command.args(arguments);
+    let first_paths = first_submitted_paths(&run_json(&path, &mut command)?);
+    let streams = list_streams(input)?;
+    for change in changes {
+        change.stream = first_paths
+            .get(&change.id)
+            .and_then(|depot_path| stream_for_depot_path(depot_path, &streams))
+            .map(|stream| stream.path.clone());
+    }
+    Ok(())
+}
+
+fn first_submitted_paths(records: &[Map<String, Value>]) -> BTreeMap<String, String> {
+    records
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .filter_map(|record| {
+            let change = field(record, &["change", "Change"])?;
+            let depot_path = field(record, &["depotFile", "depotFile0"])?;
+            Some((change, depot_path))
+        })
+        .collect()
+}
+
+fn stream_for_depot_path<'a>(
+    depot_path: &str,
+    streams: &'a [StreamSummary],
+) -> Option<&'a StreamSummary> {
+    streams
+        .iter()
+        .filter(|stream| depot_path.starts_with(&format!("{}/", stream.path.trim_end_matches('/'))))
+        .max_by_key(|stream| stream.path.len())
+}
+
+fn submitted_change_arguments(
+    scope: &str,
+    limit: &str,
+    user: Option<&str>,
+    client: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    let mut arguments = [
         "-ztag",
         "-Mj",
         "changes",
@@ -577,14 +649,51 @@ pub fn list_submitted_changes(
         "-l",
         "-t",
         "-m",
-        query_limit,
-        scope,
-    ]);
-    let changes = parse_pending_changes(&run_json(&path, &mut command)?)?;
-    Ok(match job_change_ids {
-        Some(ids) => filter_changes_by_ids(changes, &ids, requested_limit),
-        None => changes,
-    })
+        limit,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    if let Some(user) = user.map(str::trim).filter(|value| !value.is_empty()) {
+        arguments.extend([
+            "-u".to_owned(),
+            validate_form_value(user, "user")?.to_owned(),
+        ]);
+    }
+    if let Some(client) = client.map(str::trim).filter(|value| !value.is_empty()) {
+        arguments.extend([
+            "-c".to_owned(),
+            validate_form_value(client, "workspace")?.to_owned(),
+        ]);
+    }
+    arguments.push(scope.to_owned());
+    Ok(arguments)
+}
+
+pub fn list_submitted_filter_options(
+    input: &ConnectionInput,
+) -> Result<SubmittedFilterOptions, AppError> {
+    required_client(input)?;
+    let (path, mut users_command) = configured_command(input)?;
+    users_command.args(["-ztag", "-Mj", "users", "-m", MAX_RECORDS]);
+    let users = run_json(&path, &mut users_command)?
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .filter_map(|record| field(record, &["User", "user"]))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let (path, mut clients_command) = configured_command(input)?;
+    clients_command.args(["-ztag", "-Mj", "clients", "-m", MAX_RECORDS]);
+    let clients = run_json(&path, &mut clients_command)?
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .filter_map(|record| field(record, &["client", "Client"]))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(SubmittedFilterOptions { users, clients })
 }
 
 fn filter_changes_by_ids(
@@ -603,11 +712,33 @@ pub fn describe_change(
     input: &ConnectionInput,
     change: &str,
 ) -> Result<SubmittedChangeDetail, AppError> {
+    describe_change_with_file_limit(input, change, None)
+}
+
+pub fn describe_change_with_file_limit(
+    input: &ConnectionInput,
+    change: &str,
+    file_limit: Option<u32>,
+) -> Result<SubmittedChangeDetail, AppError> {
     required_client(input)?;
     validate_numbered_change(change)?;
+    if file_limit.is_some_and(|limit| limit == 0 || limit > MAX_SUBMITTED_DETAIL_PREVIEW_FILES) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Некорректный лимит файлов submitted changelist.",
+        ));
+    }
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "describe", "-s", change]);
-    parse_change_detail(&run_json(&path, &mut command)?, change)
+    command.args(["-ztag", "-Mj", "describe", "-s"]);
+    if let Some(limit) = file_limit {
+        command.args(["-m", &(limit + 1).to_string()]);
+    }
+    command.arg(change);
+    let detail = parse_change_detail(&run_json(&path, &mut command)?, change)?;
+    Ok(limit_change_detail(
+        detail,
+        file_limit.map(|limit| limit as usize),
+    ))
 }
 
 pub fn preview_undo(
@@ -637,6 +768,133 @@ pub fn undo_change(
     command.arg(spec);
     run_json(&path, &mut command)?;
     Ok(())
+}
+
+pub fn preview_cherry_pick(
+    input: &ConnectionInput,
+    source_change: &str,
+    source_stream: &str,
+    target_stream: &str,
+    target_change: &str,
+) -> Result<Vec<CherryPickPreviewItem>, AppError> {
+    validate_cherry_pick(
+        input,
+        source_change,
+        source_stream,
+        target_stream,
+        target_change,
+    )?;
+    let (path, mut command) = configured_command(input)?;
+    command.args(cherry_pick_arguments(
+        source_change,
+        source_stream,
+        target_stream,
+        target_change,
+        true,
+    ));
+    Ok(parse_cherry_pick_preview(&run_json(&path, &mut command)?))
+}
+
+pub fn cherry_pick_change(
+    input: &ConnectionInput,
+    source_change: &str,
+    source_stream: &str,
+    target_stream: &str,
+    target_change: &str,
+) -> Result<(), AppError> {
+    validate_cherry_pick(
+        input,
+        source_change,
+        source_stream,
+        target_stream,
+        target_change,
+    )?;
+    let (path, mut command) = configured_command(input)?;
+    command.args(cherry_pick_arguments(
+        source_change,
+        source_stream,
+        target_stream,
+        target_change,
+        false,
+    ));
+    run_json(&path, &mut command)?;
+    Ok(())
+}
+
+fn validate_cherry_pick(
+    input: &ConnectionInput,
+    source_change: &str,
+    source_stream: &str,
+    target_stream: &str,
+    target_change: &str,
+) -> Result<(), AppError> {
+    required_client(input)?;
+    validate_numbered_change(source_change)?;
+    validate_change(target_change)?;
+    validate_stream_path(source_stream)?;
+    validate_stream_path(target_stream)?;
+    if source_stream == target_stream {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Cherry-pick requires a different source stream.",
+        ));
+    }
+    let current_stream = inspect_workspace(input)?.stream.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "The current workspace is not associated with a stream.",
+        )
+    })?;
+    if current_stream != target_stream {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The workspace stream changed before cherry-pick.",
+        ));
+    }
+    let detail = describe_change(input, source_change)?;
+    let prefix = format!("{}/", source_stream.trim_end_matches('/'));
+    if detail.files.is_empty()
+        || detail
+            .files
+            .iter()
+            .any(|file| !file.depot_path.starts_with(&prefix))
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The submitted changelist cannot be mapped safely from one source stream.",
+        ));
+    }
+    Ok(())
+}
+
+fn cherry_pick_arguments(
+    source_change: &str,
+    source_stream: &str,
+    target_stream: &str,
+    target_change: &str,
+    preview: bool,
+) -> Vec<String> {
+    let mut arguments = ["-ztag", "-Mj", "integrate"]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    if preview {
+        arguments.push("-n".to_owned());
+    }
+    arguments.extend([
+        "-c".to_owned(),
+        target_change.to_owned(),
+        "-S".to_owned(),
+        source_stream.to_owned(),
+        "-P".to_owned(),
+        target_stream.to_owned(),
+        "-Af".to_owned(),
+        format!(
+            "{}/...@={source_change}",
+            source_stream.trim_end_matches('/')
+        ),
+    ]);
+    arguments
 }
 
 pub fn list_shelved_changes(input: &ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
@@ -999,10 +1257,13 @@ pub fn preview_sync_items(
         return Err(empty_file_selection());
     }
     validate_depot_paths(scopes)?;
+    let stdin = sync_scope_stdin(scopes);
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "sync", "-n"]);
-    command.args(scopes);
-    let records = run_json(&path, &mut command)?;
+    command.args(["-ztag", "-Mj", "-x", "-", "sync", "-n"]);
+    if sync_scopes_are_exact_revisions(scopes) {
+        command.arg("-L");
+    }
+    let records = run_json_with_stdin_allowing_empty_match(&path, &mut command, &stdin)?;
     Ok(parse_sync_preview(&records))
 }
 
@@ -1118,6 +1379,23 @@ fn parse_undo_preview(records: &[Map<String, Value>]) -> Vec<UndoPreviewItem> {
             Some(UndoPreviewItem {
                 depot_path: field(record, &["depotFile", "clientFile"])?,
                 action: field(record, &["action", "status"]).unwrap_or_else(|| "undo".to_owned()),
+                local_path: field(record, &["path", "clientFile"]),
+            })
+        })
+        .collect()
+}
+
+fn parse_cherry_pick_preview(records: &[Map<String, Value>]) -> Vec<CherryPickPreviewItem> {
+    records
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .filter_map(|record| {
+            let target_path = field(record, &["depotFile", "toFile"])?;
+            Some(CherryPickPreviewItem {
+                source_path: field(record, &["fromFile", "sourceFile"]).unwrap_or_default(),
+                target_path,
+                action: field(record, &["action", "status"])
+                    .unwrap_or_else(|| "integrate".to_owned()),
                 local_path: field(record, &["path", "clientFile"]),
             })
         })
@@ -1467,7 +1745,7 @@ pub fn sync_command_scopes(
     scopes: &[String],
     include_progress: bool,
     force: bool,
-) -> Result<(PathBuf, Command), AppError> {
+) -> Result<(PathBuf, Command, Vec<u8>), AppError> {
     required_client(input)?;
     if scopes.is_empty() {
         return Err(empty_file_selection());
@@ -1477,9 +1755,24 @@ pub fn sync_command_scopes(
     if include_progress {
         command.arg("-I");
     }
-    command.args(["-ztag", "-Mj", "sync", sync_mode_argument(force)]);
-    command.args(scopes);
-    Ok((path, command))
+    command.args(["-ztag", "-Mj", "-x", "-", "sync", sync_mode_argument(force)]);
+    if sync_scopes_are_exact_revisions(scopes) {
+        command.arg("-L");
+    }
+    Ok((path, command, sync_scope_stdin(scopes)))
+}
+
+fn sync_scope_stdin(scopes: &[String]) -> Vec<u8> {
+    format!("{}\n", scopes.join("\n")).into_bytes()
+}
+
+fn sync_scopes_are_exact_revisions(scopes: &[String]) -> bool {
+    scopes.iter().all(|scope| {
+        scope.starts_with("//")
+            && scope.rsplit_once('#').is_some_and(|(_, revision)| {
+                !revision.is_empty() && revision.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    })
 }
 
 fn sync_mode_argument(force: bool) -> &'static str {
@@ -1586,38 +1879,51 @@ fn file_operation(
     Ok(())
 }
 
-pub fn reconcile(input: &ConnectionInput, change: &str, paths: &[String]) -> Result<(), AppError> {
+pub fn reconcile_command(
+    input: &ConnectionInput,
+    change: Option<&str>,
+    paths: &[String],
+    preview: bool,
+) -> Result<(PathBuf, Command), AppError> {
     required_client(input)?;
-    validate_change(change)?;
-    validate_depot_paths(paths)?;
+    if let Some(change) = change {
+        validate_change(change)?;
+    } else if !preview {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "A changelist is required when applying reconcile.",
+        ));
+    }
+    if !paths.is_empty() {
+        validate_depot_paths(paths)?;
+    }
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "reconcile", "-c", change]);
+    command.args(["-ztag", "-Mj", "reconcile"]);
+    if preview {
+        command.arg("-n");
+    }
+    if let Some(change) = change {
+        command.args(["-c", change]);
+    }
     if paths.is_empty() {
         command.arg("//...");
     } else {
         command.args(paths);
     }
-    run_json(&path, &mut command)?;
-    Ok(())
+    Ok((path, command))
 }
 
-pub fn reconcile_guarded(
-    input: &ConnectionInput,
-    change: &str,
-    paths: &[String],
-) -> Result<(), AppError> {
-    if paths.is_empty() {
-        return reconcile(input, change, paths);
-    }
-    required_client(input)?;
-    validate_change(change)?;
-    validate_depot_paths(paths)?;
-    let mut candidates = Vec::new();
-    for path in paths {
-        candidates.extend(preview_reconcile(input, Some(path))?);
-    }
-    ensure_reconcile_candidates(paths, &candidates)?;
-    reconcile(input, change, paths)
+pub fn parse_reconcile_output_record(line: &str) -> Option<ReconcileItem> {
+    let record = serde_json::from_str::<Map<String, Value>>(line).ok()?;
+    reconcile_item(&record)
+}
+
+fn reconcile_item(record: &Map<String, Value>) -> Option<ReconcileItem> {
+    Some(ReconcileItem {
+        depot_path: field(record, &["depotFile", "clientFile"])?,
+        action: field(record, &["action", "status"])?.to_lowercase(),
+        local_path: field(record, &["path", "clientFile"]),
+    })
 }
 
 pub fn move_file(
@@ -1662,6 +1968,7 @@ fn move_arguments(change: &str, source: &str, destination: &str, preview: bool) 
     args
 }
 
+#[cfg(test)]
 fn ensure_reconcile_candidates(
     paths: &[String],
     candidates: &[ReconcileItem],
@@ -1704,16 +2011,7 @@ fn preview_reconcile_internal(
     }
     command.arg(scope);
     let records = run_json(&path, &mut command)?;
-    Ok(records
-        .iter()
-        .filter_map(|record| {
-            Some(ReconcileItem {
-                depot_path: field(record, &["depotFile", "clientFile"])?,
-                action: field(record, &["action", "status"])?.to_lowercase(),
-                local_path: field(record, &["path", "clientFile"]),
-            })
-        })
-        .collect())
+    Ok(records.iter().filter_map(reconcile_item).collect())
 }
 
 pub fn list_shelved_files(
@@ -3108,6 +3406,7 @@ fn parse_pending_changes(records: &[Map<String, Value>]) -> Result<Vec<PendingCh
                 user: optional_field(record, &["user", "User"]).unwrap_or_default(),
                 client: optional_field(record, &["client", "Client"]).unwrap_or_default(),
                 time: optional_field(record, &["time", "Date"]),
+                stream: None,
             })
         })
         .collect()
@@ -3127,24 +3426,36 @@ fn parse_change_detail(
             "В ответе describe нет changelist.",
         )
     })?;
-    let files = data
-        .iter()
-        .filter_map(|record| {
-            Some(SubmittedFile {
-                depot_path: field(record, &["depotFile"])?,
+    let mut files = Vec::new();
+    for record in &data {
+        if let Some(depot_path) = field(record, &["depotFile"]) {
+            files.push(SubmittedFile {
+                depot_path,
                 action: field(record, &["action"]).unwrap_or_default(),
                 revision: field(record, &["rev"]),
                 file_type: field(record, &["type"]),
-            })
-        })
-        .collect();
+            });
+            continue;
+        }
+        for index in indexed_field_indices(record, "depotFile") {
+            files.push(SubmittedFile {
+                depot_path: numbered_field(record, &["depotFile"], index)
+                    .expect("depot file index was collected from this record"),
+                action: numbered_field(record, &["action"], index).unwrap_or_default(),
+                revision: numbered_field(record, &["rev"], index),
+                file_type: numbered_field(record, &["type"], index),
+            });
+        }
+    }
     let mut jobs = Vec::new();
-    for job in data
-        .iter()
-        .filter_map(|record| field(record, &["job", "Job"]))
-    {
-        if !jobs.contains(&job) {
-            jobs.push(job);
+    for record in &data {
+        let record_jobs = field(record, &["job", "Job"])
+            .into_iter()
+            .chain(indexed_fields(record, "job"));
+        for job in record_jobs {
+            if !jobs.contains(&job) {
+                jobs.push(job);
+            }
         }
     }
     Ok(SubmittedChangeDetail {
@@ -3158,7 +3469,19 @@ fn parse_change_detail(
         time: field(metadata, &["time"]),
         jobs,
         files,
+        files_truncated: false,
     })
+}
+
+fn limit_change_detail(
+    mut detail: SubmittedChangeDetail,
+    file_limit: Option<usize>,
+) -> SubmittedChangeDetail {
+    if let Some(limit) = file_limit {
+        detail.files_truncated = detail.files.len() > limit;
+        detail.files.truncate(limit);
+    }
+    detail
 }
 
 fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision>, AppError> {
@@ -4108,6 +4431,25 @@ mod tests {
     }
 
     #[test]
+    fn streams_large_exact_sync_scopes_through_stdin() {
+        let exact = vec![
+            "//Acme/main/a.txt#7".to_owned(),
+            "//Acme/main/b.bin#12".to_owned(),
+        ];
+        assert!(sync_scopes_are_exact_revisions(&exact));
+        assert_eq!(
+            String::from_utf8(sync_scope_stdin(&exact)).unwrap(),
+            "//Acme/main/a.txt#7\n//Acme/main/b.bin#12\n"
+        );
+        assert!(!sync_scopes_are_exact_revisions(&[
+            "//Acme/main/...".to_owned()
+        ]));
+        assert!(!sync_scopes_are_exact_revisions(&[
+            "//Acme/main/a.txt#head".to_owned()
+        ]));
+    }
+
+    #[test]
     fn treats_existing_files_without_have_revision_as_safe_sync_conflicts() {
         let local_path =
             std::env::temp_dir().join(format!("p4fnv-no-have-conflict-{}", std::process::id()));
@@ -4448,6 +4790,139 @@ mod tests {
         assert_eq!(detail.jobs, ["BUG-42"]);
         assert_eq!(detail.files.len(), 2);
         assert_eq!(detail.files[1].action, "add");
+        assert!(!detail.files_truncated);
+    }
+
+    #[test]
+    fn truncates_submitted_detail_only_when_more_files_exist() {
+        let detail = parse_change_detail(
+            &parse_json_lines(
+                r#"{"change":"88","depotFile0":"//Acme/main/a.txt","depotFile1":"//Acme/main/b.txt","depotFile2":"//Acme/main/c.txt"}"#,
+            )
+            .unwrap(),
+            "88",
+        )
+        .unwrap();
+        let limited = limit_change_detail(detail.clone(), Some(2));
+        assert_eq!(limited.files.len(), 2);
+        assert!(limited.files_truncated);
+
+        let exact = limit_change_detail(detail, Some(3));
+        assert_eq!(exact.files.len(), 3);
+        assert!(!exact.files_truncated);
+    }
+
+    #[test]
+    fn parses_indexed_submitted_change_files_from_real_json_shape() {
+        let detail = parse_change_detail(
+            &parse_json_lines(
+                r#"{"change":"88","user":"alex","client":"alex-main","desc":"Ship parser","depotFile0":"//Acme/main/a.txt","action0":"edit","rev0":"4","type0":"text","depotFile1":"//Acme/main/new.txt","action1":"add","rev1":"1","type1":"text","job0":"BUG-42"}"#,
+            )
+            .unwrap(),
+            "88",
+        )
+        .unwrap();
+        assert_eq!(detail.files.len(), 2);
+        assert_eq!(detail.files[0].depot_path, "//Acme/main/a.txt");
+        assert_eq!(detail.files[1].revision.as_deref(), Some("1"));
+        assert_eq!(detail.jobs, ["BUG-42"]);
+    }
+
+    #[test]
+    fn builds_submitted_filters_as_server_side_change_arguments() {
+        assert_eq!(
+            submitted_change_arguments("//...", "100", Some("Gecko"), Some("gecko-main")).unwrap(),
+            vec![
+                "-ztag",
+                "-Mj",
+                "changes",
+                "-s",
+                "submitted",
+                "-l",
+                "-t",
+                "-m",
+                "100",
+                "-u",
+                "Gecko",
+                "-c",
+                "gecko-main",
+                "//...",
+            ]
+        );
+    }
+
+    #[test]
+    fn maps_submitted_changes_to_the_longest_matching_stream() {
+        let records = parse_json_lines(
+            r#"{"change":"101","depotFile0":"//Acme/dev/tools/a.txt"}
+{"change":"102","depotFile":"//Acme/main/b.txt"}"#,
+        )
+        .unwrap();
+        let paths = first_submitted_paths(&records);
+        assert_eq!(
+            paths.get("101").map(String::as_str),
+            Some("//Acme/dev/tools/a.txt")
+        );
+
+        let streams = vec![
+            StreamSummary {
+                path: "//Acme/dev".to_owned(),
+                name: "dev".to_owned(),
+                parent: None,
+                stream_type: "development".to_owned(),
+                description: String::new(),
+                owner: None,
+                updated: None,
+            },
+            StreamSummary {
+                path: "//Acme/dev/tools".to_owned(),
+                name: "tools".to_owned(),
+                parent: Some("//Acme/dev".to_owned()),
+                stream_type: "development".to_owned(),
+                description: String::new(),
+                owner: None,
+                updated: None,
+            },
+        ];
+        assert_eq!(
+            stream_for_depot_path(paths.get("101").unwrap(), &streams)
+                .map(|stream| stream.path.as_str()),
+            Some("//Acme/dev/tools")
+        );
+    }
+
+    #[test]
+    fn builds_exact_stream_cherry_pick_preview_arguments() {
+        assert_eq!(
+            cherry_pick_arguments("88", "//Acme/dev", "//Acme/main", "default", true),
+            vec![
+                "-ztag",
+                "-Mj",
+                "integrate",
+                "-n",
+                "-c",
+                "default",
+                "-S",
+                "//Acme/dev",
+                "-P",
+                "//Acme/main",
+                "-Af",
+                "//Acme/dev/...@=88",
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_cherry_pick_preview_paths() {
+        let items = parse_cherry_pick_preview(
+            &parse_json_lines(
+                r#"{"fromFile":"//Acme/dev/a.txt","depotFile":"//Acme/main/a.txt","clientFile":"C:\\\\ws\\a.txt","action":"integrate"}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].source_path, "//Acme/dev/a.txt");
+        assert_eq!(items[0].target_path, "//Acme/main/a.txt");
     }
 
     #[test]
@@ -4459,6 +4934,7 @@ mod tests {
                 user: "alex".to_owned(),
                 client: "main".to_owned(),
                 time: None,
+                stream: None,
             },
             PendingChange {
                 id: "102".to_owned(),
@@ -4466,6 +4942,7 @@ mod tests {
                 user: "alex".to_owned(),
                 client: "main".to_owned(),
                 time: None,
+                stream: None,
             },
             PendingChange {
                 id: "103".to_owned(),
@@ -4473,6 +4950,7 @@ mod tests {
                 user: "alex".to_owned(),
                 client: "main".to_owned(),
                 time: None,
+                stream: None,
             },
         ];
         let ids = BTreeSet::from(["102".to_owned(), "103".to_owned()]);
@@ -4648,6 +5126,17 @@ mod tests {
         assert_eq!(items[0].action, "add");
         assert_eq!(items[0].local_path.as_deref(), Some("C:\\work\\new.txt"));
         assert_eq!(items[1].action, "delete");
+    }
+
+    #[test]
+    fn streamed_reconcile_output_ignores_non_file_records() {
+        let item = parse_reconcile_output_record(
+            r#"{"depotFile":"//Acme/main/new.txt","action":"add","path":"C:/work/new.txt"}"#,
+        )
+        .unwrap();
+        assert_eq!(item.depot_path, "//Acme/main/new.txt");
+        assert_eq!(item.local_path.as_deref(), Some("C:/work/new.txt"));
+        assert!(parse_reconcile_output_record(r#"{"code":"info","data":"checking"}"#).is_none());
     }
 
     #[test]

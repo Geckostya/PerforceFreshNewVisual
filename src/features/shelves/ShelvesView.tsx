@@ -4,6 +4,7 @@ import { useLocale } from "../../shared/i18n";
 import { ChangelistDescription, markdownToPlainText } from "../../shared/ChangelistDescription";
 import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, PendingChange, ShelvedFile, UnshelvePreview } from "../../shared/models";
+import { RefreshButton } from "../../shared/RefreshButton";
 import { useMultiSelection } from "../../shared/useMultiSelection";
 import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { canApplyUnshelve, nextShelfSelection, splitUnshelvePaths } from "./shelves";
@@ -119,7 +120,7 @@ export function ShelvesView({ connection }: { connection: ConnectionInput }) {
     error={error}
     notice={notice}
     onDismissNotice={() => setNotice("")}
-    actions={<button className="secondary-button" type="button" onClick={() => void load()} disabled={busy}>{busy ? t("loadingShelves") : t("refresh")}</button>}
+    actions={<RefreshButton busy={busy} onClick={() => void load()} />}
   >
     <div className="resource-workbench">
       <div className="resource-list">

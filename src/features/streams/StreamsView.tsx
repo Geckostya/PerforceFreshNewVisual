@@ -7,6 +7,7 @@ import { useArchiveDragDrop } from "../../shared/useArchiveDragDrop";
 import { useLocalArchive } from "../../shared/useLocalArchive";
 import type { AppError, ConnectionInput, P4Info, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
 import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/ItemList";
+import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, MenuButton, View } from "../../shared/View";
@@ -228,7 +229,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     })}
   </ul>;
 
-  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<button className="secondary-button" type="button" onClick={() => void load()} disabled={busy}>{busy ? t("loadingStreams") : t("refresh")}</button>}>
+  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<RefreshButton busy={busy} onClick={() => void load()} />}>
     <div className="streams-workbench">
       <aside className="streams-tree-pane">
         <div className="column-heading">

@@ -1,26 +1,29 @@
 use crate::{
     diagnostics, locales,
     models::{
-        AnnotationLine, AppError, AppSettings, ChangeExportResult, CliLogEntry, ConnectionInput,
-        CreateChangeInput, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
-        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationEvent,
-        OperationEventKind, P4Detection, P4Info, PendingChange, PreviewUnshelveInput,
-        ReconcileItem, ReopenInput, ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem,
-        SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput,
-        ShelveInput, ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
-        SubmitPreflightSummary, SubmittedChangeDetail, SwitchStreamInput, SyncPreview, TrustEntry,
+        AnnotationLine, AppError, AppSettings, ChangeExportResult, CherryPickPreviewItem,
+        CliLogEntry, ConnectionInput, CreateChangeInput, DeleteChangeInput, DeleteShelfInput,
+        DepotDirectory, DepotFile, DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff,
+        FileOperationInput, FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        OperationEvent, OperationEventKind, P4Detection, P4Info, PendingChange,
+        PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput, ResolveInput, RevertInput,
+        RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
+        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamSummary, SubmitInput,
+        SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmittedChangeDetail,
+        SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode, TrustEntry,
         UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile,
         WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
-    operations::{OperationHandle, OperationRegistry, wait_for_process},
+    operations::{
+        OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
+    },
     p4, settings,
 };
 use std::{
-    collections::BTreeMap,
-    io::{BufRead, BufReader},
+    collections::{BTreeMap, BTreeSet},
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
-    process::Stdio,
+    process::{Command, Stdio},
     sync::{Arc, Mutex, atomic::Ordering, mpsc},
     thread,
 };
@@ -184,6 +187,14 @@ pub async fn load_settings(app: tauri::AppHandle) -> Result<AppSettings, AppErro
 pub async fn save_language(app: tauri::AppHandle, language: String) -> Result<(), AppError> {
     let path = settings_path(&app)?;
     tauri::async_runtime::spawn_blocking(move || settings::save_language(&path, language))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_theme(app: tauri::AppHandle, theme: ThemeMode) -> Result<(), AppError> {
+    let path = settings_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || settings::save_theme(&path, theme))
         .await
         .map_err(task_error)?
 }
@@ -401,22 +412,45 @@ pub async fn list_submitted_changes(
     scope: String,
     limit: u32,
     job: Option<String>,
+    user: Option<String>,
+    client: Option<String>,
+    include_streams: Option<bool>,
 ) -> Result<Vec<PendingChange>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
-        p4::list_submitted_changes(&input, &scope, limit, job.as_deref())
+        p4::list_submitted_changes(
+            &input,
+            &scope,
+            limit,
+            job.as_deref(),
+            user.as_deref(),
+            client.as_deref(),
+            include_streams.unwrap_or(false),
+        )
     })
     .await
     .map_err(task_error)?
 }
 
 #[tauri::command]
+pub async fn list_submitted_filter_options(
+    input: ConnectionInput,
+) -> Result<SubmittedFilterOptions, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::list_submitted_filter_options(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn describe_change(
     input: ConnectionInput,
     change: String,
+    max_files: Option<u32>,
 ) -> Result<SubmittedChangeDetail, AppError> {
-    tauri::async_runtime::spawn_blocking(move || p4::describe_change(&input, &change))
-        .await
-        .map_err(task_error)?
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::describe_change_with_file_limit(&input, &change, max_files)
+    })
+    .await
+    .map_err(task_error)?
 }
 
 #[tauri::command]
@@ -437,6 +471,48 @@ pub async fn undo_change(
 ) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::undo_change(&input, &source_change, &target_change)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_cherry_pick(
+    input: ConnectionInput,
+    source_change: String,
+    source_stream: String,
+    target_stream: String,
+    target_change: String,
+) -> Result<Vec<CherryPickPreviewItem>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_cherry_pick(
+            &input,
+            &source_change,
+            &source_stream,
+            &target_stream,
+            &target_change,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn cherry_pick_change(
+    input: ConnectionInput,
+    source_change: String,
+    source_stream: String,
+    target_stream: String,
+    target_change: String,
+) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::cherry_pick_change(
+            &input,
+            &source_change,
+            &source_stream,
+            &target_stream,
+            &target_change,
+        )
     })
     .await
     .map_err(task_error)?
@@ -560,6 +636,16 @@ fn sync_operation_succeeded(force: bool, process_success: bool, readback_current
     }
 }
 
+const MAX_SYNC_RETRY_SCOPES: usize = 1000;
+
+fn sync_operation_scope(scopes: &[String]) -> String {
+    match scopes {
+        [] => String::new(),
+        [scope] => scope.clone(),
+        [first, rest @ ..] => format!("{first} (+{} more)", rest.len()),
+    }
+}
+
 #[tauri::command]
 pub async fn start_sync(
     app: tauri::AppHandle,
@@ -573,13 +659,17 @@ pub async fn start_sync(
     let force_preview = force
         .then(|| p4::preview_sync_items(&input, &recovery_scopes))
         .transpose()?;
-    let (path, mut command) = p4::sync_command_scopes(&input, &scopes, true, force)?;
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let (path, mut command, scope_input) = p4::sync_command_scopes(&input, &scopes, true, force)?;
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
-    let operation_scope = Some(scopes.join(", "));
-    let retry_scopes = Some(scopes);
+    let operation_scope = Some(sync_operation_scope(&scopes));
+    let retryable = !force && scopes.len() <= MAX_SYNC_RETRY_SCOPES;
+    let retry_scopes = retryable.then_some(scopes);
     if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
@@ -603,8 +693,10 @@ pub async fn start_sync(
             );
         }
     };
+    let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let stdin_thread = stdin.map(|mut stdin| thread::spawn(move || stdin.write_all(&scope_input)));
     let _ = app.emit(
         "operation-event",
         OperationEvent {
@@ -619,7 +711,9 @@ pub async fn start_sync(
             message: None,
             scope: operation_scope.clone(),
             scopes: retry_scopes.clone(),
-            retryable: !force,
+            phase: None,
+            reconcile_items: None,
+            retryable,
         },
     );
 
@@ -636,7 +730,6 @@ pub async fn start_sync(
         let app_for_output = app.clone();
         let id_for_output = operation_id.clone();
         let progress_scope = operation_scope.clone();
-        let progress_scopes = retry_scopes.clone();
         thread::spawn(move || {
             let mut processed = 0;
             let mut processed_bytes = 0;
@@ -666,8 +759,10 @@ pub async fn start_sync(
                         current_path: Some(record.current_path),
                         message: None,
                         scope: progress_scope.clone(),
-                        scopes: progress_scopes.clone(),
-                        retryable: !force,
+                        scopes: None,
+                        phase: None,
+                        reconcile_items: None,
+                        retryable,
                     },
                 );
             }
@@ -683,6 +778,11 @@ pub async fn start_sync(
     let recovery_input = input;
     thread::spawn(move || {
         let process_success = wait_for_process(child, cancellation);
+        let stdin_error = stdin_thread.and_then(|writer| match writer.join() {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(_) => Some("The p4 argument writer stopped unexpectedly.".to_owned()),
+        });
         let was_cancelled = cancelled.load(Ordering::Acquire);
         let readback_current = if was_cancelled {
             false
@@ -694,7 +794,11 @@ pub async fn start_sync(
             )
             .unwrap_or(false)
         };
-        let success = sync_operation_succeeded(force, process_success, readback_current);
+        let success = sync_operation_succeeded(
+            force,
+            process_success && stdin_error.is_none(),
+            readback_current,
+        );
         let kind = if was_cancelled {
             OperationEventKind::Cancelled
         } else if success {
@@ -709,11 +813,16 @@ pub async fn start_sync(
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
         let message = (!success && !was_cancelled).then(|| {
-            let detail = stderr_text.trim();
+            let detail = [stdin_error.as_deref(), Some(stderr_text.trim())]
+                .into_iter()
+                .flatten()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
             if detail.is_empty() {
                 "p4 sync завершился с ошибкой.".to_owned()
             } else {
-                detail.to_owned()
+                detail
             }
         });
         let _ = app_for_wait.emit(
@@ -730,7 +839,9 @@ pub async fn start_sync(
                 message,
                 scope: completion_scope,
                 scopes: completion_scopes,
-                retryable: !force,
+                phase: None,
+                reconcile_items: None,
+                retryable,
             },
         );
         registry_for_wait.remove(&id_for_wait);
@@ -788,6 +899,8 @@ pub async fn start_submit(
             message: None,
             scope: None,
             scopes: None,
+            phase: None,
+            reconcile_items: None,
             retryable: false,
         },
     );
@@ -835,6 +948,8 @@ pub async fn start_submit(
                         message: None,
                         scope: None,
                         scopes: None,
+                        phase: None,
+                        reconcile_items: None,
                         retryable: false,
                     },
                 );
@@ -886,6 +1001,8 @@ pub async fn start_submit(
                 message,
                 scope: None,
                 scopes: None,
+                phase: None,
+                reconcile_items: None,
                 retryable: false,
             },
         );
@@ -973,23 +1090,471 @@ pub async fn move_file(input: MoveInput) -> Result<(), AppError> {
     .map_err(task_error)?
 }
 
-#[tauri::command]
-pub async fn reconcile_files(input: crate::models::ReconcileInput) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::reconcile_guarded(&input.connection, &input.change, &input.depot_paths)
+#[derive(Default)]
+struct ReconcileProcessResult {
+    success: bool,
+    cancelled: bool,
+    processed: u64,
+    items: Vec<ReconcileItem>,
+    message: Option<String>,
+}
+
+struct ReconcileProcessContext {
+    app: tauri::AppHandle,
+    operation_id: String,
+    operation_kind: &'static str,
+    phase: &'static str,
+    scope: Option<String>,
+    total_files: Option<u64>,
+    processed_offset: u64,
+}
+
+fn reconcile_output_error(line: &str) -> Option<String> {
+    let record = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(line).ok()?;
+    let severity = record.get("severity").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    });
+    let is_error = record
+        .get("code")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("error"))
+        || severity.is_some_and(|value| value >= 3);
+    is_error.then(|| {
+        ["data", "message"]
+            .iter()
+            .find_map(|key| record.get(*key).and_then(|value| value.as_str()))
+            .unwrap_or("p4 reconcile failed.")
+            .trim()
+            .to_owned()
     })
-    .await
-    .map_err(task_error)?
+}
+
+fn run_reconcile_process(
+    path: PathBuf,
+    mut command: Command,
+    cancellation: &mpsc::Receiver<()>,
+    cancelled: &Arc<std::sync::atomic::AtomicBool>,
+    context: ReconcileProcessContext,
+) -> ReconcileProcessResult {
+    if cancelled.load(Ordering::Acquire) {
+        return ReconcileProcessResult {
+            cancelled: true,
+            ..Default::default()
+        };
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return ReconcileProcessResult {
+                message: Some(format!(
+                    "Could not start p4 reconcile through {}: {error}",
+                    path.display()
+                )),
+                ..Default::default()
+            };
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_thread = stdout.map(|stdout| {
+        thread::spawn(move || {
+            let mut items = Vec::new();
+            let mut seen = BTreeSet::new();
+            let mut errors = Vec::new();
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Some(message) = reconcile_output_error(&line) {
+                    errors.push(message);
+                    continue;
+                }
+                let Some(item) = p4::parse_reconcile_output_record(&line) else {
+                    continue;
+                };
+                if !seen.insert(item.depot_path.to_lowercase()) {
+                    continue;
+                }
+                let processed = context.processed_offset + seen.len() as u64;
+                let current_path = item
+                    .local_path
+                    .clone()
+                    .or_else(|| Some(item.depot_path.clone()));
+                items.push(item);
+                let _ = context.app.emit(
+                    "operation-event",
+                    OperationEvent {
+                        operation_id: context.operation_id.clone(),
+                        operation_kind: context.operation_kind.to_owned(),
+                        kind: OperationEventKind::Progress,
+                        processed,
+                        total_files: context.total_files,
+                        processed_bytes: 0,
+                        total_bytes: None,
+                        current_path,
+                        message: None,
+                        scope: context.scope.clone(),
+                        scopes: None,
+                        phase: Some(context.phase.to_owned()),
+                        reconcile_items: None,
+                        retryable: false,
+                    },
+                );
+            }
+            (items, errors)
+        })
+    });
+    let stderr_thread = stderr.map(|stderr| {
+        thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    });
+    let process_success = wait_for_process_with_cancellation(&mut child, cancellation);
+    let was_cancelled = cancelled.load(Ordering::Acquire);
+    let (items, errors) = stdout_thread
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr_text = stderr_thread
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let message = if process_success && errors.is_empty() {
+        None
+    } else {
+        let detail = errors
+            .into_iter()
+            .chain((!stderr_text.trim().is_empty()).then(|| stderr_text.trim().to_owned()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(if detail.is_empty() {
+            "p4 reconcile failed.".to_owned()
+        } else {
+            detail
+        })
+    };
+    ReconcileProcessResult {
+        success: process_success && message.is_none(),
+        cancelled: was_cancelled,
+        processed: items.len() as u64,
+        items,
+        message,
+    }
+}
+
+fn reconcile_scope(paths: &[String]) -> Option<String> {
+    match paths {
+        [] => None,
+        [scope] => Some(scope.clone()),
+        [first, rest @ ..] => Some(format!("{first} (+{} more)", rest.len())),
+    }
 }
 
 #[tauri::command]
-pub async fn preview_reconcile(
+pub async fn start_reconcile_preview(
+    app: tauri::AppHandle,
+    registry: State<'_, OperationRegistry>,
     input: ConnectionInput,
     scope: Option<String>,
-) -> Result<Vec<ReconcileItem>, AppError> {
-    tauri::async_runtime::spawn_blocking(move || p4::preview_reconcile(&input, scope.as_deref()))
-        .await
-        .map_err(task_error)?
+) -> Result<String, AppError> {
+    let scope = scope
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "//...".to_owned());
+    let paths = vec![scope.clone()];
+    let (path, command) = p4::reconcile_command(&input, None, &paths, true)?;
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (cancel, cancellation) = mpsc::channel();
+    let operation_id = registry.new_id();
+    if !registry.insert_if_kind_idle(
+        operation_id.clone(),
+        OperationHandle {
+            kind: "reconcile",
+            cancel,
+            cancelled: cancelled.clone(),
+        },
+    ) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "A reconcile operation is already running.",
+        ));
+    }
+    let _ = app.emit(
+        "operation-event",
+        OperationEvent {
+            operation_id: operation_id.clone(),
+            operation_kind: "reconcile_preview".to_owned(),
+            kind: OperationEventKind::Started,
+            processed: 0,
+            total_files: None,
+            processed_bytes: 0,
+            total_bytes: None,
+            current_path: None,
+            message: None,
+            scope: Some(scope.clone()),
+            scopes: None,
+            phase: Some("scan".to_owned()),
+            reconcile_items: None,
+            retryable: false,
+        },
+    );
+    let app_for_run = app.clone();
+    let registry_for_run = registry.inner().clone();
+    let id_for_run = operation_id.clone();
+    thread::spawn(move || {
+        let result = run_reconcile_process(
+            path,
+            command,
+            &cancellation,
+            &cancelled,
+            ReconcileProcessContext {
+                app: app_for_run.clone(),
+                operation_id: id_for_run.clone(),
+                operation_kind: "reconcile_preview",
+                phase: "scan",
+                scope: Some(scope.clone()),
+                total_files: None,
+                processed_offset: 0,
+            },
+        );
+        let kind = if result.cancelled {
+            OperationEventKind::Cancelled
+        } else if result.success {
+            OperationEventKind::Completed
+        } else {
+            OperationEventKind::Failed
+        };
+        let _ = app_for_run.emit(
+            "operation-event",
+            OperationEvent {
+                operation_id: id_for_run.clone(),
+                operation_kind: "reconcile_preview".to_owned(),
+                kind,
+                processed: result.processed,
+                total_files: None,
+                processed_bytes: 0,
+                total_bytes: None,
+                current_path: None,
+                message: result.message,
+                scope: Some(scope),
+                scopes: None,
+                phase: Some("scan".to_owned()),
+                reconcile_items: result.success.then_some(result.items),
+                retryable: false,
+            },
+        );
+        registry_for_run.remove(&id_for_run);
+    });
+    Ok(operation_id)
+}
+
+#[tauri::command]
+pub async fn start_reconcile(
+    app: tauri::AppHandle,
+    registry: State<'_, OperationRegistry>,
+    input: crate::models::ReconcileInput,
+) -> Result<String, AppError> {
+    if input.depot_paths.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Select at least one reconcile candidate.",
+        ));
+    }
+    let preview_commands = input
+        .depot_paths
+        .iter()
+        .map(|depot_path| {
+            p4::reconcile_command(
+                &input.connection,
+                None,
+                std::slice::from_ref(depot_path),
+                true,
+            )
+            .map(|(path, command)| (depot_path.clone(), path, command))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let (apply_path, apply_command) = p4::reconcile_command(
+        &input.connection,
+        Some(&input.change),
+        &input.depot_paths,
+        false,
+    )?;
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (cancel, cancellation) = mpsc::channel();
+    let operation_id = registry.new_id();
+    let operation_scope = reconcile_scope(&input.depot_paths);
+    let total_files = input.depot_paths.len() as u64;
+    if !registry.insert_if_kind_idle(
+        operation_id.clone(),
+        OperationHandle {
+            kind: "reconcile",
+            cancel,
+            cancelled: cancelled.clone(),
+        },
+    ) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "A reconcile operation is already running.",
+        ));
+    }
+    let _ = app.emit(
+        "operation-event",
+        OperationEvent {
+            operation_id: operation_id.clone(),
+            operation_kind: "reconcile".to_owned(),
+            kind: OperationEventKind::Started,
+            processed: 0,
+            total_files: Some(total_files),
+            processed_bytes: 0,
+            total_bytes: None,
+            current_path: None,
+            message: None,
+            scope: operation_scope.clone(),
+            scopes: None,
+            phase: Some("validate".to_owned()),
+            reconcile_items: None,
+            retryable: false,
+        },
+    );
+    let app_for_run = app.clone();
+    let registry_for_run = registry.inner().clone();
+    let id_for_run = operation_id.clone();
+    thread::spawn(move || {
+        let mut checked = 0;
+        let mut validation_message = None;
+        let mut validation_cancelled = false;
+        for (index, (depot_path, path, command)) in preview_commands.into_iter().enumerate() {
+            let preview = run_reconcile_process(
+                path,
+                command,
+                &cancellation,
+                &cancelled,
+                ReconcileProcessContext {
+                    app: app_for_run.clone(),
+                    operation_id: id_for_run.clone(),
+                    operation_kind: "reconcile",
+                    phase: "validate",
+                    scope: operation_scope.clone(),
+                    total_files: Some(total_files),
+                    processed_offset: index as u64,
+                },
+            );
+            if preview.cancelled {
+                validation_cancelled = true;
+                break;
+            }
+            checked = index as u64 + 1;
+            if !preview.success {
+                validation_message = preview.message;
+                break;
+            }
+            if !preview
+                .items
+                .iter()
+                .any(|item| item.depot_path.eq_ignore_ascii_case(&depot_path))
+            {
+                validation_message = Some(format!(
+                    "Reconcile preview is stale. Refresh the preview before applying {depot_path}."
+                ));
+                break;
+            }
+        }
+        if validation_cancelled || validation_message.is_some() {
+            let kind = if validation_cancelled {
+                OperationEventKind::Cancelled
+            } else {
+                OperationEventKind::Failed
+            };
+            let _ = app_for_run.emit(
+                "operation-event",
+                OperationEvent {
+                    operation_id: id_for_run.clone(),
+                    operation_kind: "reconcile".to_owned(),
+                    kind,
+                    processed: checked,
+                    total_files: Some(total_files),
+                    processed_bytes: 0,
+                    total_bytes: None,
+                    current_path: None,
+                    message: validation_message,
+                    scope: operation_scope,
+                    scopes: None,
+                    phase: Some("validate".to_owned()),
+                    reconcile_items: None,
+                    retryable: false,
+                },
+            );
+            registry_for_run.remove(&id_for_run);
+            return;
+        }
+        let _ = app_for_run.emit(
+            "operation-event",
+            OperationEvent {
+                operation_id: id_for_run.clone(),
+                operation_kind: "reconcile".to_owned(),
+                kind: OperationEventKind::Progress,
+                processed: 0,
+                total_files: Some(total_files),
+                processed_bytes: 0,
+                total_bytes: None,
+                current_path: None,
+                message: None,
+                scope: operation_scope.clone(),
+                scopes: None,
+                phase: Some("apply".to_owned()),
+                reconcile_items: None,
+                retryable: false,
+            },
+        );
+        let applied = run_reconcile_process(
+            apply_path,
+            apply_command,
+            &cancellation,
+            &cancelled,
+            ReconcileProcessContext {
+                app: app_for_run.clone(),
+                operation_id: id_for_run.clone(),
+                operation_kind: "reconcile",
+                phase: "apply",
+                scope: operation_scope.clone(),
+                total_files: Some(total_files),
+                processed_offset: 0,
+            },
+        );
+        let kind = if applied.cancelled {
+            OperationEventKind::Cancelled
+        } else if applied.success {
+            OperationEventKind::Completed
+        } else {
+            OperationEventKind::Failed
+        };
+        let _ = app_for_run.emit(
+            "operation-event",
+            OperationEvent {
+                operation_id: id_for_run.clone(),
+                operation_kind: "reconcile".to_owned(),
+                kind,
+                processed: applied.processed,
+                total_files: Some(total_files),
+                processed_bytes: 0,
+                total_bytes: None,
+                current_path: None,
+                message: applied.message,
+                scope: operation_scope,
+                scopes: None,
+                phase: Some("apply".to_owned()),
+                reconcile_items: None,
+                retryable: false,
+            },
+        );
+        registry_for_run.remove(&id_for_run);
+    });
+    Ok(operation_id)
 }
 
 #[tauri::command]
@@ -1394,7 +1959,10 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_sync_output_record, sync_operation_succeeded, validate_reveal_path};
+    use super::{
+        parse_sync_output_record, sync_operation_scope, sync_operation_succeeded,
+        validate_reveal_path,
+    };
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -1414,6 +1982,17 @@ mod tests {
         assert!(!sync_operation_succeeded(true, true, false));
         assert!(sync_operation_succeeded(true, false, true));
         assert!(sync_operation_succeeded(false, true, false));
+    }
+
+    #[test]
+    fn large_sync_operation_scope_stays_bounded() {
+        let scopes = (0..87_246)
+            .map(|index| format!("//Acme/main/{index}.bin#{index}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sync_operation_scope(&scopes),
+            "//Acme/main/0.bin#0 (+87245 more)"
+        );
     }
 
     #[test]

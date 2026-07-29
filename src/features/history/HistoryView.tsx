@@ -1,66 +1,153 @@
-import { useMemo, useState } from "react";
-import { annotateFile, describeChange, diffRevisionWorkspace, diffRevisions, fileHistory, listSubmittedChanges, normalizeAppError, printRevision, saveRevision } from "../../shared/api";
-import { ChangelistHistory } from "../../shared/ChangelistHistory";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { describeChange, diffRevisions, listStreams, listSubmittedChanges, listSubmittedFilterOptions, normalizeAppError, previewSync } from "../../shared/api";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
+import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { DiffViewer } from "../../shared/DiffViewer";
 import { useLocale } from "../../shared/i18n";
-import { SelectableSurface } from "../../shared/ItemList";
-import type { AnnotationLine, AppError, ConnectionInput, DiffMode, FileDiff, FileRevision, PendingChange, SubmittedChangeDetail } from "../../shared/models";
-import { PathActions } from "../../shared/PathActions";
-import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
-import { filterSubmittedChanges, previousRevision } from "./history";
+import type { AppError, ConnectionInput, FileDiff, P4Info, PendingChange, StreamSummary, SubmittedChangeDetail, SubmittedFilterOptions, SyncPreview } from "../../shared/models";
+import { RefreshButton } from "../../shared/RefreshButton";
+import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
+import { ActionDialog, EmptyState, View } from "../../shared/View";
+import { filterSubmittedChanges, isLargeSubmittedChange, nextSubmittedFileRenderLimit, previousRevision, SUBMITTED_DETAIL_PREVIEW_LIMIT, submittedChangeStream, submittedRevisionScopes, submittedScope } from "./history";
+import { CherryPickDialog } from "./CherryPickDialog";
 import { UndoDialog } from "./UndoDialog";
 
-export function HistoryView({ connection }: { connection: ConnectionInput }) {
+export function HistoryView({ connection, info }: { connection: ConnectionInput; info: P4Info }) {
   const { t } = useLocale();
-  const [mode, setMode] = useState<"file" | "changes">("file");
-  const [path, setPath] = useState("");
-  const [revisions, setRevisions] = useState<FileRevision[]>([]);
-  const [fileHistoryLimit, setFileHistoryLimit] = useState(100);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [diff, setDiff] = useState<FileDiff>();
-  const [diffTitle, setDiffTitle] = useState("");
-  const [diffMode, setDiffMode] = useState<DiffMode>("default");
-  const [annotations, setAnnotations] = useState<AnnotationLine[]>([]);
   const [submitted, setSubmitted] = useState<PendingChange[]>([]);
   const [selectedChange, setSelectedChange] = useState<string>();
   const [changeDetail, setChangeDetail] = useState<SubmittedChangeDetail>();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [fullDetailLoading, setFullDetailLoading] = useState(false);
+  const [confirmFullDetail, setConfirmFullDetail] = useState(false);
+  const [visibleFileLimit, setVisibleFileLimit] = useState(SUBMITTED_DETAIL_PREVIEW_LIMIT);
   const [historyQuery, setHistoryQuery] = useState("");
-  const [historyUser, setHistoryUser] = useState("");
+  const [historyUser, setHistoryUser] = useState(connection.user);
   const [historyClient, setHistoryClient] = useState("");
+  const [streamFilter, setStreamFilter] = useState<"all" | "current">("all");
+  const [filterOptions, setFilterOptions] = useState<SubmittedFilterOptions>({ users: [], clients: [] });
+  const [streams, setStreams] = useState<StreamSummary[]>([]);
   const [historyJob, setHistoryJob] = useState("");
   const [historyLimit, setHistoryLimit] = useState(100);
   const [undoSource, setUndoSource] = useState<string>();
-  const [outputPath, setOutputPath] = useState<string>();
+  const [cherrySource, setCherrySource] = useState<{ change: string; stream: string }>();
+  const [diff, setDiff] = useState<FileDiff>();
+  const [diffTitle, setDiffTitle] = useState("");
+  const [syncPreview, setSyncPreview] = useState<SyncPreview>();
+  const [syncPreviewOpen, setSyncPreviewOpen] = useState(false);
+  const [syncAcknowledged, setSyncAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError>();
   const [notice, setNotice] = useState("");
+  const submittedRequest = useRef(0);
+  const detailRequest = useRef(0);
+  const safeSync = useSafeSync(connection, { refresh: refreshSelectedChange, setNotice, setError });
 
-  async function loadHistory(limit = 100, reset = true) {
-    if (!path.trim()) return;
+  useEffect(() => {
+    let active = true;
+    void Promise.allSettled([listSubmittedFilterOptions(connection), listStreams(connection)])
+      .then(([options, streamCatalog]) => {
+        if (!active) return;
+        if (options.status === "fulfilled") setFilterOptions(options.value);
+        if (streamCatalog.status === "fulfilled") setStreams(streamCatalog.value);
+      });
+    return () => { active = false; };
+  }, [connection.client, connection.port, connection.user]);
+
+  useEffect(() => {
+    void loadSubmitted(100, true);
+  }, [streamFilter, historyUser, historyClient, connection.client, connection.port, connection.user, info.clientStream]);
+
+  async function loadSubmitted(limit = 100, reset = true, filters = {
+    stream: streamFilter,
+    user: historyUser,
+    client: historyClient,
+    job: historyJob,
+  }) {
+    const request = ++submittedRequest.current;
+    if (reset) detailRequest.current += 1;
     setBusy(true);
     setError(undefined);
-    setDiff(undefined);
+    if (reset) {
+      setChangeDetail(undefined);
+      setDiff(undefined);
+      setDetailLoading(false);
+      setFullDetailLoading(false);
+      setConfirmFullDetail(false);
+    }
     try {
-      setRevisions(await fileHistory(connection, path.trim(), limit));
-      setFileHistoryLimit(limit);
-      if (reset) setSelected([]);
-    } catch (reason) { setError(normalizeAppError(reason)); }
-    finally { setBusy(false); }
-  }
-
-  async function loadSubmitted(limit = 100, reset = true) {
-    if (!path.trim()) return;
-    setBusy(true);
-    setError(undefined);
-    setChangeDetail(undefined);
-    setDiff(undefined);
-    try {
-      setSubmitted(await listSubmittedChanges(connection, path.trim(), limit, historyJob));
+      const changes = await listSubmittedChanges(
+        connection,
+        submittedScope(info.clientStream, filters.stream),
+        limit,
+        filters.job,
+        filters.user || undefined,
+        filters.client || undefined,
+        true,
+      );
+      if (request !== submittedRequest.current) return;
+      setSubmitted(changes);
       setHistoryLimit(limit);
       if (reset) setSelectedChange(undefined);
-    } catch (reason) { setError(normalizeAppError(reason)); }
-    finally { setBusy(false); }
+    } catch (reason) {
+      if (request === submittedRequest.current) setError(normalizeAppError(reason));
+    } finally {
+      if (request === submittedRequest.current) setBusy(false);
+    }
+  }
+
+  async function selectSubmitted(change: string) {
+    const request = ++detailRequest.current;
+    setSelectedChange(change);
+    setChangeDetail(undefined);
+    setVisibleFileLimit(SUBMITTED_DETAIL_PREVIEW_LIMIT);
+    setConfirmFullDetail(false);
+    setFullDetailLoading(false);
+    setDetailLoading(true);
+    setBusy(true);
+    setError(undefined);
+    setDiff(undefined);
+    try {
+      const detail = await describeChange(connection, change, SUBMITTED_DETAIL_PREVIEW_LIMIT);
+      if (request === detailRequest.current) setChangeDetail(detail);
+    } catch (reason) {
+      if (request === detailRequest.current) setError(normalizeAppError(reason));
+    } finally {
+      if (request === detailRequest.current) {
+        setDetailLoading(false);
+        setBusy(false);
+      }
+    }
+  }
+
+  async function loadFullDetail() {
+    if (!selectedChange) return;
+    const change = selectedChange;
+    const request = ++detailRequest.current;
+    setConfirmFullDetail(false);
+    setFullDetailLoading(true);
+    setBusy(true);
+    setError(undefined);
+    try {
+      const detail = await describeChange(connection, change);
+      if (request === detailRequest.current) {
+        setChangeDetail(detail);
+        setVisibleFileLimit(SUBMITTED_DETAIL_PREVIEW_LIMIT);
+      }
+    } catch (reason) {
+      if (request === detailRequest.current) setError(normalizeAppError(reason));
+    } finally {
+      if (request === detailRequest.current) {
+        setFullDetailLoading(false);
+        setBusy(false);
+      }
+    }
+  }
+
+  async function refreshSelectedChange() {
+    if (!selectedChange) return;
+    try { setChangeDetail(await describeChange(connection, selectedChange, changeDetail?.filesTruncated ? SUBMITTED_DETAIL_PREVIEW_LIMIT : undefined)); }
+    catch (reason) { setError(normalizeAppError(reason)); }
   }
 
   async function runPreview(task: () => Promise<FileDiff>, title: string) {
@@ -71,110 +158,90 @@ export function HistoryView({ connection }: { connection: ConnectionInput }) {
     finally { setBusy(false); }
   }
 
-  async function loadAnnotations() {
-    if (!path.trim()) return;
+  async function showRevisionSyncPreview() {
+    if (!changeDetail) return;
+    const scopes = submittedRevisionScopes(changeDetail.files);
+    if (!scopes.length) return;
+    setSyncPreview(undefined);
+    setSyncAcknowledged(false);
+    setSyncPreviewOpen(true);
     setBusy(true);
     setError(undefined);
-    try { setAnnotations(await annotateFile(connection, path.trim())); }
-    catch (reason) { setError(normalizeAppError(reason)); }
+    try { setSyncPreview(await previewSync(connection, scopes)); }
+    catch (reason) { setSyncPreviewOpen(false); setError(normalizeAppError(reason)); }
     finally { setBusy(false); }
   }
 
-  async function exportRevision() {
-    if (!selectedRevision || !outputPath?.trim()) return;
-    setBusy(true);
-    setError(undefined);
-    try {
-      await saveRevision(connection, path.trim(), selectedRevision.revision, outputPath.trim());
-      setNotice(t("revisionSaved"));
-      setOutputPath(undefined);
-    } catch (reason) { setError(normalizeAppError(reason)); }
-    finally { setBusy(false); }
+  async function getThisRevision() {
+    if (!changeDetail) return;
+    const scopes = submittedRevisionScopes(changeDetail.files);
+    setSyncPreviewOpen(false);
+    setSyncPreview(undefined);
+    await safeSync.start(scopes);
   }
 
-  async function selectSubmitted(change: string) {
-    setSelectedChange(change);
-    setBusy(true);
-    setError(undefined);
-    setDiff(undefined);
-    try { setChangeDetail(await describeChange(connection, change)); }
-    catch (reason) { setError(normalizeAppError(reason)); }
-    finally { setBusy(false); }
-  }
-
-  function toggleRevision(revision: string) {
-    setSelected((current) => current.includes(revision)
-      ? current.filter((item) => item !== revision)
-      : current.length < 2 ? [...current, revision] : [current[1], revision]);
-    setDiff(undefined);
-  }
-
-  const selectedRevision = selected.length === 1 ? revisions.find((item) => item.revision === selected[0]) : undefined;
-  const historyUsers = useMemo(() => [...new Set(submitted.map((change) => change.user))].sort(), [submitted]);
-  const historyClients = useMemo(() => [...new Set(submitted.map((change) => change.client))].sort(), [submitted]);
+  const historyUsers = useMemo(() => [...new Set([...filterOptions.users, ...submitted.map((change) => change.user)])].filter((user) => user && user !== connection.user).sort(), [connection.user, filterOptions.users, submitted]);
+  const historyClients = useMemo(() => [...new Set([...filterOptions.clients, ...submitted.map((change) => change.client)])].filter((client) => client && client !== connection.client).sort(), [connection.client, filterOptions.clients, submitted]);
   const visibleSubmitted = filterSubmittedChanges(submitted, historyQuery, historyUser, historyClient);
+  const exactFilesReady = Boolean(changeDetail && !changeDetail.filesTruncated && !fullDetailLoading);
+  const sourceStream = useMemo(() => exactFilesReady && changeDetail ? submittedChangeStream(changeDetail.files, streams) : undefined, [changeDetail, exactFilesReady, streams]);
+  const canCherryPick = Boolean(exactFilesReady && sourceStream && info.clientStream && sourceStream !== info.clientStream);
+  const hasRevisionScopes = Boolean(exactFilesReady && changeDetail?.files.some((file) => file.revision && /^\d+$/.test(file.revision)));
+  const largeChange = Boolean(changeDetail && isLargeSubmittedChange(changeDetail.files.length, changeDetail.filesTruncated));
+  const visibleFiles = changeDetail?.files.slice(0, visibleFileLimit) || [];
+  const filesFact = changeDetail ? `${changeDetail.files.length}${changeDetail.filesTruncated ? "+" : ""}` : "—";
 
   return <View
     id="history-title"
-    title={mode === "file" ? t("fileHistory") : t("submittedHistory")}
-    subtitle={mode === "file" ? t("fileHistoryBody") : t("submittedHistoryBody")}
+    title={t("submittedHistory")}
+    subtitle={t("submittedHistoryBody")}
     error={error}
     notice={notice}
+    operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
     onDismissNotice={() => setNotice("")}
+    actions={<RefreshButton busy={busy} onClick={() => void loadSubmitted()} agentId="submitted-refresh" />}
   >
-    <div className="history-mode" role="tablist">
-      <button type="button" role="tab" aria-selected={mode === "file"} className={mode === "file" ? "active" : ""} onClick={() => { setMode("file"); setDiff(undefined); }}>{t("fileHistory")}</button>
-      <button type="button" role="tab" aria-selected={mode === "changes"} className={mode === "changes" ? "active" : ""} onClick={() => { setMode("changes"); setDiff(undefined); }}>{t("submittedHistory")}</button>
-    </div>
-    <div className="resource-toolbar">
-      <label className="field"><span className="field-label">{mode === "file" ? t("depotFilePath") : t("scopePath")}</span><input value={path} placeholder={mode === "file" ? "//depot/project/file.txt" : "//depot/project/..."} onChange={(event) => setPath(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void (mode === "file" ? loadHistory() : loadSubmitted()); }} /></label>
-      <button className="primary-button" type="button" onClick={() => void (mode === "file" ? loadHistory() : loadSubmitted())} disabled={busy || !path.trim()}>{busy ? t("loadingHistory") : t("loadHistory")}</button>
-      {mode === "file" && path.trim() && <PathActions depotPath={path.trim()} />}
-    </div>
-    {mode === "changes" && <div className="resource-toolbar history-filters">
+    <div className="resource-toolbar history-filters">
+      <label className="field"><span className="field-label">{t("historyStreamFilter")}</span><select data-agent-id="submitted-stream-filter" value={streamFilter} onChange={(event) => setStreamFilter(event.target.value as "all" | "current")}><option value="all">{t("allStreams")}</option><option value="current" disabled={!info.clientStream}>{t("currentStream")}{info.clientStream ? ` · ${info.clientStream}` : ""}</option></select></label>
+      <label className="field"><span className="field-label">{t("factUser")}</span><select data-agent-id="submitted-user-filter" value={historyUser} onChange={(event) => setHistoryUser(event.target.value)}><option value={connection.user}>{t("currentUser")} · {connection.user}</option><option value="">{t("allUsers")}</option>{historyUsers.map((user) => <option key={user} value={user}>{user}</option>)}</select></label>
+      <label className="field"><span className="field-label">{t("workspaceLabel")}</span><select data-agent-id="submitted-workspace-filter" value={historyClient} onChange={(event) => setHistoryClient(event.target.value)}><option value="">{t("allWorkspaces")}</option><option value={connection.client}>{t("currentWorkspace")} · {connection.client}</option>{historyClients.map((client) => <option key={client} value={client}>{client}</option>)}</select></label>
       <label className="field"><span className="field-label">{t("historyFilterSearch")}</span><input value={historyQuery} placeholder={t("historyFilterPlaceholder")} onChange={(event) => setHistoryQuery(event.target.value)} /></label>
-      <label className="field"><span className="field-label">{t("factUser")}</span><select value={historyUser} onChange={(event) => setHistoryUser(event.target.value)}><option value="">{t("historyFilterAll")}</option>{historyUsers.map((user) => <option key={user} value={user}>{user}</option>)}</select></label>
-      <label className="field"><span className="field-label">{t("workspaceLabel")}</span><select value={historyClient} onChange={(event) => setHistoryClient(event.target.value)}><option value="">{t("historyFilterAll")}</option>{historyClients.map((client) => <option key={client} value={client}>{client}</option>)}</select></label>
       <label className="field"><span className="field-label">{t("historyJob")}</span><input value={historyJob} placeholder={t("historyJobPlaceholder")} onChange={(event) => setHistoryJob(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void loadSubmitted(); }} /></label>
-    </div>}
+    </div>
     <div className="resource-workbench">
       <div className="resource-list">
-        <div className="column-heading"><strong>{mode === "file" ? t("fileHistory") : t("submittedHistory")}</strong><span>{mode === "file" ? revisions.length : visibleSubmitted.length}</span></div>
-        {mode === "file" ? <>
-          {revisions.length ? revisions.map((revision) => <SelectableSurface selected={selected.includes(revision.revision)} className="resource-row history-row" key={revision.revision} onClick={() => toggleRevision(revision.revision)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleRevision(revision.revision); } }}><span><strong>#{revision.revision} · {revision.action || t("unknownAction")}</strong><small>{revision.user} · <span className="changelist-number">CL {revision.change || "—"}</span>{revision.time ? ` · ${revision.time}` : ""}</small></span><span><ChangelistDescription value={revision.description} compact />{revision.labels.length ? ` · ${revision.labels.join(", ")}` : ""}</span></SelectableSurface>) : <CompactEmpty text={t("historyEmpty")} />}
-          {revisions.length === fileHistoryLimit && fileHistoryLimit < 5000 && <button className="load-more" type="button" onClick={() => void loadHistory(fileHistoryLimit + 100, false)} disabled={busy}>{t("loadMoreHistory")}</button>}
-        </> : <ChangelistHistory
+        <div className="column-heading"><strong>{t("submittedHistory")}</strong><span>{visibleSubmitted.length}</span></div>
+        <ChangelistHistory
           className="embedded history-submitted-list"
           items={visibleSubmitted}
           busy={busy}
+          showStream
           emptyText={submitted.length === 0 ? t("submittedEmpty") : t("historyFilterEmpty")}
           selectedId={selectedChange}
           agentId={(change) => `submitted-history:${change.id}`}
           onSelect={(change) => void selectSubmitted(change.id)}
           footer={submitted.length === historyLimit && historyLimit < 5000 ? <button className="load-more" type="button" onClick={() => void loadSubmitted(historyLimit + 100, false)} disabled={busy}>{t("loadMoreHistory")}</button> : undefined}
-        />}
+        />
       </div>
       <aside className="resource-inspector">
-        <div className="column-heading"><strong>{mode === "file" ? t("revisionActions") : t("changeDetails")}</strong><span className={mode === "changes" && selectedChange ? "changelist-number" : undefined}>{mode === "file" ? selected.length : selectedChange || "—"}</span></div>
-        {mode === "file" ? <div className="inspector-content">
-          {selected.length === 0 ? <EmptyState title={t("selectRevision")} body={t("previewSelectedRevision")} /> : <>
-            <p>{selected.length === 2 ? t("compareSelectedRevisions") : t("previewSelectedRevision")}</p>
-            <label className="field"><span className="field-label">{t("diffMode")}</span><select value={diffMode} onChange={(event) => setDiffMode(event.target.value as DiffMode)}><option value="default">{t("diffModeDefault")}</option><option value="ignoreWhitespaceChanges">{t("diffModeWhitespaceChanges")}</option><option value="ignoreWhitespace">{t("diffModeWhitespace")}</option><option value="ignoreLineEndings">{t("diffModeLineEndings")}</option></select></label>
-            <div className="inspector-actions"><button className="primary-button" type="button" disabled={!selectedRevision || busy} onClick={() => selectedRevision && void runPreview(() => printRevision(connection, path.trim(), selectedRevision.revision), `${path.trim()}#${selectedRevision.revision}`)}>{t("previewRevision")}</button><button className="secondary-button" type="button" disabled={!selectedRevision || busy} onClick={() => setOutputPath("")}>{t("saveRevision")}</button><button className="secondary-button" type="button" disabled={selected.length !== 2 || busy} onClick={() => void runPreview(() => diffRevisions(connection, path.trim(), selected[0], selected[1], diffMode), `${path.trim()}#${selected[0]} ↔ #${selected[1]}`)}>{t("compareRevisions")}</button><button className="secondary-button" type="button" disabled={!selectedRevision || !previousRevision(selectedRevision.revision) || busy} onClick={() => selectedRevision && void runPreview(() => diffRevisions(connection, path.trim(), previousRevision(selectedRevision.revision)!, selectedRevision.revision, diffMode), path.trim())}>{t("comparePreviousRevision")}</button><button className="secondary-button" type="button" disabled={!selectedRevision || busy} onClick={() => selectedRevision && void runPreview(() => diffRevisionWorkspace(connection, path.trim(), selectedRevision.revision, diffMode), `${path.trim()}#${selectedRevision.revision} ↔ workspace`)}>{t("compareWorkspace")}</button><button className="secondary-button" type="button" disabled={!path.trim() || busy} onClick={() => void loadAnnotations()}>{t("annotateFile")}</button></div>
-          </>}
-          {diff && <div className="history-diff"><h2>{diffTitle}</h2><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}
-          {annotations.length > 0 && <div className="history-diff annotation-view"><h2>{t("annotationTitle")}</h2>{annotations.map((line, index) => <div className="preview-row" key={`${line.change}-${index}`}><span className="changelist-number">{line.change}</span><small>{[line.user, line.date].filter(Boolean).join(" · ")}</small><code>{line.text || " "}</code></div>)}</div>}
-        </div> : !changeDetail ? <EmptyState title={t("changeDetails")} body={t("selectSubmitted")} /> : <div className="inspector-content">
+        <div className="column-heading"><strong>{t("changeDetails")}</strong><span className={selectedChange ? "changelist-number" : undefined}>{selectedChange || "—"}</span></div>
+        {detailLoading && !changeDetail ? <div className="inspector-content"><div className="submitted-detail-loading" role="status"><span className="folder-loading-indicator" aria-hidden="true" /><strong>{t("loadingChangeDetails")}</strong></div></div> : !changeDetail ? <EmptyState title={t("changeDetails")} body={t("selectSubmitted")} /> : <div className="inspector-content">
           <div><h2 className="changelist-number">CL {changeDetail.id}</h2><ChangelistDescription value={changeDetail.description} fallback={t("noDescription")} /></div>
-          <dl className="file-facts"><dt>{t("factUser")}</dt><dd>{changeDetail.user}</dd><dt>{t("workspaceLabel")}</dt><dd>{changeDetail.client}</dd><dt>{t("jobsLabel")}</dt><dd>{changeDetail.jobs.length ? changeDetail.jobs.join(", ") : "—"}</dd><dt>{t("filesLabel")}</dt><dd>{changeDetail.files.length}</dd></dl>
-          <div className="resource-detail-list">{changeDetail.files.map((file) => { const previous = previousRevision(file.revision); return <div className="resource-detail-row" key={`${file.depotPath}-${file.revision}`}><span><strong>{file.depotPath}</strong><small>{file.action}{file.revision ? ` · #${file.revision}` : ""}</small></span><button className="text-button" type="button" onClick={() => previous && void runPreview(() => diffRevisions(connection, file.depotPath, previous, file.revision!, diffMode), `${file.depotPath}#${previous} ↔ #${file.revision}`)} disabled={!previous || busy}>{t("previewFileDiff")}</button></div>; })}</div>
+          <dl className="file-facts"><dt>{t("factUser")}</dt><dd>{changeDetail.user}</dd><dt>{t("workspaceLabel")}</dt><dd>{changeDetail.client}</dd><dt>{t("streamLabel")}</dt><dd>{changeDetail.filesTruncated ? t("largeChangeFullLoadRequired") : sourceStream || t("streamUnknown")}</dd><dt>{t("jobsLabel")}</dt><dd>{changeDetail.jobs.length ? changeDetail.jobs.join(", ") : "—"}</dd><dt>{t("filesLabel")}</dt><dd>{filesFact}</dd></dl>
+          {changeDetail.filesTruncated && <div className="large-change-warning" role="status"><div><strong>{t("largeSubmittedChangeTitle")} · {changeDetail.files.length}+</strong><p>{t("largeSubmittedChangeBody")}</p></div>{fullDetailLoading ? <span className="submitted-detail-loading"><span className="folder-loading-indicator" aria-hidden="true" />{t("loadingAllChangeFiles")}</span> : <button data-agent-id="submitted-load-all-files" className="secondary-button" type="button" onClick={() => setConfirmFullDetail(true)}>{t("loadAllChangeFiles")}</button>}</div>}
+          <div className="column-heading submitted-files-heading"><strong>{t("filesLabel")}</strong><span>{visibleFiles.length} / {filesFact}</span></div>
+          <div className="resource-detail-list">{visibleFiles.map((file) => { const previous = previousRevision(file.revision); return <div className="resource-detail-row" key={`${file.depotPath}-${file.revision}`}><span><strong>{file.depotPath}</strong><small>{file.action}{file.revision ? ` · #${file.revision}` : ""}</small></span><button className="text-button" type="button" onClick={() => previous && void runPreview(() => diffRevisions(connection, file.depotPath, previous, file.revision!), `${file.depotPath}#${previous} ↔ #${file.revision}`)} disabled={!previous || busy}>{t("previewFileDiff")}</button></div>; })}</div>
+          {!changeDetail.filesTruncated && visibleFiles.length < changeDetail.files.length && <button className="load-more submitted-files-more" type="button" onClick={() => setVisibleFileLimit((current) => nextSubmittedFileRenderLimit(current, changeDetail.files.length))}>{t("showMoreChangeFiles")}</button>}
           {diff && <div className="history-diff"><h2>{diffTitle}</h2><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}
-          <button className="danger-button" type="button" onClick={() => selectedChange && setUndoSource(selectedChange)}>{t("rollbackChange")}</button>
+          <div className="inspector-actions"><button className="primary-button" type="button" disabled={busy || safeSync.phase !== "idle" || !hasRevisionScopes} title={!exactFilesReady ? t("largeChangeFullLoadRequired") : undefined} onClick={() => void showRevisionSyncPreview()}>{t("getThisRevision")}</button><button className="secondary-button" type="button" disabled={busy || !canCherryPick} title={!exactFilesReady ? t("largeChangeFullLoadRequired") : !info.clientStream ? t("cherryPickNeedsStreamWorkspace") : !sourceStream ? t("cherryPickUnknownSource") : sourceStream === info.clientStream ? t("cherryPickSameStream") : undefined} onClick={() => selectedChange && sourceStream && setCherrySource({ change: selectedChange, stream: sourceStream })}>{t("cherryPickChange")}</button><button className="danger-button" type="button" disabled={busy} onClick={() => selectedChange && setUndoSource(selectedChange)}>{t("rollbackChange")}</button></div>
         </div>}
       </aside>
     </div>
 
-    {outputPath !== undefined && selectedRevision && <ActionDialog title={t("saveRevision")} confirmLabel={t("saveRevision")} busy={busy} confirmDisabled={!outputPath.trim()} onClose={() => setOutputPath(undefined)} onConfirm={() => void exportRevision()}><p>{path.trim()}#{selectedRevision.revision}</p><label className="field"><span className="field-label">{t("saveRevisionPathPrompt")}</span><input autoFocus value={outputPath} onChange={(event) => setOutputPath(event.target.value)} /></label></ActionDialog>}
-    {undoSource && <UndoDialog connection={connection} sourceChange={undoSource} onClose={() => setUndoSource(undefined)} onComplete={() => { setUndoSource(undefined); setNotice(t("undoSucceeded")); void loadSubmitted(historyLimit); }} />}
+    {syncPreviewOpen && <SyncPreviewDialog preview={syncPreview} busy={busy} acknowledged={syncAcknowledged} onAcknowledged={setSyncAcknowledged} title={t("getThisRevision")} confirmLabel={t("getThisRevision")} onClose={() => setSyncPreviewOpen(false)} onConfirm={() => void getThisRevision()} />}
+    <SafeSyncConflictDialog sync={safeSync} />
+    {undoSource && <UndoDialog connection={connection} sourceChange={undoSource} previewDisabledReason={largeChange ? t("undoPreviewTooManyFiles") : undefined} onClose={() => setUndoSource(undefined)} onComplete={() => { setUndoSource(undefined); setNotice(t("undoSucceeded")); void loadSubmitted(historyLimit); }} />}
+    {cherrySource && info.clientStream && <CherryPickDialog connection={connection} sourceChange={cherrySource.change} sourceStream={cherrySource.stream} targetStream={info.clientStream} onClose={() => setCherrySource(undefined)} onComplete={() => { setCherrySource(undefined); setNotice(t("cherryPickSucceeded")); }} />}
+    {confirmFullDetail && changeDetail && <ActionDialog title={t("loadAllChangeFilesTitle")} confirmLabel={t("loadAllChangeFiles")} busy={false} onClose={() => setConfirmFullDetail(false)} onConfirm={() => void loadFullDetail()}><p>{t("loadAllChangeFilesBody")}</p><dl className="dialog-facts"><dt>{t("changelistLabel")}</dt><dd className="changelist-number">CL {changeDetail.id}</dd><dt>{t("filesLabel")}</dt><dd>{changeDetail.files.length}+</dd></dl></ActionDialog>}
   </View>;
 }

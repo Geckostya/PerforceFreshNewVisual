@@ -37,6 +37,7 @@ import { ItemRowCopy, SelectableRow, SelectableSurface } from "../../shared/Item
 import { startObservedOperation } from "../../shared/operations";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, View } from "../../shared/View";
 import { SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
+import { RefreshButton } from "../../shared/RefreshButton";
 import { partitionArchived } from "../../shared/localArchive";
 import { useArchiveDragDrop } from "../../shared/useArchiveDragDrop";
 import { useLocalArchive } from "../../shared/useLocalArchive";
@@ -65,7 +66,6 @@ import {
   DescriptionField,
   Fact,
   FileSelectionSummary,
-  RefreshIcon,
   SubmitDialog,
   fileName,
   formatTime,
@@ -539,9 +539,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       onDismissNotice={() => setNotice("")}
       actions={<>
           <span className="auto-refresh"><span aria-hidden="true" />{t("refreshOnFocus")}</span>
-          <button className="secondary-button" type="button" onClick={refreshData} disabled={state === "loading"}>
-            <RefreshIcon /> {state === "loading" ? t("refreshing") : t("refresh")}
-          </button>
+          <RefreshButton busy={state === "loading"} onClick={() => void refreshData()} />
           <button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start(["//..."])} disabled={safeSync.phase !== "idle"}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button>
       </>}
     >

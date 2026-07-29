@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { overwritePathsAfterForce, shouldShowSyncConflictDialog, updateOverwritePaths } from "./SafeSync";
+import { exactOverwriteScopes, overwritePathsAfterForce, shouldShowSyncConflictDialog, updateOverwritePaths } from "./SafeSync";
 
 describe("safe sync writable choices", () => {
   it("keeps overwrite choices unique and removable per file", () => {
@@ -20,5 +20,12 @@ describe("safe sync writable choices", () => {
     expect(shouldShowSyncConflictDialog(paths, "idle")).toBe(true);
     expect(shouldShowSyncConflictDialog(paths, "forcing")).toBe(false);
     expect(shouldShowSyncConflictDialog(paths, "checking")).toBe(false);
+  });
+
+  it("keeps requested revisions when a writable conflict is force-synced", () => {
+    expect(exactOverwriteScopes(["//Acme/main/a.txt", "//Acme/main/b.txt"], [
+      { depotPath: "//Acme/main/a.txt", action: "updated", revision: "7" },
+      { depotPath: "//Acme/main/b.txt", action: "updated" },
+    ])).toEqual(["//Acme/main/a.txt#7", "//Acme/main/b.txt"]);
   });
 });

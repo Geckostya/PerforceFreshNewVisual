@@ -3,6 +3,7 @@ import { fixJob, listFixes, listJobs, normalizeAppError, unfixJob } from "../../
 import { useLocale } from "../../shared/i18n";
 import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, Fix, Job } from "../../shared/models";
+import { RefreshButton } from "../../shared/RefreshButton";
 import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
 
 type JobDialog = { kind: "attach"; change: string } | { kind: "detach"; change: string };
@@ -63,7 +64,7 @@ export function JobsView({ connection, initialSearch }: { connection: Connection
     title={t("jobsTitle")}
     subtitle={t("jobsBody")}
     error={error}
-    actions={<button className="secondary-button" type="button" onClick={() => void load()} disabled={busy}>{busy ? t("loadingJobs") : t("refresh")}</button>}
+    actions={<RefreshButton busy={busy} onClick={() => void load()} />}
   >
     <div className="resource-toolbar">
       <label className="field"><span className="field-label">{t("jobsSearch")}</span><input value={query} placeholder={t("jobsSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void load(); }} /></label>

@@ -1,16 +1,18 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Check, Inbox, X } from "lucide-react";
 import { useLocale } from "./i18n";
 import type { AppError } from "./models";
 import { formatEta, operationProgress, useActiveOperation } from "./operations";
 
-export function View({ id, title, subtitle, actions, statusBarActions, operationLabel, error, notice, onDismissNotice, className = "", children }: {
+export function View({ id, title, subtitle, actions, statusBarActions, operationLabel, operationDetail, operationRatio, error, notice, onDismissNotice, className = "", children }: {
   id: string;
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
   statusBarActions?: ReactNode;
   operationLabel?: string;
+  operationDetail?: string;
+  operationRatio?: number;
   error?: AppError;
   notice?: string;
   onDismissNotice?: () => void;
@@ -27,19 +29,21 @@ export function View({ id, title, subtitle, actions, statusBarActions, operation
   }, [activeSync?.operationId]);
   const progress = activeSync && operationProgress(activeSync);
   const syncSummary = activeSync && [
+    activeSync.currentPath?.split("/").at(-1),
     activeSync.totalFiles ? `${activeSync.processed} / ${activeSync.totalFiles}` : `${activeSync.processed} ${t("operationFilesProcessed")}`,
     progress?.remaining !== undefined ? `${progress.remaining} ${t("operationFilesRemaining")}` : undefined,
     progress?.etaSeconds !== undefined ? formatEta(progress.etaSeconds) : undefined,
-    activeSync.currentPath?.split("/").at(-1),
   ].filter(Boolean).join(" · ");
-  const operationStatus = activeSync ? <span className={`workspace-operation-status${progress?.ratio !== undefined ? " has-progress" : ""}`} role="status" title={activeSync.scope}>
-    <span className="folder-loading-indicator" aria-hidden="true" />
-    <span className="workspace-operation-copy">{t("updatingProject")} · {syncSummary}</span>
-    {progress?.ratio !== undefined && <span className="workspace-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}
-  </span> : operationLabel ? <span className="workspace-operation-status" role="status">
-    <span className="folder-loading-indicator" aria-hidden="true" />
-    <span className="workspace-operation-copy">{operationLabel}</span>
-  </span> : null;
+  const operationStatus = activeSync ? <WorkspaceOperationStatus
+    label={t("updatingProject")}
+    detail={syncSummary}
+    ratio={progress?.ratio}
+    title={activeSync.scope}
+  /> : operationLabel ? <WorkspaceOperationStatus
+    label={operationLabel}
+    detail={operationDetail}
+    ratio={operationRatio}
+  /> : null;
   return <section className={`resource-view ${className}`.trim()} aria-labelledby={id}>
     <header className="view-header">
       <div className="view-heading">
@@ -55,6 +59,23 @@ export function View({ id, title, subtitle, actions, statusBarActions, operation
     {notice && <Notice text={notice} onDismiss={onDismissNotice} />}
     {children}
   </section>;
+}
+
+export function WorkspaceOperationStatus({ label, detail, ratio, title }: {
+  label: string;
+  detail?: string;
+  ratio?: number;
+  title?: string;
+}) {
+  const showProgress = ratio !== undefined;
+  const percentage = ratio === undefined ? undefined : Math.round(ratio * 100);
+  return <span className={`workspace-operation-status${showProgress ? " has-progress" : ""}`} role="status" title={title} aria-label={[detail, label].filter(Boolean).join(" · ")}>
+    <span className="workspace-operation-copy">{detail}</span>
+    {showProgress
+      ? <span data-agent-id="workspace-operation-progress" className="workspace-progress" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage}><span style={{ width: `${percentage}%` }} /></span>
+      : <span className="workspace-operation-action">{label}</span>}
+    <span className="folder-loading-indicator" aria-hidden="true" />
+  </span>;
 }
 
 export function ErrorBanner({ error }: { error: AppError }) {
@@ -77,12 +98,54 @@ export function CompactEmpty({ text }: { text: string }) {
 
 export function Modal({ title, busy, wide, onClose, children }: { title: ReactNode; busy: boolean; wide?: boolean; onClose: () => void; children: ReactNode }) {
   const { t } = useLocale();
+  const titleId = useId();
+  const dialog = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  const isBusy = useRef(busy);
+  close.current = onClose;
+  isBusy.current = busy;
+
   useEffect(() => {
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) onClose(); };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [busy, onClose]);
-  return <div className="dialog-layer"><section className={`action-dialog${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="action-dialog-title"><div className="dialog-heading"><h2 id="action-dialog-title">{title}</h2><button type="button" onClick={onClose} disabled={busy} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></div>{children}</section></div>;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const focusable = () => [...(dialog.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex='-1'])") || [])];
+    if (!dialog.current?.contains(document.activeElement)) (focusable()[0] || dialog.current)?.focus();
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape" && !isBusy.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        close.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog.current) return;
+      const items = focusable();
+      if (!items.length) {
+        event.preventDefault();
+        dialog.current.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.current.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown, true);
+      returnFocus?.focus();
+    };
+  }, []);
+
+  return <div className="dialog-layer"><section ref={dialog} className={`action-dialog${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+    <div className="dialog-heading"><h2 id={titleId}>{title}</h2><button type="button" onClick={onClose} disabled={busy} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></div>
+    <div className="dialog-content">{children}</div>
+  </section></div>;
 }
 
 export function ActionDialog({ title, confirmLabel, busy, confirmDisabled, danger, onClose, onConfirm, children }: {

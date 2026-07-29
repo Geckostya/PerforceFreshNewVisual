@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="P4FNV UI redesign exploration: comparison of the current interface and two proposed visual directions." />
+    <title>P4FNV — UI redesign proposal</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="site-brand" href="#top" aria-label="P4FNV redesign — наверх">
+        <span class="site-logo" aria-hidden="true">P4</span>
+        <span>P4FNV <b>UI study</b></span>
+      </a>
+      <nav aria-label="Навигация по странице">
+        <a href="#comparison">Сравнение</a>
+        <a href="#directions">Варианты</a>
+        <a href="#system">Система</a>
+      </nav>
+      <span class="study-badge">Концепт · приложение не изменено</span>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="kicker"><span></span> Visual direction 2026</p>
+          <h1>Тот же P4FNV.<br /><em>Больше ясности.</em></h1>
+          <p class="hero-lede">
+            Визуальное обновление без перестройки привычных Perforce-сценариев:
+            меньше визуального шума, сильнее иерархия, быстрее сканирование больших списков.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#comparison">Смотреть было → стало</a>
+            <a class="button secondary" href="#directions">Сравнить варианты</a>
+          </div>
+          <dl class="hero-stats">
+            <div><dt>3</dt><dd>ключевых экрана</dd></div>
+            <div><dt>2</dt><dd>направления</dd></div>
+            <div><dt>0</dt><dd>потерянных функций</dd></div>
+          </dl>
+        </div>
+        <div class="hero-art" aria-label="Фрагмент предлагаемого интерфейса">
+          <div class="orb orb-one"></div><div class="orb orb-two"></div>
+          <div class="floating-app">
+            <div class="floating-top"><i></i><i></i><i></i><span>DG_VS_Gecko_PC</span></div>
+            <div class="floating-body">
+              <aside><b>P4</b><span class="active"></span><span></span><span></span><span></span><span></span></aside>
+              <section>
+                <small>WORKSPACE / FILES</small><h3>Project files</h3>
+                <div class="floating-toolbar"><i></i><i></i><i></i></div>
+                <div class="floating-grid">
+                  <div class="floating-list"><p></p><p></p><p class="selected"></p><p></p><p></p></div>
+                  <div class="floating-detail"><span></span><h4>PlayerController.cpp</h4><p></p><p></p><button>View diff</button></div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="principles" aria-label="Принципы редизайна">
+        <article><span>01</span><div><h2>Знакомая структура</h2><p>Навигация, toolbar, список и inspector остаются там, где их ожидает пользователь.</p></div></article>
+        <article><span>02</span><div><h2>Спокойная иерархия</h2><p>Поверхности и отступы разделяют уровни лучше, чем повторяющиеся рамки.</p></div></article>
+        <article><span>03</span><div><h2>Состояния читаются быстрее</h2><p>Статус — это компактная метка с текстом и иконкой, цвет остаётся вспомогательным.</p></div></article>
+      </section>
+
+      <section class="comparison-section" id="comparison">
+        <div class="section-heading">
+          <div><p class="kicker"><span></span> Interactive comparison</p><h2>Было — стало</h2></div>
+          <p>Переключайте рабочую область и направление. Макеты повторяют текущую функциональную модель P4FNV.</p>
+        </div>
+
+        <div class="demo-controls" role="group" aria-label="Настройки сравнения">
+          <div class="control-group"><span>Экран</span><div class="segmented" id="screen-switcher">
+            <button class="active" data-screen="files">Files</button>
+            <button data-screen="changes">My Changes</button>
+            <button data-screen="streams">Streams</button>
+          </div></div>
+          <div class="control-group"><span>Стало</span><div class="segmented" id="variant-switcher">
+            <button class="active" data-variant="calm">A · Calm Pro</button>
+            <button data-variant="dense">B · Focus Dense</button>
+          </div></div>
+        </div>
+
+        <div class="comparison-grid">
+          <article class="comparison-card before-card">
+            <div class="card-label"><div><span class="label-dot"></span><b>Было</b></div><small>Текущий визуальный язык</small></div>
+            <div class="app-mock current" id="before-mock" aria-label="Текущий интерфейс P4FNV"></div>
+          </article>
+          <article class="comparison-card after-card">
+            <div class="card-label"><div><span class="label-dot"></span><b>Стало</b></div><small id="after-caption">Вариант A · Calm Pro</small></div>
+            <div class="app-mock proposed calm" id="after-mock" aria-label="Предлагаемый интерфейс P4FNV"></div>
+          </article>
+        </div>
+
+        <div class="delta-strip" id="delta-strip" aria-live="polite"></div>
+      </section>
+
+      <section class="directions-section" id="directions">
+        <div class="section-heading">
+          <div><p class="kicker"><span></span> Two directions</p><h2>Два характера одного продукта</h2></div>
+          <p>Оба варианта используют ту же информационную архитектуру. Отличаются плотность, контраст и акцент.</p>
+        </div>
+        <div class="direction-grid">
+          <article class="direction-card recommended">
+            <div class="direction-top"><span class="direction-letter">A</span><span class="recommendation">Рекомендуемый</span></div>
+            <h3>Calm Pro</h3><p>Светлый, собранный интерфейс для длинной рабочей сессии. Мягкие поверхности, заметный selection, просторный inspector.</p>
+            <div class="palette"><i style="--c:#111724"></i><i style="--c:#f4f6fa"></i><i style="--c:#ffffff"></i><i style="--c:#5b5cf0"></i><i style="--c:#dce3ff"></i></div>
+            <ul><li>Лучший баланс плотности и читаемости</li><li>Выразительная, но не тяжёлая навигация</li><li>Подходит как новая базовая тема</li></ul>
+            <button class="direction-action" data-select-variant="calm">Показать в сравнении <span>→</span></button>
+          </article>
+          <article class="direction-card dark-card">
+            <div class="direction-top"><span class="direction-letter">B</span><span class="audience">Power users</span></div>
+            <h3>Focus Dense</h3><p>Контрастная тёмная среда с более плотными рядами и компактной rail-навигацией. Больше данных помещается без потери структуры.</p>
+            <div class="palette"><i style="--c:#0d1118"></i><i style="--c:#151b25"></i><i style="--c:#202838"></i><i style="--c:#68d6c0"></i><i style="--c:#273f43"></i></div>
+            <ul><li>Высокая информационная плотность</li><li>Усиленный фокус на рабочем контенте</li><li>Подходит как optional compact theme</li></ul>
+            <button class="direction-action" data-select-variant="dense">Показать в сравнении <span>→</span></button>
+          </article>
+        </div>
+      </section>
+
+      <section class="system-section" id="system">
+        <div class="section-heading">
+          <div><p class="kicker"><span></span> Design system</p><h2>Что именно меняется</h2></div>
+          <p>Не новая дизайн-система с нуля, а аккуратная настройка существующих токенов и shared-компонентов.</p>
+        </div>
+        <div class="system-grid">
+          <article class="system-card type-card"><span class="system-number">01</span><h3>Типографика</h3><div class="type-sample"><b>Aa</b><div><strong>Segoe UI Variable</strong><small>12 / 14 / 16 / 20 / 28</small></div></div><p>Контрактный scale сохранён. Усилен контраст заголовков и secondary text.</p></article>
+          <article class="system-card spacing-card"><span class="system-number">02</span><h3>Пространство</h3><div class="spacing-sample"><i></i><i></i><i></i><i></i><i></i></div><p>Сетка 4 px сохранена. Крупные зоны получают 20–24 px, control-группы — 8–12 px.</p></article>
+          <article class="system-card state-card"><span class="system-number">03</span><h3>Состояния</h3><div class="state-sample"><span class="clean">● Clean</span><span class="opened">● Opened</span><span class="warning">● Outdated</span></div><p>Текст и форма всегда дублируют цвет. Выбор заметен отдельным контуром и фоном.</p></article>
+          <article class="system-card motion-card"><span class="system-number">04</span><h3>Движение</h3><div class="motion-sample"><span></span><span></span><span></span></div><p>120–180 ms только для focus, hover, pane и refresh; полностью отключается с reduced motion.</p></article>
+        </div>
+      </section>
+
+      <section class="handoff-section">
+        <p class="kicker"><span></span> Suggested rollout</p>
+        <h2>Менять можно постепенно</h2>
+        <ol>
+          <li><span>1</span><div><b>Shell + tokens</b><p>Цвета, поверхности, header и sidebar без изменения feature-компонентов.</p></div></li>
+          <li><span>2</span><div><b>Lists + inspector</b><p>Единый selected state, статусные метки и визуальная иерархия workbench.</p></div></li>
+          <li><span>3</span><div><b>Screen polish</b><p>Files, Changes и Streams; затем dark theme, 125/200% scale и RU/EN QA.</p></div></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer><span>P4FNV UI redesign study</span><span>Standalone prototype · July 2026</span></footer>
+    <script src="script.js"></script>
+  </body>
+</html>

@@ -4,7 +4,7 @@ use std::{
     sync::Mutex,
 };
 
-use crate::models::{AppError, AppSettings, ConnectionInput, ErrorKind};
+use crate::models::{AppError, AppSettings, ConnectionInput, ErrorKind, ThemeMode};
 
 const MAX_RECENT_CONNECTIONS: usize = 10;
 const MAX_FAVORITE_CONNECTIONS: usize = 20;
@@ -25,6 +25,13 @@ pub fn save_language(path: &Path, language: String) -> Result<(), AppError> {
     }
     let mut settings = load_unlocked(path)?;
     settings.language = language;
+    save_unlocked(path, &settings)
+}
+
+pub fn save_theme(path: &Path, theme: ThemeMode) -> Result<(), AppError> {
+    let _guard = SETTINGS_LOCK.lock().map_err(lock_error)?;
+    let mut settings = load_unlocked(path)?;
+    settings.theme = theme;
     save_unlocked(path, &settings)
 }
 
@@ -266,6 +273,7 @@ mod tests {
         let path = directory.join("settings.json");
         let mut expected = AppSettings {
             language: "en".to_owned(),
+            theme: ThemeMode::Dark,
             delete_added_files_on_revert: true,
             ..Default::default()
         };
@@ -274,6 +282,9 @@ mod tests {
             .push(connection("ssl:p4:1666", "alex", "main"));
 
         save_unlocked(&path, &expected).unwrap();
+        assert_eq!(load_unlocked(&path).unwrap(), expected);
+        save_theme(&path, ThemeMode::Light).unwrap();
+        expected.theme = ThemeMode::Light;
         assert_eq!(load_unlocked(&path).unwrap(), expected);
         fs::remove_dir_all(directory).unwrap();
     }

@@ -65,20 +65,20 @@ Rust backend:
 
 `p4 filelog -Mj` returns revisions as indexed fields (`rev0`, `change0`, `how0,0`), so the history parser expands each index into a separate `FileRevision`; flat records are also supported for compatibility and unit fixtures.
 
-Exporting a submitted changelist first rereads exact affected files through `p4 describe -s`, validates the numbered change, numeric revisions, and safe relative depot paths, then sequentially prints every available `depotFile#rev` into a newly selected directory. An existing destination is not overwritten, deleted revisions are skipped, and a failure after the first saved file returns `partial_result` while leaving already-retrieved files available to the user.
+Submitted filtering sends validated user/workspace values to bounded `p4 changes` queries. The Submitted screen enriches that page through `p4 describe -s -m 1` and longest stream-prefix matching; other consumers skip it. Selection uses `describe -s -m limit+1`, reporting truncation without an unbounded read; only explicit choice requests complete detail. Get This Revision streams exact `depotFile#rev` scopes through `p4 -x -` and shared safe sync. Cherry-pick rereads the change, verifies one source stream and the current target, then previews or applies `p4 integrate -S source -P target -Af source/...@=change` into an explicit pending changelist. Resolve, review, and submit remain separate decisions.
 
 ## Short and long-running operations
 
-Short read requests return a DTO from an ordinary Tauri command. Long-running sync/submit and future integrate/large-transfer operations use one protocol:
+Short read requests return a DTO from an ordinary Tauri command. Long-running sync, submit, reconcile, and future integrate/large-transfer operations use one protocol:
 
 1. The frontend subscribes to operation events before starting the command.
 2. `start_*` creates a separate child process and returns `operation_id`.
-3. The backend publishes `started`, `progress`, `warning`, `completed`, `failed`, or `cancelled`; sync progress additionally carries `totalFileCount`, `totalFileSize`, and accumulated `fileSize` from tagged output of the running sync, without a separate blocking preflight.
+3. The backend publishes `started`, `progress`, `warning`, `completed`, `failed`, or `cancelled`; sync progress additionally carries `totalFileCount`, `totalFileSize`, and accumulated `fileSize` from tagged output of the running sync, without a separate blocking preflight. Reconcile streams candidates during preview, then reports separate validation and apply phases against the selected-file total.
 4. The app-level Operations Center is the only progress/cancel/retry surface; sync retry preserves the original array of file/folder scopes without merging them into one filespec. The backend does not start a second sync before the first terminal event.
 5. `cancel_operation(id)` signals the dedicated waiter channel for the operation. The waiter polls `Child::try_wait`, calls `Child::kill` and `wait` on the signal, then publishes terminal `cancelled`; blocking `Child::wait` does not hold the mutex needed for cancellation.
 6. After the terminal event, the handle is removed and the feature rereads server state.
 
-Cancel does not mean rollback. Retrying a mutation is allowed only as a new explicitly confirmed workflow after read-back; submit/integrate are not automatically retried when the result is unknown.
+Cancel does not mean rollback. Cancelling reconcile stops the child process and refreshes Files, but files opened before termination remain open. Retrying a mutation is allowed only as a new explicitly confirmed workflow after read-back; submit/integrate are not automatically retried when the result is unknown.
 
 ## Data and mutation safety
 

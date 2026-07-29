@@ -58,7 +58,34 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   }
 
   function operationLabel(kind: string) {
-    return kind === "submit" ? t("operationSubmit") : t("operationSync");
+    if (kind === "submit") return t("operationSubmit");
+    if (kind === "reconcile_preview") return t("operationReconcilePreview");
+    if (kind === "reconcile") return t("operationReconcile");
+    return t("operationSync");
+  }
+
+  function operationPhase(item: OperationSnapshot) {
+    if (item.phase === "scan") return t("reconcilePhaseScan");
+    if (item.phase === "validate") return t("reconcilePhaseValidate");
+    if (item.phase === "apply") return t("reconcilePhaseApply");
+    return undefined;
+  }
+
+  function operationSummary(item: OperationSnapshot) {
+    const progress = operationProgress(item);
+    const count = item.operationKind === "reconcile_preview"
+      ? `${item.processed} ${t("reconcileCandidatesFound")}`
+      : item.operationKind === "reconcile" && item.phase === "validate"
+        ? item.totalFiles === undefined ? `${item.processed} ${t("reconcileFilesChecked")}` : `${item.processed} / ${item.totalFiles} ${t("reconcileFilesChecked")}`
+        : item.operationKind === "reconcile" && item.phase === "apply"
+          ? item.totalFiles === undefined ? `${item.processed} ${t("reconcileFilesOpened")}` : `${item.processed} / ${item.totalFiles} ${t("reconcileFilesOpened")}`
+          : item.totalFiles ? `${item.processed} / ${item.totalFiles}` : `${item.processed} ${t("operationFilesProcessed")}`;
+    return [
+      operationPhase(item),
+      count,
+      progress.remaining !== undefined ? `${progress.remaining} ${t("operationFilesRemaining")}` : undefined,
+      progress.etaSeconds !== undefined ? formatEta(progress.etaSeconds) : undefined,
+    ].filter(Boolean).join(" · ");
   }
 
   if (items.length === 0) return null;
@@ -69,7 +96,7 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
         {retryError && <p className="error-banner" role="alert">{t("operationRetryFailed")}</p>}
         {cancelError && <p className="error-banner" role="alert">{t("operationCancelFailed")}</p>}
         {[...items].reverse().slice(0, 12).map((item) => { const progress = operationProgress(item); return <article className={`operation-item operation-${item.status}`} key={item.operationId}>
-          <div><strong>{operationLabel(item.operationKind)}{cancelling.includes(item.operationId) ? <span className="operation-state">{t("operationCancelling")}</span> : item.status === "cancelled" ? <span className="operation-state">{t("operationCancelled")}</span> : item.status === "completed" ? <span className="operation-state">{t("operationCompleted")}</span> : null}</strong><small className="operation-summary">{item.totalFiles ? `${item.processed} / ${item.totalFiles}` : `${item.processed} ${t("operationFilesProcessed")}`}{progress.remaining !== undefined ? ` · ${progress.remaining} ${t("operationFilesRemaining")}` : ""}{progress.etaSeconds !== undefined ? ` · ${formatEta(progress.etaSeconds)}` : ""}</small>{item.currentPath && <small className="operation-current-path" title={item.currentPath}>{item.currentPath}</small>}{progress.ratio !== undefined && <span className="operation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}{item.message && <span className="operation-message">{item.message}</span>}</div>
+          <div><strong>{operationLabel(item.operationKind)}{cancelling.includes(item.operationId) ? <span className="operation-state">{t("operationCancelling")}</span> : item.status === "cancelled" ? <span className="operation-state">{t("operationCancelled")}</span> : item.status === "completed" ? <span className="operation-state">{t("operationCompleted")}</span> : null}</strong><small className="operation-summary">{operationSummary(item)}</small>{item.currentPath && <small className="operation-current-path" title={item.currentPath}>{item.currentPath}</small>}{progress.ratio !== undefined && <span className="operation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}{item.message && <span className="operation-message">{item.message}</span>}</div>
           {isOperationActive(item.status) && <button type="button" className="secondary-button" onClick={() => void cancel(item)} disabled={cancelling.includes(item.operationId)}>{cancelling.includes(item.operationId) ? t("operationCancelling") : t("cancelOperation")}</button>}
           {(item.status === "failed" || item.status === "cancelled") && item.retryable && item.operationKind === "sync" && <button type="button" className="secondary-button" onClick={() => setRetryCandidate(item)}>{t("retryOperation")}</button>}
         </article>; })}

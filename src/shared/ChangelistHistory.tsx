@@ -18,6 +18,7 @@ export interface ChangelistHistoryProps {
   emptyText?: string;
   loadingText?: string;
   selectedId?: string;
+  showStream?: boolean;
   className?: string;
   footer?: ReactNode;
   agentId?: (item: PendingChange) => string;
@@ -34,7 +35,7 @@ export function formatChangelistTime(value: string | undefined, language: string
     : value;
 }
 
-export function ChangelistHistory({ items, busy = false, title, summary, emptyText, loadingText, selectedId, className = "", footer, agentId, onSelect, onOpen, onContextMenu }: ChangelistHistoryProps) {
+export function ChangelistHistory({ items, busy = false, title, summary, emptyText, loadingText, selectedId, showStream = false, className = "", footer, agentId, onSelect, onOpen, onContextMenu }: ChangelistHistoryProps) {
   const { language, t } = useLocale();
   const interactive = Boolean(onSelect || onOpen || onContextMenu);
   const selectable = Boolean(onSelect || onOpen);
@@ -79,7 +80,7 @@ export function ChangelistHistory({ items, busy = false, title, summary, emptyTe
           onKeyDown={(event) => handleKey(event, item)}
         >
           <span className="changelist-history-change changelist-number">CL {item.id}</span>
-          <span className="changelist-history-copy"><ChangelistDescription value={item.description} fallback={t("noDescription")} compact /><small>{[item.user, item.client, formatChangelistTime(item.time, language)].filter(Boolean).join(" · ")}</small></span>
+          <span className="changelist-history-copy"><ChangelistDescription value={item.description} fallback={t("noDescription")} compact /><small>{[showStream ? item.stream : undefined, item.user, item.client, formatChangelistTime(item.time, language)].filter(Boolean).join(" · ")}</small></span>
         </SelectableSurface>;
       }) : emptyText ? <CompactEmpty text={emptyText} /> : null}
     </div>

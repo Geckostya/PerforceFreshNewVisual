@@ -104,6 +104,7 @@ pub struct ConnectionInput {
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
     pub language: String,
+    pub theme: ThemeMode,
     pub recent_connections: Vec<ConnectionInput>,
     pub favorite_connections: Vec<ConnectionInput>,
     pub delete_added_files_on_revert: bool,
@@ -113,11 +114,21 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             language: "en".to_owned(),
+            theme: ThemeMode::System,
             recent_connections: Vec::new(),
             favorite_connections: Vec::new(),
             delete_added_files_on_revert: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -306,6 +317,10 @@ pub struct OperationEvent {
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconcile_items: Option<Vec<ReconcileItem>>,
     pub retryable: bool,
 }
 
@@ -318,6 +333,8 @@ pub struct PendingChange {
     pub client: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -510,6 +527,24 @@ pub struct SubmittedChangeDetail {
     pub time: Option<String>,
     pub jobs: Vec<String>,
     pub files: Vec<SubmittedFile>,
+    pub files_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmittedFilterOptions {
+    pub users: Vec<String>,
+    pub clients: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CherryPickPreviewItem {
+    pub source_path: String,
+    pub target_path: String,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

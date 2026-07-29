@@ -81,12 +81,13 @@ export function formatDepotDate(value: string | undefined, language: string): st
     : value;
 }
 
-export function DepotOverview({ connection, refreshKey, initialScope, onDownload, onContextMenu }: {
+export function DepotOverview({ connection, refreshKey, initialScope, onDownload, onContextMenu, onBusyChange }: {
   connection: ConnectionInput;
   refreshKey: number;
   initialScope?: string;
   onDownload: (target: DepotOverviewMenuTarget) => void;
   onContextMenu: (target: DepotOverviewMenuTarget, position: MenuPosition) => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const { language, t } = useLocale();
   const [depots, setDepots] = useState<DepotSummary[]>([]);
@@ -105,6 +106,8 @@ export function DepotOverview({ connection, refreshKey, initialScope, onDownload
   const [historyBusy, setHistoryBusy] = useState(false);
   const [error, setError] = useState<AppError>();
   const resourceRequest = useRef(0);
+
+  useEffect(() => onBusyChange?.(busy), [busy, onBusyChange]);
 
   useEffect(() => {
     let active = true;

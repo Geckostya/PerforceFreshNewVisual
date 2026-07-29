@@ -42,8 +42,11 @@ export interface ConnectionInput {
   p4Enviro?: string;
 }
 
+export type ThemeMode = "system" | "light" | "dark";
+
 export interface AppSettings {
   language: string;
+  theme: ThemeMode;
   recentConnections: ConnectionInput[];
   favoriteConnections: ConnectionInput[];
   deleteAddedFilesOnRevert: boolean;
@@ -153,6 +156,8 @@ export interface OperationEvent {
   message?: string;
   scope?: string;
   scopes?: string[];
+  phase?: "scan" | "validate" | "apply" | string;
+  reconcileItems?: ReconcileItem[];
   retryable: boolean;
 }
 
@@ -162,6 +167,7 @@ export interface PendingChange {
   user: string;
   client: string;
   time?: string;
+  stream?: string;
 }
 
 export interface Job {
@@ -374,6 +380,8 @@ export interface FileRevision {
 }
 
 export interface SubmittedFile { depotPath: string; action: string; revision?: string; fileType?: string; }
-export interface SubmittedChangeDetail { id: string; description: string; user: string; client: string; time?: string; jobs: string[]; files: SubmittedFile[]; }
+export interface SubmittedChangeDetail { id: string; description: string; user: string; client: string; time?: string; jobs: string[]; files: SubmittedFile[]; filesTruncated: boolean; }
+export interface SubmittedFilterOptions { users: string[]; clients: string[]; }
 export interface ChangeExportResult { savedFiles: number; skippedFiles: number; }
 export interface UndoPreviewItem { depotPath: string; action: string; localPath?: string; }
+export interface CherryPickPreviewItem { sourcePath: string; targetPath: string; action: string; localPath?: string; }

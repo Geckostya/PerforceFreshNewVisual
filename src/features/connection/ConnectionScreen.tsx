@@ -15,6 +15,7 @@ import {
   testConnection,
 } from "../../shared/api";
 import { LanguagePicker } from "../../shared/LanguagePicker";
+import { ThemePicker } from "../../shared/ThemePicker";
 import { useLocale, type TranslationKey } from "../../shared/i18n";
 import type { AppError, ConnectionInput, ErrorKind, LoginStatus, P4Detection, P4Info, TrustEntry, WorkspaceSummary } from "../../shared/models";
 import { connectionForServer } from "../../shared/connection";
@@ -287,6 +288,7 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
         </div>
         <div className="header-actions">
           <span className="header-meta">{t("headerSubtitle")}</span>
+          <ThemePicker onSaveError={() => setSettingsWarning(true)} />
           <LanguagePicker onSaveError={() => setSettingsWarning(true)} />
         </div>
       </header>

@@ -6,6 +6,7 @@ describe("connectionToAutoOpen", () => {
   it("uses the most recent complete workspace connection", () => {
     const settings: AppSettings = {
       language: "en",
+      theme: "system",
     deleteAddedFilesOnRevert: false,
     favoriteConnections: [],
       recentConnections: [
@@ -20,6 +21,7 @@ describe("connectionToAutoOpen", () => {
   it("does not auto-open an incomplete saved profile", () => {
     const settings: AppSettings = {
       language: "en",
+      theme: "system",
     deleteAddedFilesOnRevert: false,
     favoriteConnections: [],
       recentConnections: [{ port: "p4:1666", user: "alex", client: "  " }],

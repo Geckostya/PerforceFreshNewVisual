@@ -13,7 +13,7 @@ export function CommandPalette({ onNavigate, onFocusGoTo }: { onNavigate: (view:
     { id: "workspace" as const, searchText: `${t("workspaceFiles")} workspace` },
     { id: "changes" as const, searchText: `${t("myChanges")} changes` },
     { id: "streams" as const, searchText: `${t("streamsTitle")} streams` },
-    { id: "history" as const, searchText: `${t("fileHistory")} history` },
+    { id: "history" as const, searchText: `${t("submittedHistory")} submitted history` },
     { id: "depot" as const, searchText: `${t("depotBrowser")} depot` },
     { id: "jobs" as const, searchText: `${t("jobsTitle")} jobs` },
     { id: "labels" as const, searchText: `${t("labelsTitle")} labels` },
@@ -53,7 +53,7 @@ export function CommandPalette({ onNavigate, onFocusGoTo }: { onNavigate: (view:
   }
 
   function label(id: PaletteCommandId) {
-    const keys = { workspace: "filesTitle", changes: "myChanges", streams: "streamsTitle", history: "fileHistory", depot: "depotBrowser", jobs: "jobsTitle", labels: "labelsTitle", shelves: "shelvesTitle", goTo: "globalGoTo" } as const;
+    const keys = { workspace: "filesTitle", changes: "myChanges", streams: "streamsTitle", history: "submittedHistory", depot: "depotBrowser", jobs: "jobsTitle", labels: "labelsTitle", shelves: "shelvesTitle", goTo: "globalGoTo" } as const;
     return t(keys[id]);
   }
 

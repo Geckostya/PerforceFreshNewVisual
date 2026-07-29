@@ -7,6 +7,7 @@ use std::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -124,19 +125,29 @@ pub(super) fn run_output_with_stdin(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| launch_error(path, error))?;
-    child
+    let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не удалось открыть stdin p4."))?
-        .write_all(input)
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не удалось открыть stdin p4."))?;
+    let input = input.to_vec();
+    let writer = thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().map_err(|error| {
+        AppError::new(ErrorKind::CommandFailed, "Не удалось дождаться ответа p4.")
+            .with_diagnostics(error.to_string())
+    })?;
+    writer
+        .join()
+        .map_err(|_| {
+            AppError::new(
+                ErrorKind::CommandFailed,
+                "Передача данных в p4 была прервана.",
+            )
+        })?
         .map_err(|error| {
             AppError::new(ErrorKind::CommandFailed, "Не удалось передать данные в p4.")
                 .with_diagnostics(error.to_string())
         })?;
-    child.wait_with_output().map_err(|error| {
-        AppError::new(ErrorKind::CommandFailed, "Не удалось дождаться ответа p4.")
-            .with_diagnostics(error.to_string())
-    })
+    Ok(output)
 }
 
 pub(super) fn resolve_executable(explicit_path: Option<&str>) -> Result<PathBuf, AppError> {

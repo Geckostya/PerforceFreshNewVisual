@@ -8,13 +8,14 @@ Current status for streams, integration, shared shelves, jobs, labels, and locks
 - [~] P1 Confirmed workspace/stream switching with local/content strategies exists; live standard/commit-edge coverage is not recorded.
 - [x] P1 Basic lock/unlock is available for selected opened files.
 - [~] P1 Shared Shelves can browse, inspect, unshelve, reshelve selected files, and export one file; advanced topology and batch export remain.
+- [x] P1 Exact submitted-changelist cherry-pick previews and opens files from one foreign source stream into the current stream without automatic resolve or submit.
 - [~] P1 Jobs can search, inspect fixes, attach/detach, and filter history; create/edit/status workflows remain.
 - [~] P1 Labels can search, inspect files, and use safe sync; create/edit/delete/tag operations remain.
 
 ## P1 gaps
 
 - [ ] Show complete stream specs/history, compatible workspaces, Paths/Remapped/Ignored, and server-backed `istat`/interchanges hints.
-- [ ] Preview and apply merge down, copy up, and cherry-pick with unmistakable source/target and a selected target changelist.
+- [ ] Preview and apply merge down and copy up with unmistakable source/target and a selected target changelist.
 - [ ] Route integration results through Resolve → Review → Submit and never submit automatically.
 - [ ] Handle partially integrated revisions, file moves, filetype conflicts, and stream-spec conflicts.
 - [ ] Distinguish explicit, exclusive-filetype, local, and global locks using detected topology.

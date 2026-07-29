@@ -23,7 +23,7 @@ describe("operation snapshots", () => {
 
   it("calculates progress and ETA from bytes without a preview pass", () => {
     const startedAt = 1_000;
-    const snapshot = { ...reduceOperationSnapshots([], { ...event("op-sync", "progress", 2), totalFiles: 10, processedBytes: 200, totalBytes: 1_000 })[0], startedAt };
+    const snapshot = { ...reduceOperationSnapshots([], { ...event("op-sync", "progress", 2), totalFiles: 10, processedBytes: 200, totalBytes: 1_000 })[0], startedAt, phaseStartedAt: startedAt };
     expect(operationProgress(snapshot, 3_000)).toEqual({ ratio: 0.2, remaining: 8, etaSeconds: 8 });
   });
 
@@ -46,10 +46,22 @@ describe("operation snapshots", () => {
   });
 
   it("preserves bounded retry metadata", () => {
-    const snapshot = reduceOperationSnapshots([], { ...event("op-sync", "failed"), scope: "2 paths", scopes: ["//main/a", "//main/b"] })[0];
+    let snapshots = reduceOperationSnapshots([], { ...event("op-sync", "started"), scope: "2 paths", scopes: ["//main/a", "//main/b"] });
+    snapshots = reduceOperationSnapshots(snapshots, event("op-sync", "progress", 1));
+    const snapshot = reduceOperationSnapshots(snapshots, event("op-sync", "failed", 1))[0];
     expect(snapshot.scope).toBe("2 paths");
     expect(snapshot.scopes).toEqual(["//main/a", "//main/b"]);
     expect(snapshot.retryable).toBe(true);
+  });
+
+  it("resets progress timing when reconcile changes phase", () => {
+    vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(4_000);
+    let snapshots = reduceOperationSnapshots([], { ...event("op-reconcile", "started"), operationKind: "reconcile", phase: "validate", totalFiles: 4 });
+    snapshots = reduceOperationSnapshots(snapshots, { ...event("op-reconcile", "progress"), operationKind: "reconcile", phase: "apply", totalFiles: 4 });
+
+    expect(snapshots[0]).toMatchObject({ phase: "apply", phaseStartedAt: 4_000 });
+    expect(operationProgress(snapshots[0], 4_000).ratio).toBe(0);
+    vi.restoreAllMocks();
   });
 
   it("captures events emitted before the start command returns", async () => {

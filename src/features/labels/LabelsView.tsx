@@ -3,6 +3,7 @@ import { listDepotFiles, listLabels, normalizeAppError, previewSync } from "../.
 import { useLocale } from "../../shared/i18n";
 import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, DepotFile, Label, SyncPreview } from "../../shared/models";
+import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDetails, useSafeSync } from "../../shared/SafeSync";
 import { CompactEmpty, EmptyState, View } from "../../shared/View";
 
@@ -76,7 +77,7 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
     notice={notice}
     operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
     onDismissNotice={() => setNotice("")}
-    actions={<button className="secondary-button" type="button" onClick={() => void load()} disabled={busy}>{busy ? t("loadingLabels") : t("refresh")}</button>}
+    actions={<RefreshButton busy={busy} onClick={() => void load()} />}
   >
     <div className="resource-toolbar">
       <label className="field"><span className="field-label">{t("labelsSearch")}</span><input value={query} placeholder={t("labelsSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void load(); }} /></label>

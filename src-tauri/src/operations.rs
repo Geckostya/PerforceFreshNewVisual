@@ -17,6 +17,10 @@ pub struct OperationHandle {
 }
 
 pub fn wait_for_process(mut child: Child, cancellation: Receiver<()>) -> bool {
+    wait_for_process_with_cancellation(&mut child, &cancellation)
+}
+
+pub fn wait_for_process_with_cancellation(child: &mut Child, cancellation: &Receiver<()>) -> bool {
     loop {
         if cancellation.try_recv().is_ok() {
             let _ = child.kill();

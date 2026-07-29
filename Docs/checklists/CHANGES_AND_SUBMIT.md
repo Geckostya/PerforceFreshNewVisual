@@ -10,6 +10,7 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 - [x] P0 Revert selected, unchanged, or a whole changelist from a server preview; opened-for-add disk deletion is explicit.
 - [x] P0 Submit local-only, shelf-only, and all local+shelf strategies with recovery/compensation.
 - [x] P0 Submit preflight shows missing, unresolved, out-of-date, other-open/lock, jobs, stream spec, size, and server warnings.
+- [x] P0 Submitted screen defaults to the current user's changes across all streams, shows mapped streams, supports server-backed stream/user/workspace/job filters, details, exact safe retrieval, undo, and safe foreign-stream cherry-pick.
 - [~] P0 Basic resolve preview and keep-workspace/use-server/auto-safe/auto-merge actions exist; specialized resolve remains.
 
 ## P0 gaps

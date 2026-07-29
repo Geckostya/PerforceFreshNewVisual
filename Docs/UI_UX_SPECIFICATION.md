@@ -17,7 +17,7 @@ Do not invent a staging area, false Git commit graph, or universal Undo. Get Rev
 
 ## Shell and resource screens
 
-The persistent shell exposes server/user/workspace context, Go To, language, Sign out, Close workspace, the main navigation, and non-overlapping Operations/CLI diagnostics. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation and Go To focus, not a hidden catalog of feature actions.
+The persistent shell exposes server/user/workspace context, Go To, language, theme, Sign out, Close workspace, the main navigation, and non-overlapping Operations/CLI diagnostics. Theme defaults to the operating-system preference; explicit Light or Dark selection persists across launches. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation and Go To focus, not a hidden catalog of feature actions.
 
 Resource screens share this structure:
 
@@ -34,7 +34,9 @@ list or tree | persistent inspector
 - Loading, empty, error, permission, stale, and partial states keep the same layout.
 - Long panes scroll internally. At minimum window size, stack panes or use a drawer without hiding the full path or primary action.
 
-History and Labels remain reachable through Go To/command palette without main-sidebar entries. Do not expose Integration or full Resolve before an end-to-end backend workflow exists.
+File history is contextual to a selected file in Files; it is not a standalone screen with manual depot-path entry. Labels remains reachable through Go To/command palette without a main-sidebar entry. Submitted changes has a main-sidebar entry and opens on the current user's changes across all streams. Do not expose full merge-down/copy-up Integration or full Resolve before an end-to-end backend workflow exists.
+
+Every resource screen uses the same icon-only Refresh action in the heading. Its 32 px geometry and accessible localized name remain stable; the icon rotates while that screen refreshes, with motion disabled under `prefers-reduced-motion`, and no loading text replaces it.
 
 ### Streams
 
@@ -63,11 +65,13 @@ No action is drag-only, hover-only, or color-only.
 ## Dialogs, operations, and errors
 
 - Use shared modal/action-dialog primitives, never browser `prompt` or `confirm`.
+- Shared dialogs keep one non-scrolling heading and close action outside the bounded content scroller, trap focus while open, restore prior focus on close, and use the same body spacing and footer treatment. Explanatory copy belongs in the body rather than crowding the heading.
 - Titles and buttons name the result (`Delete shelf`, `Revert 8 files`), show scope and consequences, and default destructive/overwrite choices to Cancel or Skip.
 - While a mutation runs, block duplicate submission and unsafe Escape closing. Explain disabled controls nearby or through accessible help.
 - Operations Center is the sole progress/cancel/retry surface for one long operation. A feature may show a compact transient status, but not a second operation controller.
 - Cancelling disables the action immediately; persistent `Cancelled` appears only after the backend publishes the terminal event and the feature refreshes.
 - Show kind, scope, status, processed count, current path, and bounded diagnostics. Do not invent totals, percentage, or ETA.
+- Render a progress bar only when the backend provides a real total. With no measurable total, show the current phase/count/path beside the spinner instead of adding an indeterminate bar that repeats the same activity signal.
 - Cancel is not rollback. Retry only an idempotent read or a newly confirmed mutation; never retry an unknown result automatically.
 - Errors state what did not happen, why, and the safe next action. Warnings/errors remain in the bounded CLI log until viewed or cleared.
 

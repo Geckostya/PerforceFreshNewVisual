@@ -9,9 +9,10 @@ describe("ChangelistHistory", () => {
       title="Recent activity"
       summary="Latest 20"
       items={[
-        { id: "42", description: "First change", user: "alice", client: "alice-main", time: "1720094400" },
+        { id: "42", description: "First change", user: "alice", client: "alice-main", time: "1720094400", stream: "//Acme/main" },
         { id: "41", description: "", user: "bob", client: "bob-main" },
       ]}
+      showStream
       selectedId="42"
       agentId={(item) => `history:${item.id}`}
       onSelect={() => undefined}
@@ -22,6 +23,7 @@ describe("ChangelistHistory", () => {
     expect(html).toContain("CL 42");
     expect(html).toContain("changelist-history-change changelist-number");
     expect(html).toContain("First change");
+    expect(html).toContain("//Acme/main · alice · alice-main");
     expect(html).toContain("No description");
     expect(html).toContain("aria-pressed=\"true\"");
   });

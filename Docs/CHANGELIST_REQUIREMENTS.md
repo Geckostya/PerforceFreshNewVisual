@@ -1,6 +1,6 @@
-# Changelist and shelf requirements
+# Changelist, submitted history, and shelf requirements
 
-This living contract owns pending changelists, shelves, submit, unshelve, revert, and related drag-and-drop semantics. Shared UI rules are in [`UI_UX_SPECIFICATION.md`](UI_UX_SPECIFICATION.md), process and error boundaries in [`ARCHITECTURE.md`](ARCHITECTURE.md), and readiness in [`P4_FEATURE_CHECKLIST.md`](P4_FEATURE_CHECKLIST.md).
+This living contract owns pending and submitted changelists, shelves, submit, unshelve, revert, and related drag-and-drop semantics. Shared UI rules are in [`UI_UX_SPECIFICATION.md`](UI_UX_SPECIFICATION.md), process and error boundaries in [`ARCHITECTURE.md`](ARCHITECTURE.md), and readiness in [`P4_FEATURE_CHECKLIST.md`](P4_FEATURE_CHECKLIST.md).
 
 ## State model
 
@@ -64,6 +64,14 @@ An ordinary `submit -c` cannot proceed while shelved files remain, while direct 
 Default and local-only submit use their direct server paths. All modes reread pending, submitted, opened, and shelf state after success, failure, cancellation, or connection loss. Report `submitted`, `pending`, or `unknown`; never retry an unknown mutation automatically. Preparatory steps, compensation, and server diagnostics are reported separately from the submit result.
 
 Do not promise shelf submit from a task stream or the wrong distributed-server origin. Capability checks improve the explanation but never replace the server decision.
+
+## Submitted history
+
+Submitted opens with the current user's changes across all streams and workspaces. The server query can be narrowed to the current stream, another listed user, a workspace, and/or a job; `Current User` remains the first user choice so returning to the default owner never requires finding that user's login in the catalog. Search within the returned page is local, while user, workspace, stream, and job filters are server-backed and remain visible with the result limit. Each standard changelist row includes its mapped stream when the first affected depot path belongs to a listed stream.
+
+Selecting a changelist first loads a bounded `describe -s -m` preview. If the safe file limit is exceeded, the inspector identifies the changelist as large and requires explicit confirmation before reading the complete file list. The read remains asynchronous, and even a complete result renders in bounded pages so a large changelist cannot monopolize the WebView. Exact-scope actions remain disabled until the complete list is available.
+
+The inspector supports lazy file diffs, Get This Revision through the shared preview-first safe-sync flow for exact `depotFile#rev` scopes, preview-first `p4 undo`, and cherry-pick from one identifiable foreign source stream into the current stream. Rollback targets Default or a selected pending changelist; creating a new described changelist is an explicit option. When the submitted file count exceeds the safe preview limit, disable and explain only rollback preview; the explicit rollback action remains available without preview. Cherry-pick uses the stream-generated mapping and exact `@=change` revisions, opens results in Default or a selected pending changelist, and never resolves or submits automatically. Disable it when the workspace has no current stream, the source is the current stream, or all files cannot be mapped safely to one source stream.
 
 ## Interaction and verification
 
