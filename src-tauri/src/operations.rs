@@ -12,8 +12,17 @@ use std::{
 
 pub struct OperationHandle {
     pub kind: &'static str,
+    pub workspace: String,
+    pub started_at_ms: u64,
     pub cancel: Sender<()>,
     pub cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelRequest {
+    pub kind: &'static str,
+    pub workspace: String,
+    pub started_at_ms: u64,
 }
 
 pub fn wait_for_process(mut child: Child, cancellation: Receiver<()>) -> bool {
@@ -54,17 +63,14 @@ impl OperationRegistry {
         )
     }
 
-    pub fn insert(&self, id: String, handle: OperationHandle) {
-        if let Ok(mut handles) = self.inner.handles.lock() {
-            handles.insert(id, handle);
-        }
-    }
-
     pub fn insert_if_kind_idle(&self, id: String, handle: OperationHandle) -> bool {
         let Ok(mut handles) = self.inner.handles.lock() else {
             return false;
         };
-        if handles.values().any(|active| active.kind == handle.kind) {
+        if handles.values().any(|active| {
+            active.workspace == handle.workspace
+                && operation_kinds_conflict(active.kind, handle.kind)
+        }) {
             return false;
         }
         handles.insert(id, handle);
@@ -77,16 +83,26 @@ impl OperationRegistry {
         }
     }
 
-    pub fn cancel(&self, id: &str) -> bool {
+    pub fn cancel(&self, id: &str) -> Option<CancelRequest> {
         let Ok(handles) = self.inner.handles.lock() else {
-            return false;
+            return None;
         };
-        let Some(handle) = handles.get(id) else {
-            return false;
-        };
+        let handle = handles.get(id)?;
         handle.cancelled.store(true, Ordering::Release);
-        handle.cancel.send(()).is_ok()
+        handle.cancel.send(()).is_ok().then(|| CancelRequest {
+            kind: handle.kind,
+            workspace: handle.workspace.clone(),
+            started_at_ms: handle.started_at_ms,
+        })
     }
+}
+
+fn operation_kinds_conflict(active: &str, candidate: &str) -> bool {
+    if active == candidate {
+        return true;
+    }
+    matches!(active, "sync" | "submit" | "reconcile")
+        && matches!(candidate, "sync" | "submit" | "reconcile")
 }
 
 #[cfg(test)]
@@ -108,7 +124,7 @@ mod tests {
 
     #[test]
     fn cancelling_unknown_operation_is_safe() {
-        assert!(!OperationRegistry::default().cancel("op-missing"));
+        assert!(OperationRegistry::default().cancel("op-missing").is_none());
     }
 
     #[test]
@@ -116,16 +132,25 @@ mod tests {
         let registry = OperationRegistry::default();
         let (cancel, cancellation) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
-        registry.insert(
+        assert!(registry.insert_if_kind_idle(
             "op-1".to_owned(),
             OperationHandle {
                 kind: "sync",
+                workspace: "server/alex/main".to_owned(),
+                started_at_ms: 42,
                 cancel,
                 cancelled: cancelled.clone(),
             },
-        );
+        ));
 
-        assert!(registry.cancel("op-1"));
+        assert_eq!(
+            registry.cancel("op-1"),
+            Some(super::CancelRequest {
+                kind: "sync",
+                workspace: "server/alex/main".to_owned(),
+                started_at_ms: 42
+            })
+        );
         assert!(
             cancellation
                 .recv_timeout(std::time::Duration::from_millis(50))
@@ -135,21 +160,39 @@ mod tests {
     }
 
     #[test]
-    fn prevents_two_operations_of_the_same_kind() {
+    fn prevents_conflicting_workspace_mutations_without_global_locking() {
         let registry = OperationRegistry::default();
-        let handle = |kind| {
+        let handle = |kind, workspace: &str| {
             let (cancel, _) = mpsc::channel();
             OperationHandle {
                 kind,
+                workspace: workspace.to_owned(),
+                started_at_ms: 42,
                 cancel,
                 cancelled: Arc::new(AtomicBool::new(false)),
             }
         };
 
-        assert!(registry.insert_if_kind_idle("op-1".to_owned(), handle("sync")));
-        assert!(!registry.insert_if_kind_idle("op-2".to_owned(), handle("sync")));
-        assert!(registry.insert_if_kind_idle("op-3".to_owned(), handle("submit")));
+        assert!(
+            registry.insert_if_kind_idle("op-1".to_owned(), handle("sync", "server/alex/main"))
+        );
+        assert!(
+            !registry.insert_if_kind_idle("op-2".to_owned(), handle("sync", "server/alex/main"))
+        );
+        assert!(registry.insert_if_kind_idle(
+            "op-3".to_owned(),
+            handle("reconcile_preview", "server/alex/main")
+        ));
+        assert!(!registry.insert_if_kind_idle(
+            "op-conflict".to_owned(),
+            handle("submit", "server/alex/main")
+        ));
+        assert!(
+            registry.insert_if_kind_idle("op-4".to_owned(), handle("sync", "server/alex/other"))
+        );
         registry.remove("op-1");
-        assert!(registry.insert_if_kind_idle("op-4".to_owned(), handle("sync")));
+        assert!(
+            registry.insert_if_kind_idle("op-5".to_owned(), handle("sync", "server/alex/main"))
+        );
     }
 }

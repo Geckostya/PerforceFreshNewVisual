@@ -5,14 +5,15 @@ use crate::{
         CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput, CreateStreamPreview,
         DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile, DepotSummary, DiffInput,
         EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, Job, Label,
-        LocaleCatalog, MoveInput, OpenedFile, OperationEvent, OperationEventKind, P4Detection,
-        P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
-        ResolveInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput,
-        SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamSummary,
-        SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmittedChangeDetail,
-        SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode, TrustEntry,
-        UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile,
-        WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        LocaleCatalog, MoveInput, OpenedFile, OperationDiagnostic, OperationEvent,
+        OperationEventKind, OperationItemResult, OperationReadBack, OperationReadBackStatus,
+        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
+        ReshelveInput, ResolveInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput,
+        SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
+        ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
+        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
+        TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput,
+        WorkspaceFile, WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -27,6 +28,7 @@ use std::{
     process::{Command, Stdio},
     sync::{Arc, Mutex, atomic::Ordering, mpsc},
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, State};
 
@@ -730,6 +732,72 @@ fn sync_operation_succeeded(force: bool, process_success: bool, readback_current
 }
 
 const MAX_SYNC_RETRY_SCOPES: usize = 1000;
+const MAX_OPERATION_DIAGNOSTIC_CHARS: usize = 2048;
+
+fn operation_started_at_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn operation_workspace(input: &ConnectionInput) -> String {
+    format!(
+        "{}/{}/{}",
+        input.port.trim().to_lowercase(),
+        input.user.trim().to_lowercase(),
+        input
+            .client
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+    )
+}
+
+fn bounded_operation_diagnostics(message: Option<&str>) -> Vec<OperationDiagnostic> {
+    message
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| OperationDiagnostic {
+            code: "p4_operation".to_owned(),
+            message: value.chars().take(MAX_OPERATION_DIAGNOSTIC_CHARS).collect(),
+            item_id: None,
+        })
+        .into_iter()
+        .collect()
+}
+
+fn operation_event(
+    operation_id: &str,
+    operation_kind: &str,
+    kind: OperationEventKind,
+    started_at_ms: u64,
+) -> OperationEvent {
+    OperationEvent {
+        operation_id: operation_id.to_owned(),
+        operation_kind: operation_kind.to_owned(),
+        kind,
+        started_at_ms,
+        processed: 0,
+        total_files: None,
+        processed_bytes: 0,
+        total_bytes: None,
+        current_path: None,
+        message: None,
+        scope: None,
+        scopes: None,
+        phase: None,
+        reconcile_items: None,
+        diagnostics: Vec::new(),
+        item_results: Vec::new(),
+        read_back: OperationReadBack {
+            status: OperationReadBackStatus::NotRequired,
+            affected_state: Vec::new(),
+            message: None,
+        },
+        retryable: false,
+    }
+}
 
 fn sync_operation_scope(scopes: &[String]) -> String {
     match scopes {
@@ -760,6 +828,8 @@ pub async fn start_sync(
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
+    let started_at_ms = operation_started_at_ms();
+    let workspace = operation_workspace(&input);
     let operation_scope = Some(sync_operation_scope(&scopes));
     let retryable = !force && scopes.len() <= MAX_SYNC_RETRY_SCOPES;
     let retry_scopes = retryable.then_some(scopes);
@@ -767,6 +837,8 @@ pub async fn start_sync(
         operation_id.clone(),
         OperationHandle {
             kind: "sync",
+            workspace,
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
@@ -807,6 +879,12 @@ pub async fn start_sync(
             phase: None,
             reconcile_items: None,
             retryable,
+            ..operation_event(
+                &operation_id,
+                "sync",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
 
@@ -856,6 +934,12 @@ pub async fn start_sync(
                         phase: None,
                         reconcile_items: None,
                         retryable,
+                        ..operation_event(
+                            &id_for_output,
+                            "sync",
+                            OperationEventKind::Progress,
+                            started_at_ms,
+                        )
                     },
                 );
             }
@@ -892,16 +976,20 @@ pub async fn start_sync(
             process_success && stdin_error.is_none(),
             readback_current,
         );
-        let kind = if was_cancelled {
-            OperationEventKind::Cancelled
-        } else if success {
-            OperationEventKind::Completed
-        } else {
-            OperationEventKind::Failed
-        };
         let (processed, processed_bytes, total_files, total_bytes) = stdout_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
+        let kind = if was_cancelled && processed > 0 {
+            OperationEventKind::Partial
+        } else if was_cancelled {
+            OperationEventKind::Cancelled
+        } else if success {
+            OperationEventKind::Completed
+        } else if processed > 0 {
+            OperationEventKind::Partial
+        } else {
+            OperationEventKind::Failed
+        };
         let stderr_text = stderr_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
@@ -918,12 +1006,25 @@ pub async fn start_sync(
                 detail
             }
         });
+        let read_back = OperationReadBack {
+            status: if readback_current {
+                OperationReadBackStatus::Succeeded
+            } else if was_cancelled {
+                OperationReadBackStatus::Unknown
+            } else {
+                OperationReadBackStatus::Failed
+            },
+            affected_state: vec!["workspace_files".to_owned(), "have_list".to_owned()],
+            message: (!readback_current)
+                .then(|| "The authoritative workspace read-back did not complete.".to_owned()),
+        };
+        let diagnostics = bounded_operation_diagnostics(message.as_deref());
         let _ = app_for_wait.emit(
             "operation-event",
             OperationEvent {
                 operation_id: id_for_wait.clone(),
                 operation_kind: "sync".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed,
                 total_files,
                 processed_bytes,
@@ -934,7 +1035,10 @@ pub async fn start_sync(
                 scopes: completion_scopes,
                 phase: None,
                 reconcile_items: None,
+                diagnostics,
+                read_back,
                 retryable,
+                ..operation_event(&id_for_wait, "sync", kind, started_at_ms)
             },
         );
         registry_for_wait.remove(&id_for_wait);
@@ -961,23 +1065,37 @@ pub async fn start_submit(
         input.description.as_deref(),
     )?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        AppError::new(ErrorKind::CommandFailed, "Не удалось запустить submit.")
-            .with_diagnostics(format!("{}: {error}", path.display()))
-    })?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
-    registry.insert(
+    let started_at_ms = operation_started_at_ms();
+    if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
             kind: "submit",
+            workspace: operation_workspace(&input.connection),
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
-    );
+    ) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "A submit operation is already running for this workspace.",
+        ));
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            registry.remove(&operation_id);
+            return Err(
+                AppError::new(ErrorKind::CommandFailed, "Не удалось запустить submit.")
+                    .with_diagnostics(format!("{}: {error}", path.display())),
+            );
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
     let _ = app.emit(
         "operation-event",
         OperationEvent {
@@ -995,6 +1113,12 @@ pub async fn start_submit(
             phase: None,
             reconcile_items: None,
             retryable: false,
+            ..operation_event(
+                &operation_id,
+                "submit",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
     let stderr_thread = stderr.map(|stderr| {
@@ -1044,6 +1168,12 @@ pub async fn start_submit(
                         phase: None,
                         reconcile_items: None,
                         retryable: false,
+                        ..operation_event(
+                            &id_for_output,
+                            "submit",
+                            OperationEventKind::Progress,
+                            started_at_ms,
+                        )
                     },
                 );
             }
@@ -1058,34 +1188,39 @@ pub async fn start_submit(
     thread::spawn(move || {
         let success = wait_for_process(child, cancellation);
         let was_cancelled = cancelled.load(Ordering::Acquire);
-        let kind = if was_cancelled {
-            OperationEventKind::Cancelled
-        } else if success {
-            OperationEventKind::Completed
-        } else {
-            OperationEventKind::Failed
-        };
         let processed = stdout_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
         let stderr_text = stderr_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
+        let readback = p4::submit_readback_hint(&connection, &change);
+        let readback_submitted = readback.contains("is visible as submitted");
+        let readback_pending = readback.contains("remains pending");
         let message = (!success && !was_cancelled).then(|| {
             let detail = stderr_text.trim();
-            let readback = p4::submit_readback_hint(&connection, &change);
             if detail.is_empty() {
-                readback
+                readback.clone()
             } else {
                 format!("{detail}\n{readback}")
             }
         });
+        let kind = if readback_submitted {
+            OperationEventKind::Completed
+        } else if was_cancelled && readback_pending {
+            OperationEventKind::Cancelled
+        } else if !success && readback_pending {
+            OperationEventKind::Failed
+        } else {
+            OperationEventKind::Unknown
+        };
+        let diagnostics = bounded_operation_diagnostics(message.as_deref());
         let _ = app_for_wait.emit(
             "operation-event",
             OperationEvent {
                 operation_id: id_for_wait.clone(),
                 operation_kind: "submit".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed,
                 total_files: None,
                 processed_bytes: 0,
@@ -1096,7 +1231,23 @@ pub async fn start_submit(
                 scopes: None,
                 phase: None,
                 reconcile_items: None,
+                diagnostics,
+                read_back: OperationReadBack {
+                    status: if readback_submitted || readback_pending {
+                        OperationReadBackStatus::Succeeded
+                    } else {
+                        OperationReadBackStatus::Unknown
+                    },
+                    affected_state: vec![
+                        "pending_changes".to_owned(),
+                        "submitted_changes".to_owned(),
+                        "shelves".to_owned(),
+                        "opened_files".to_owned(),
+                    ],
+                    message: Some(readback),
+                },
                 retryable: false,
+                ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
             },
         );
         registry_for_wait.remove(&id_for_wait);
@@ -1106,10 +1257,30 @@ pub async fn start_submit(
 
 #[tauri::command]
 pub async fn cancel_operation(
+    app: tauri::AppHandle,
     registry: State<'_, OperationRegistry>,
     operation_id: String,
 ) -> Result<bool, AppError> {
-    Ok(registry.cancel(&operation_id))
+    let Some(request) = registry.cancel(&operation_id) else {
+        return Ok(false);
+    };
+    let _ = app.emit(
+        "operation-event",
+        OperationEvent {
+            message: Some(
+                "Cancellation requested. Completed server mutations are not rolled back."
+                    .to_owned(),
+            ),
+            scope: Some(request.workspace),
+            ..operation_event(
+                &operation_id,
+                request.kind,
+                OperationEventKind::CancelRequested,
+                request.started_at_ms,
+            )
+        },
+    );
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1200,6 +1371,7 @@ struct ReconcileProcessContext {
     scope: Option<String>,
     total_files: Option<u64>,
     processed_offset: u64,
+    started_at_ms: u64,
 }
 
 fn reconcile_output_error(line: &str) -> Option<String> {
@@ -1294,6 +1466,12 @@ fn run_reconcile_process(
                         phase: Some(context.phase.to_owned()),
                         reconcile_items: None,
                         retryable: false,
+                        ..operation_event(
+                            &context.operation_id,
+                            context.operation_kind,
+                            OperationEventKind::Progress,
+                            context.started_at_ms,
+                        )
                     },
                 );
             }
@@ -1364,10 +1542,13 @@ pub async fn start_reconcile_preview(
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
+    let started_at_ms = operation_started_at_ms();
     if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
-            kind: "reconcile",
+            kind: "reconcile_preview",
+            workspace: operation_workspace(&input),
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
@@ -1394,6 +1575,12 @@ pub async fn start_reconcile_preview(
             phase: Some("scan".to_owned()),
             reconcile_items: None,
             retryable: false,
+            ..operation_event(
+                &operation_id,
+                "reconcile_preview",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
     let app_for_run = app.clone();
@@ -1413,6 +1600,7 @@ pub async fn start_reconcile_preview(
                 scope: Some(scope.clone()),
                 total_files: None,
                 processed_offset: 0,
+                started_at_ms,
             },
         );
         let kind = if result.cancelled {
@@ -1427,18 +1615,29 @@ pub async fn start_reconcile_preview(
             OperationEvent {
                 operation_id: id_for_run.clone(),
                 operation_kind: "reconcile_preview".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed: result.processed,
                 total_files: None,
                 processed_bytes: 0,
                 total_bytes: None,
                 current_path: None,
-                message: result.message,
+                message: result.message.clone(),
                 scope: Some(scope),
                 scopes: None,
                 phase: Some("scan".to_owned()),
-                reconcile_items: result.success.then_some(result.items),
+                reconcile_items: result.success.then_some(result.items.clone()),
+                diagnostics: bounded_operation_diagnostics(result.message.as_deref()),
+                read_back: OperationReadBack {
+                    status: if result.success {
+                        OperationReadBackStatus::Succeeded
+                    } else {
+                        OperationReadBackStatus::Failed
+                    },
+                    affected_state: vec!["reconcile_preview".to_owned()],
+                    message: result.message.clone(),
+                },
                 retryable: false,
+                ..operation_event(&id_for_run, "reconcile_preview", kind, started_at_ms)
             },
         );
         registry_for_run.remove(&id_for_run);
@@ -1480,12 +1679,15 @@ pub async fn start_reconcile(
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
+    let started_at_ms = operation_started_at_ms();
     let operation_scope = reconcile_scope(&input.depot_paths);
     let total_files = input.depot_paths.len() as u64;
     if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
             kind: "reconcile",
+            workspace: operation_workspace(&input.connection),
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
@@ -1512,6 +1714,12 @@ pub async fn start_reconcile(
             phase: Some("validate".to_owned()),
             reconcile_items: None,
             retryable: false,
+            ..operation_event(
+                &operation_id,
+                "reconcile",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
     let app_for_run = app.clone();
@@ -1535,6 +1743,7 @@ pub async fn start_reconcile(
                     scope: operation_scope.clone(),
                     total_files: Some(total_files),
                     processed_offset: index as u64,
+                    started_at_ms,
                 },
             );
             if preview.cancelled {
@@ -1568,18 +1777,25 @@ pub async fn start_reconcile(
                 OperationEvent {
                     operation_id: id_for_run.clone(),
                     operation_kind: "reconcile".to_owned(),
-                    kind,
+                    kind: kind.clone(),
                     processed: checked,
                     total_files: Some(total_files),
                     processed_bytes: 0,
                     total_bytes: None,
                     current_path: None,
-                    message: validation_message,
+                    message: validation_message.clone(),
                     scope: operation_scope,
                     scopes: None,
                     phase: Some("validate".to_owned()),
                     reconcile_items: None,
+                    diagnostics: bounded_operation_diagnostics(validation_message.as_deref()),
+                    read_back: OperationReadBack {
+                        status: OperationReadBackStatus::NotRequired,
+                        affected_state: vec!["reconcile_preview".to_owned()],
+                        message: validation_message.clone(),
+                    },
                     retryable: false,
+                    ..operation_event(&id_for_run, "reconcile", kind, started_at_ms)
                 },
             );
             registry_for_run.remove(&id_for_run);
@@ -1602,6 +1818,12 @@ pub async fn start_reconcile(
                 phase: Some("apply".to_owned()),
                 reconcile_items: None,
                 retryable: false,
+                ..operation_event(
+                    &id_for_run,
+                    "reconcile",
+                    OperationEventKind::Progress,
+                    started_at_ms,
+                )
             },
         );
         let applied = run_reconcile_process(
@@ -1617,21 +1839,48 @@ pub async fn start_reconcile(
                 scope: operation_scope.clone(),
                 total_files: Some(total_files),
                 processed_offset: 0,
+                started_at_ms,
             },
         );
-        let kind = if applied.cancelled {
+        let kind = if applied.cancelled && applied.processed > 0 {
+            OperationEventKind::Partial
+        } else if applied.cancelled {
             OperationEventKind::Cancelled
         } else if applied.success {
             OperationEventKind::Completed
+        } else if applied.processed > 0 {
+            OperationEventKind::Partial
         } else {
             OperationEventKind::Failed
         };
+        let item_results = applied
+            .items
+            .iter()
+            .map(|item| OperationItemResult {
+                item_id: item.depot_path.clone(),
+                path: item
+                    .local_path
+                    .clone()
+                    .or_else(|| Some(item.depot_path.clone())),
+                status: if applied.success {
+                    crate::models::OperationItemStatus::Succeeded
+                } else {
+                    crate::models::OperationItemStatus::Failed
+                },
+                reason: (!applied.success)
+                    .then(|| applied.message.clone())
+                    .flatten(),
+                compensation: crate::models::OperationCompensationStatus::NotRequired,
+                recovery_action_id: (!applied.success).then(|| "refresh_workspace".to_owned()),
+            })
+            .collect();
+        let diagnostics = bounded_operation_diagnostics(applied.message.as_deref());
         let _ = app_for_run.emit(
             "operation-event",
             OperationEvent {
                 operation_id: id_for_run.clone(),
                 operation_kind: "reconcile".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed: applied.processed,
                 total_files: Some(total_files),
                 processed_bytes: 0,
@@ -1642,7 +1891,20 @@ pub async fn start_reconcile(
                 scopes: None,
                 phase: Some("apply".to_owned()),
                 reconcile_items: None,
+                diagnostics,
+                item_results,
+                read_back: OperationReadBack {
+                    status: OperationReadBackStatus::Unknown,
+                    affected_state: vec![
+                        "workspace_files".to_owned(),
+                        "pending_changes".to_owned(),
+                    ],
+                    message: Some(
+                        "Refresh Workspace and My Changes before another mutation.".to_owned(),
+                    ),
+                },
                 retryable: false,
+                ..operation_event(&id_for_run, "reconcile", kind, started_at_ms)
             },
         );
         registry_for_run.remove(&id_for_run);
@@ -2053,9 +2315,11 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_sync_output_record, sync_operation_scope, sync_operation_succeeded,
-        validate_reveal_path, workspace_stream_view_paths,
+        bounded_operation_diagnostics, operation_event, parse_sync_output_record,
+        sync_operation_scope, sync_operation_succeeded, validate_reveal_path,
+        workspace_stream_view_paths,
     };
+    use crate::models::OperationEventKind;
     use std::fs;
 
     #[test]
@@ -2087,6 +2351,25 @@ mod tests {
             sync_operation_scope(&scopes),
             "//Acme/main/0.bin#0 (+87245 more)"
         );
+    }
+
+    #[test]
+    fn operation_diagnostics_are_structured_and_bounded() {
+        let diagnostics = bounded_operation_diagnostics(Some(&"x".repeat(10_000)));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "p4_operation");
+        assert_eq!(diagnostics[0].message.chars().count(), 2048);
+        assert!(bounded_operation_diagnostics(None).is_empty());
+    }
+
+    #[test]
+    fn unknown_terminal_event_serializes_readback_and_disables_retry() {
+        let event = operation_event("op-7", "submit", OperationEventKind::Unknown, 42);
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["kind"], "unknown");
+        assert_eq!(value["startedAtMs"], 42);
+        assert_eq!(value["readBack"]["status"], "not_required");
+        assert_eq!(value["retryable"], false);
     }
 
     #[test]

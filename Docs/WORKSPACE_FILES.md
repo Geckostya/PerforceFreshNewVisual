@@ -20,7 +20,7 @@ Local and Depot sources share row hierarchy, selection, search/filter, inspector
 
 `Update selected` is the visible primary file action. Copy/reveal/edit/add/ignore/mark-delete/rename/lock/unlock/resolve/revert/delete-local live in the inspector or context menu when valid. Local deletion is always confirmed. `Save all revisions` writes exact available revisions to a new directory, preserves depot hierarchy, skips deletions, and reports partial results.
 
-Reconcile preview is a cancellable long operation. While scanning a scope it reports the real candidate count and current path without inventing a percentage. Applying a reviewed selection first revalidates every selected path, then resets to a distinct apply phase and reports opened files against the selected-file total. Cancellation terminates the current `p4` child and refreshes Files; it does not revert files already opened before termination.
+Reconcile preview is a cancellable long operation. While scanning a scope it reports the real candidate count and current path without inventing a percentage. Applying a reviewed selection first revalidates every selected path, then resets to a distinct apply phase and reports opened files against the selected-file total. Cancellation terminates the current `p4` child; opened items become a typed partial result with a Workspace recovery action because cancellation does not revert them.
 
 ## Local tree and cache
 
@@ -55,7 +55,7 @@ Independent files may use a bounded pool of at most four workers, but each file'
 
 Force sync succeeds only when every snapshot item was applied and final `sync -n` is empty. Starting force closes the dialog. Failure reopens it with the entire selected set and prior decisions for an idempotent retry; the have list alone never proves replacement.
 
-Progress comes from the running tagged sync: total file count/size, accumulated bytes, and current path. Do not run a blocking total preflight. Operations Center owns cancel/retry, preserves the original scopes, and prevents a second sync until the first terminal event.
+Progress comes from the running tagged sync: total file count/size, accumulated bytes, and current path. Do not run a blocking total preflight. Operations Center owns cancel/retry, preserves the original scopes, prevents a conflicting sync in the same workspace until the first terminal event, and reports workspace/have-list read-back.
 
 ## Verification
 

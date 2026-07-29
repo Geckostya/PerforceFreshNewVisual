@@ -5,6 +5,9 @@ export type ErrorKind =
   | "permission"
   | "conflict"
   | "offline"
+  | "timeout"
+  | "unsupported_capability"
+  | "server_limit"
   | "cancelled"
   | "stale"
   | "partial_result"
@@ -173,11 +176,41 @@ export interface DepotFile {
 
 export interface TrustEntry { server: string; fingerprint: string; }
 
-export type OperationEventKind = "started" | "progress" | "completed" | "failed" | "cancelled";
+export type OperationEventKind =
+  | "started"
+  | "progress"
+  | "cancel_requested"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "partial"
+  | "unknown";
+export type OperationItemStatus = "succeeded" | "failed" | "skipped";
+export type OperationCompensationStatus = "not_required" | "succeeded" | "failed" | "unknown";
+export type OperationReadBackStatus = "succeeded" | "failed" | "not_required" | "unknown";
+export interface OperationDiagnostic {
+  code: string;
+  message: string;
+  itemId?: string;
+}
+export interface OperationItemResult {
+  itemId: string;
+  path?: string;
+  status: OperationItemStatus;
+  reason?: string;
+  compensation: OperationCompensationStatus;
+  recoveryActionId?: "refresh_workspace" | "refresh_changes" | "refresh_streams" | string;
+}
+export interface OperationReadBack {
+  status: OperationReadBackStatus;
+  affectedState: string[];
+  message?: string;
+}
 export interface OperationEvent {
   operationId: string;
-  operationKind: "sync" | "submit" | string;
+  operationKind: "sync" | "submit" | "reconcile" | "reconcile_preview" | "stream_switch" | "integrate" | string;
   kind: OperationEventKind;
+  startedAtMs?: number;
   processed: number;
   totalFiles?: number;
   processedBytes: number;
@@ -188,7 +221,26 @@ export interface OperationEvent {
   scopes?: string[];
   phase?: "scan" | "validate" | "apply" | string;
   reconcileItems?: ReconcileItem[];
+  diagnostics?: OperationDiagnostic[];
+  itemResults?: OperationItemResult[];
+  readBack?: OperationReadBack;
   retryable: boolean;
+}
+
+export type ResourceFreshness =
+  | "fresh"
+  | "loading"
+  | "stale"
+  | "offline"
+  | "permission"
+  | "partial"
+  | "error";
+
+export interface ResourceSnapshot<T> {
+  freshness: ResourceFreshness;
+  data?: T;
+  lastSuccessfulAt?: number;
+  error?: AppError;
 }
 
 export interface PendingChange {

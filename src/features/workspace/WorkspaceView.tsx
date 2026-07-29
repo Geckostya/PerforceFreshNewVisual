@@ -307,7 +307,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
         } else if (event.kind === "cancelled") {
           setNotice(t("reconcilePreviewCancelled"));
         } else {
-          setError({ kind: "command_failed", message: event.message || t("operationFailed"), hints: [] });
+          setError({ kind: event.kind === "partial" ? "partial_result" : "command_failed", message: event.message || (event.kind === "unknown" ? t("operationUnknown") : t("operationFailed")), hints: [] });
         }
       });
     } catch (reason) {
@@ -333,7 +333,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
             await refreshLoadedDirectories();
             if (event.kind === "completed") setNotice(t("reconcileSucceeded"));
             else if (event.kind === "cancelled") setNotice(t("reconcileCancelled"));
-            else setError({ kind: "command_failed", message: event.message || t("operationFailed"), hints: [] });
+            else setError({ kind: event.kind === "partial" ? "partial_result" : "command_failed", message: event.message || (event.kind === "unknown" ? t("operationUnknown") : t("operationFailed")), hints: [] });
           } catch (reason) {
             setError(normalizeAppError(reason));
           } finally {

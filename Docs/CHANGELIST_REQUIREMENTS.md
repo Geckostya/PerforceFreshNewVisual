@@ -63,7 +63,7 @@ An ordinary `submit -c` cannot proceed while shelved files remain, while direct 
 2. **Submit local work, delete shelf.** Warn that the old shelf is lost, delete it, then submit the local changelist.
 3. **Checkpoint and submit local work.** Replace the shelf with the complete local set, delete it, submit local work, and recreate that updated shelf if submit fails while files remain open.
 
-Default and local-only submit use their direct server paths. All modes reread pending, submitted, opened, and shelf state after success, failure, cancellation, or connection loss. Report `submitted`, `pending`, or `unknown`; never retry an unknown mutation automatically. Preparatory steps, compensation, and server diagnostics are reported separately from the submit result.
+Default and local-only submit use the shared long-operation transport and their direct server paths. A same-workspace submit conflict is rejected before process launch; interruption or a failed process is conservatively terminal `unknown`, never automatically retried. Shelf-preserving modes still use the compensation-safe command workflow and must migrate without weakening its recovery changelist/shelf guarantees. All modes reread pending, submitted, opened, and shelf state after success, failure, cancellation, or connection loss.
 
 Do not promise shelf submit from a task stream or the wrong distributed-server origin. Capability checks improve the explanation but never replace the server decision.
 

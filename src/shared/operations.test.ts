@@ -45,6 +45,49 @@ describe("operation snapshots", () => {
     expect(isOperationTerminal("progress")).toBe(false);
   });
 
+  it("does not regress a terminal result when late progress arrives", () => {
+    let state = reduceOperationSnapshots([], event("op-1", "started"));
+    state = reduceOperationSnapshots(state, event("op-1", "unknown", 2));
+    state = reduceOperationSnapshots(state, event("op-1", "progress", 3));
+
+    expect(state[0]).toMatchObject({ status: "unknown", processed: 2, retryable: false });
+  });
+
+  it("keeps cancel requested active until a terminal event arrives", () => {
+    let state = reduceOperationSnapshots([], event("op-1", "started"));
+    state = reduceOperationSnapshots(state, event("op-1", "cancel_requested"));
+    expect(isOperationActive(state[0].status)).toBe(true);
+    state = reduceOperationSnapshots(state, event("op-1", "cancelled"));
+    expect(isOperationTerminal(state[0].status)).toBe(true);
+  });
+
+  it("preserves bounded session history", () => {
+    let state = [] as ReturnType<typeof reduceOperationSnapshots>;
+    for (let index = 0; index < 35; index += 1) {
+      state = reduceOperationSnapshots(state, event(`op-${index}`, "completed"));
+    }
+    expect(state).toHaveLength(30);
+    expect(state[0].operationId).toBe("op-5");
+  });
+
+  it("carries item diagnostics, compensation, and read-back metadata", () => {
+    const state = reduceOperationSnapshots([], {
+      ...event("op-1", "partial"),
+      diagnostics: [{ code: "apply_failed", message: "bounded" }],
+      itemResults: [{
+        itemId: "//main/a",
+        path: "//main/a",
+        status: "failed",
+        reason: "locked",
+        compensation: "unknown",
+        recoveryActionId: "refresh_workspace",
+      }],
+      readBack: { status: "failed", affectedState: ["workspace_files"] },
+    });
+    expect(state[0].itemResults[0]).toMatchObject({ status: "failed", compensation: "unknown" });
+    expect(state[0].readBack?.status).toBe("failed");
+  });
+
   it("preserves bounded retry metadata", () => {
     let snapshots = reduceOperationSnapshots([], { ...event("op-sync", "started"), scope: "2 paths", scopes: ["//main/a", "//main/b"] });
     snapshots = reduceOperationSnapshots(snapshots, event("op-sync", "progress", 1));

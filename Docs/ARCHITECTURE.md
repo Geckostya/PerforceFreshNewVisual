@@ -61,7 +61,7 @@ Rust backend:
 - The password is passed only through stdin; tickets, passwords, and the full environment are not logged.
 - The frontend receives no universal command such as `run_p4(command)` and does not select the executable for an individual operation.
 
-`AppError.kind` must distinguish at least auth, trust, permission, conflict, offline, cancelled, stale, partial result, invalid output, and command failure. An ordinary rejected operation is not labeled a connection failure.
+`AppError.kind` distinguishes auth, trust, permission, conflict, offline, timeout, unsupported capability, server limit, cancelled, stale, partial result, invalid output, and command failure. An ordinary rejected operation is not labeled a connection failure.
 
 `p4 filelog -Mj` returns revisions as indexed fields (`rev0`, `change0`, `how0,0`), so the history parser expands each index into a separate `FileRevision`; flat records are also supported for compatibility and unit fixtures.
 
@@ -73,12 +73,23 @@ Short read requests return a DTO from an ordinary Tauri command. Long-running sy
 
 1. The frontend subscribes to operation events before starting the command.
 2. `start_*` creates a separate child process and returns `operation_id`.
-3. The backend publishes `started`, `progress`, `warning`, `completed`, `failed`, or `cancelled`; sync progress additionally carries `totalFileCount`, `totalFileSize`, and accumulated `fileSize` from tagged output of the running sync, without a separate blocking preflight. Reconcile streams candidates during preview, then reports separate validation and apply phases against the selected-file total.
-4. The app-level Operations Center is the only progress/cancel/retry surface; sync retry preserves the original array of file/folder scopes without merging them into one filespec. The backend does not start a second sync before the first terminal event.
-5. `cancel_operation(id)` signals the dedicated waiter channel for the operation. The waiter polls `Child::try_wait`, calls `Child::kill` and `wait` on the signal, then publishes terminal `cancelled`; blocking `Child::wait` does not hold the mutex needed for cancellation.
-6. After the terminal event, the handle is removed and the feature rereads server state.
+3. Every event identifies the exact operation kind, original scope, stable start time, bounded diagnostics/item results, and read-back state. Item results use stable IDs/paths, `succeeded`/`failed`/`skipped`, compensation status, and a non-mutating recovery-action ID.
+4. The backend publishes `started`, `progress`, `cancel_requested`, and exactly one terminal `completed`, `failed`, `cancelled`, `partial`, or `unknown`. Process exit alone never proves that a mutation did or did not happen.
+5. The app-level Operations Center is the only progress/cancel/recovery surface. It preserves the original sync scopes, never offers Retry for `unknown`, and links recovery to the affected screen for an authoritative refresh.
+6. `cancel_operation(id)` signals only that operation and publishes `cancel_requested`. The waiter kills/reaps the child and later publishes the terminal outcome; a cancellation request is not a terminal state or rollback.
+7. Conflict exclusion is scoped by operation kind and server/user/workspace. Conflicting work is rejected before launching a child, while unrelated workspaces and ordinary reads remain available.
+8. After a terminal result, the feature rereads the affected server state. The event reports whether that read-back succeeded, failed, was unnecessary, or remains unknown.
 
 Cancel does not mean rollback. Cancelling reconcile stops the child process and refreshes Files, but files opened before termination remain open. Retrying a mutation is allowed only as a new explicitly confirmed workflow after read-back; submit/integrate are not automatically retried when the result is unknown.
+
+| Operation | Shared protocol status |
+|---|---|
+| Safe Sync | migrated; exact scopes, real totals when available, cancellation, bounded diagnostics, workspace/have-list read-back |
+| Local submit | migrated; same-workspace conflict gate and conservative `unknown` after interruption or failed process |
+| Reconcile preview/apply | migrated; validation/apply phases, partial item results, cancellation, recovery destination |
+| Shelf-preserving submit modes | compensation-safe command remains; operation events and typed step results are still required |
+| Stream switch | command remains separate from its follow-up Safe Sync; typed switch operation/read-back is still required |
+| Integrate | reserved operation kind/result DTO only; no integration workflow is implemented |
 
 ## Data and mutation safety
 
@@ -103,6 +114,7 @@ Changing streams is a composite operation with an explicit strategy. The catalog
 
 - Feature code owns loading, selection, and mutation orchestration for its area.
 - Shared DTO/API/i18n/operations/UI primitives live in `src/shared` only when used by multiple features.
+- Resource screens preserve the last successful DTO after a failed refresh. `fresh`, `loading`, `stale`, `offline`, `permission`, `partial`, and `error` remain distinct; only a successful authoritative refresh re-enables mutations.
 - List/tree selection uses shared single/Ctrl-toggle/Shift-range rules; the context menu owns its dismissal, safe positioning, and keyboard navigation.
 - My Changes and Streams use one scoped hook for storing/cleaning Unactual IDs and one validated DnD transport; domain cascading of a stream subtree remains in Streams.
 - Resource screens use `View` and a stable list/inspector layout modeled on MyChanges.

@@ -11,6 +11,9 @@ pub enum ErrorKind {
     Permission,
     Conflict,
     Offline,
+    Timeout,
+    UnsupportedCapability,
+    ServerLimit,
     Cancelled,
     Stale,
     PartialResult,
@@ -345,9 +348,72 @@ pub struct TrustEntry {
 pub enum OperationEventKind {
     Started,
     Progress,
+    CancelRequested,
     Completed,
     Failed,
     Cancelled,
+    Partial,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum OperationItemStatus {
+    Succeeded,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum OperationCompensationStatus {
+    NotRequired,
+    Succeeded,
+    Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationReadBackStatus {
+    Succeeded,
+    Failed,
+    NotRequired,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationDiagnostic {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationItemResult {
+    pub item_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub status: OperationItemStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub compensation: OperationCompensationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_action_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationReadBack {
+    pub status: OperationReadBackStatus,
+    pub affected_state: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -356,6 +422,7 @@ pub struct OperationEvent {
     pub operation_id: String,
     pub operation_kind: String,
     pub kind: OperationEventKind,
+    pub started_at_ms: u64,
     pub processed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_files: Option<u64>,
@@ -372,6 +439,9 @@ pub struct OperationEvent {
     pub phase: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reconcile_items: Option<Vec<ReconcileItem>>,
+    pub diagnostics: Vec<OperationDiagnostic>,
+    pub item_results: Vec<OperationItemResult>,
+    pub read_back: OperationReadBack,
     pub retryable: bool,
 }
 

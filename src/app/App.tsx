@@ -214,7 +214,11 @@ function AppContent() {
         </main>
       </div>
       <CliLogCenter onOpenChange={setCliLogOpen} />
-      <OperationsCenter connection={currentSession.connection} />
+      <OperationsCenter connection={currentSession.connection} onRecover={(actionId) => {
+        if (actionId === "refresh_changes") setView("changes");
+        else if (actionId === "refresh_streams") setView("streams");
+        else setView("workspace");
+      }} />
       <CommandPalette onNavigate={(target) => { if (target === "depot") { setFilesSource("depot"); setView("workspace"); } else setView(target); }} onFocusGoTo={() => goToInputRef.current?.focus()} />
       {logoutConfirmOpen && <ActionDialog danger title={t("logout")} confirmLabel={t("logout")} busy={logoutBusy} onClose={() => setLogoutConfirmOpen(false)} onConfirm={() => void signOut()}><p>{t("logoutConfirm")}</p></ActionDialog>}
     </div>

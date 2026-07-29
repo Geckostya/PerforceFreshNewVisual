@@ -7,7 +7,10 @@ import type { ConnectionInput, OperationEvent } from "./models";
 import { formatEta, isOperationActive, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
 import { ActionDialog } from "./View";
 
-export function OperationsCenter({ connection }: { connection: ConnectionInput }) {
+export function OperationsCenter({ connection, onRecover }: {
+  connection: ConnectionInput;
+  onRecover: (actionId: string) => void;
+}) {
   const { t } = useLocale();
   const [items, setItems] = useState<OperationSnapshot[]>([]);
   const [open, setOpen] = useState(false);
@@ -16,6 +19,7 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   const [cancelling, setCancelling] = useState<string[]>([]);
   const [retryBusy, setRetryBusy] = useState(false);
   const [retryCandidate, setRetryCandidate] = useState<OperationSnapshot>();
+  const [announcement, setAnnouncement] = useState("");
   const activeCount = items.filter((item) => isOperationActive(item.status)).length;
 
   useEffect(() => {
@@ -24,7 +28,18 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
     void listen<OperationEvent>("operation-event", (event) => {
       if (!disposed) {
         setItems((current) => reduceOperationSnapshots(current, event.payload));
+        if (event.payload.kind === "cancel_requested") {
+          setCancelling((current) => [...new Set([...current, event.payload.operationId])]);
+        }
         if (!isOperationActive(event.payload.kind)) setCancelling((current) => current.filter((id) => id !== event.payload.operationId));
+        if (event.payload.kind !== "progress") {
+          const outcome = event.payload.kind === "started"
+            ? t("operationStarted")
+            : event.payload.kind === "cancel_requested"
+              ? t("operationCancelRequested")
+              : operationStatusLabel(event.payload.kind);
+          setAnnouncement(`${operationLabel(event.payload.operationKind)}: ${outcome}`);
+        }
         setOpen(true);
       }
     }).then((stop) => {
@@ -71,6 +86,16 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
     return undefined;
   }
 
+  function operationStatusLabel(status: OperationEvent["kind"]) {
+    if (status === "completed") return t("operationCompleted");
+    if (status === "cancelled") return t("operationCancelled");
+    if (status === "cancel_requested") return t("operationCancelling");
+    if (status === "partial") return t("operationPartial");
+    if (status === "unknown") return t("operationUnknown");
+    if (status === "failed") return t("operationFailed");
+    return t("operationRunning");
+  }
+
   function operationSummary(item: OperationSnapshot) {
     const progress = operationProgress(item);
     const count = item.operationKind === "reconcile_preview"
@@ -89,16 +114,17 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   }
 
   if (items.length === 0) return null;
-  return <><div className={`operations-center${open ? " open" : ""}`}>
+  return <><div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div><div className={`operations-center${open ? " open" : ""}`}>
     {open && <section className="operations-panel" aria-label={t("operationsCenter")}>
       <header><div><strong>{t("operationsCenter")}</strong><span>{activeCount} {t("operationsActive")}</span></div><button type="button" onClick={() => setOpen(false)} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></header>
       <div className="operations-list">
         {retryError && <p className="error-banner" role="alert">{t("operationRetryFailed")}</p>}
         {cancelError && <p className="error-banner" role="alert">{t("operationCancelFailed")}</p>}
-        {[...items].reverse().slice(0, 12).map((item) => { const progress = operationProgress(item); return <article className={`operation-item operation-${item.status}`} key={item.operationId}>
-          <div><strong>{operationLabel(item.operationKind)}{cancelling.includes(item.operationId) ? <span className="operation-state">{t("operationCancelling")}</span> : item.status === "cancelled" ? <span className="operation-state">{t("operationCancelled")}</span> : item.status === "completed" ? <span className="operation-state">{t("operationCompleted")}</span> : null}</strong><small className="operation-summary">{operationSummary(item)}</small>{item.currentPath && <small className="operation-current-path" title={item.currentPath}>{item.currentPath}</small>}{progress.ratio !== undefined && <span className="operation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}{item.message && <span className="operation-message">{item.message}</span>}</div>
+        {[...items].reverse().slice(0, 12).map((item) => { const progress = operationProgress(item); const recovery = item.itemResults.find((result) => result.recoveryActionId)?.recoveryActionId; const succeeded = item.itemResults.filter((result) => result.status === "succeeded").length; const failed = item.itemResults.filter((result) => result.status === "failed").length; const skipped = item.itemResults.filter((result) => result.status === "skipped").length; return <article className={`operation-item operation-${item.status}`} key={item.operationId}>
+          <div><strong>{operationLabel(item.operationKind)}<span className="operation-state">{cancelling.includes(item.operationId) && isOperationActive(item.status) ? t("operationCancelling") : operationStatusLabel(item.status)}</span></strong><small className="operation-summary">{operationSummary(item)}</small>{item.currentPath && <small className="operation-current-path" title={item.currentPath}>{item.currentPath}</small>}{progress.ratio !== undefined && <span className="operation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}{item.message && <span className="operation-message">{item.message}</span>}{item.itemResults.length > 0 && <small className="operation-summary">{t("operationSucceeded")}: {succeeded} · {t("operationFailedItems")}: {failed} · {t("operationSkipped")}: {skipped}</small>}{item.readBack && item.readBack.status !== "succeeded" && item.readBack.status !== "not_required" && <small className="operation-message">{t("operationReadBack")}: {item.readBack.status}</small>}</div>
           {isOperationActive(item.status) && <button type="button" className="secondary-button" onClick={() => void cancel(item)} disabled={cancelling.includes(item.operationId)}>{cancelling.includes(item.operationId) ? t("operationCancelling") : t("cancelOperation")}</button>}
-          {(item.status === "failed" || item.status === "cancelled") && item.retryable && item.operationKind === "sync" && <button type="button" className="secondary-button" onClick={() => setRetryCandidate(item)}>{t("retryOperation")}</button>}
+          {(item.status === "failed" || item.status === "cancelled" || item.status === "partial") && item.retryable && item.operationKind === "sync" && <button type="button" className="secondary-button" onClick={() => setRetryCandidate(item)}>{t("retryOperation")}</button>}
+          {recovery && <button type="button" className="secondary-button" onClick={() => { onRecover(recovery); setOpen(false); }}>{t("operationRecoveryAction")}</button>}
         </article>; })}
       </div>
     </section>}

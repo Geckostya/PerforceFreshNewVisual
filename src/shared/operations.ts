@@ -1,6 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
-import type { OperationEvent, OperationEventKind } from "./models";
+import type {
+  OperationDiagnostic,
+  OperationEvent,
+  OperationEventKind,
+  OperationItemResult,
+  OperationReadBack,
+} from "./models";
 
 export interface OperationSnapshot {
   operationId: string;
@@ -17,6 +23,9 @@ export interface OperationSnapshot {
   scope?: string;
   scopes?: string[];
   phase?: string;
+  diagnostics: OperationDiagnostic[];
+  itemResults: OperationItemResult[];
+  readBack?: OperationReadBack;
   retryable: boolean;
 }
 
@@ -24,7 +33,13 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
   const next = [...current];
   const index = next.findIndex((item) => item.operationId === event.operationId);
   const previous = index < 0 ? undefined : next[index];
+  if (previous && isOperationTerminal(previous.status) && !isOperationTerminal(event.kind)) {
+    return current;
+  }
   const now = Date.now();
+  const retryable = event.retryable
+    && event.operationKind === "sync"
+    && event.kind !== "unknown";
   const snapshot: OperationSnapshot = {
     operationId: event.operationId,
     operationKind: event.operationKind,
@@ -33,14 +48,17 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
     totalFiles: event.totalFiles,
     processedBytes: event.processedBytes,
     totalBytes: event.totalBytes,
-    startedAt: previous?.startedAt ?? now,
+    startedAt: event.startedAtMs || previous?.startedAt || now,
     phaseStartedAt: previous && previous.phase === event.phase ? previous.phaseStartedAt : now,
-    currentPath: event.currentPath,
-    message: event.message,
+    currentPath: event.currentPath ?? previous?.currentPath,
+    message: event.message ?? previous?.message,
     scope: event.scope ?? previous?.scope,
     scopes: event.scopes ?? previous?.scopes,
     phase: event.phase ?? previous?.phase,
-    retryable: event.retryable,
+    diagnostics: event.diagnostics ?? previous?.diagnostics ?? [],
+    itemResults: event.itemResults ?? previous?.itemResults ?? [],
+    readBack: event.readBack ?? previous?.readBack,
+    retryable,
   };
   if (index < 0) next.push(snapshot);
   else next[index] = { ...next[index], ...snapshot };
@@ -67,7 +85,7 @@ export function formatEta(seconds: number): string {
 }
 
 export function isOperationActive(status: OperationEventKind): boolean {
-  return status === "started" || status === "progress";
+  return status === "started" || status === "progress" || status === "cancel_requested";
 }
 
 export function isOperationTerminal(status: OperationEventKind): boolean {

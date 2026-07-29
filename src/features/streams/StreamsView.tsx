@@ -6,6 +6,8 @@ import { partitionArchived } from "../../shared/localArchive";
 import { useArchiveDragDrop } from "../../shared/useArchiveDragDrop";
 import { useLocalArchive } from "../../shared/useLocalArchive";
 import type { AppError, ConnectionInput, P4Info, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
+import type { ResourceFreshness } from "../../shared/models";
+import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
 import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/ItemList";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
@@ -37,6 +39,8 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError>();
   const [notice, setNotice] = useState("");
+  const [freshness, setFreshness] = useState<ResourceFreshness>("loading");
+  const hasSuccessfulSnapshot = useRef(false);
   const archiveDragDrop = useArchiveDragDrop("streams");
   const { archivedIds, updateArchivedIds } = useLocalArchive(
     "streams",
@@ -48,10 +52,13 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
 
   async function load(preferences?: StreamPreferences, restorePreferences = false) {
     setBusy(true);
+    setFreshness("loading");
     setError(undefined);
     try {
       const next = await listStreams(connection);
       setStreams(next);
+      hasSuccessfulSnapshot.current = true;
+      setFreshness("fresh");
       setArchiveReady(true);
       const availablePaths = new Set(next.map((stream) => stream.path));
       setVisible((current) => new Set((restorePreferences ? preferences?.visiblePaths ?? [...availablePaths] : [...current]).filter((path) => availablePaths.has(path))));
@@ -63,7 +70,9 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
           : next[0] ? [currentStream && next.some((stream) => stream.path === currentStream) ? currentStream : next[0].path] : [];
       });
     } catch (reason) {
-      setError(normalizeAppError(reason));
+      const nextError = normalizeAppError(reason);
+      setError(nextError);
+      setFreshness(resourceFailureFreshness(hasSuccessfulSnapshot.current, nextError));
     } finally {
       setBusy(false);
     }
@@ -150,7 +159,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
   }
 
   function beginSwitch(stream: StreamSummary) {
-    if (stream.path === currentStream) return;
+    if (freshness !== "fresh" || stream.path === currentStream) return;
     setSwitchTarget(stream);
     setLocalStrategy("shelve");
     setDownloadNow(false);
@@ -244,7 +253,8 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     })}
   </ul>;
 
-  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<><button data-agent-id="create-stream" className="primary-button" type="button" disabled={busy || streams.length === 0} onClick={() => setCreateParent(selectedStream?.path || currentStream || streams[0]?.path)}>{t("createStream")}</button><RefreshButton busy={busy} onClick={() => void load()} /></>}>
+  return <View id="streams-title" title={t("streamsTitle")} subtitle={t("streamsBody")} error={error} notice={notice} operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined} onDismissNotice={() => setNotice("")} actions={<><button data-agent-id="create-stream" className="primary-button" type="button" disabled={freshness !== "fresh" || busy || streams.length === 0} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream?.path || currentStream || streams[0]?.path)}>{t("createStream")}</button><RefreshButton busy={busy} onClick={() => void load()} /></>}>
+    {freshness !== "fresh" && freshness !== "loading" && <p className="notice-banner" id="streams-stale-reason" role="status">{t("staleMutationBlocked")}</p>}
     <div className="streams-workbench">
       <aside className="streams-tree-pane">
         <div className="column-heading">
@@ -274,7 +284,7 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
       </aside>
       <section className="stream-graph-pane" aria-label={t("streamGraph")}>
         <div className="column-heading"><strong>{t("streamGraph")}</strong><span>{graph.nodes.length}</span></div>
-        {selectedStream ? <div className="stream-selection-summary"><div><strong>{selectedStream.path}</strong><span>{selectedStream.description || selectedStream.streamType}</span></div><button data-agent-id="create-child-stream" className="secondary-button" type="button" onClick={() => setCreateParent(selectedStream.path)}>{t("createChildStream")}</button></div> : selectedPaths.length > 1 ? <div className="stream-selection-summary"><strong>{selectedPaths.length} {t("streamsSelected")}</strong></div> : null}
+        {selectedStream ? <div className="stream-selection-summary"><div><strong>{selectedStream.path}</strong><span>{selectedStream.description || selectedStream.streamType}</span></div><button data-agent-id="create-child-stream" className="secondary-button" type="button" disabled={freshness !== "fresh"} aria-describedby={freshness !== "fresh" ? "streams-stale-reason" : undefined} onClick={() => setCreateParent(selectedStream.path)}>{t("createChildStream")}</button></div> : selectedPaths.length > 1 ? <div className="stream-selection-summary"><strong>{selectedPaths.length} {t("streamsSelected")}</strong></div> : null}
         {graph.nodes.length ? <div className="stream-graph-scroll"><svg className="stream-graph" role="img" aria-label={t("streamGraph")} viewBox={`0 0 ${graph.width} ${graph.height}`} width={graph.width} height={graph.height}>
           <g className="stream-edges">{graph.edges.map((edge) => { const from = graphByPath.get(edge.from)!; const to = graphByPath.get(edge.to)!; return <path key={`${edge.from}-${edge.to}`} d={`M ${from.x + 190} ${from.y + 27} C ${from.x + 215} ${from.y + 27}, ${to.x - 25} ${to.y + 27}, ${to.x} ${to.y + 27}`} />; })}</g>
           {graph.nodes.map((node) => <g className={`stream-node ${streamTypeClass(node.stream.streamType)}${selectedPaths.includes(node.stream.path) ? " selected" : ""}${node.stream.path === currentStream ? " current" : ""}`} key={node.stream.path} transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} onClick={(event) => selectStream(node.stream.path, event)} onDoubleClick={() => beginSwitch(node.stream)} onContextMenu={(event) => openMenu(event, node.stream)} onKeyDown={(event) => { if (event.key === "Enter") beginSwitch(node.stream); if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, node.stream); }}>
@@ -285,8 +295,8 @@ export function StreamsView({ connection, currentStream, onSwitched }: { connect
     </div>
 
     {menu && streamMenu.menu && <ContextMenu x={streamMenu.menu.x} y={streamMenu.menu.y} onSelect={streamMenu.close}>
-      <MenuButton onClick={() => setCreateParent(menu.path)}>{t("createChildStream")}</MenuButton>
-      <MenuButton disabled={selectedPaths.length !== 1 || menu.path === currentStream} onClick={() => beginSwitch(menu)}>{t("switchToStream")}</MenuButton>
+      <MenuButton disabled={freshness !== "fresh"} onClick={() => setCreateParent(menu.path)}>{t("createChildStream")}</MenuButton>
+      <MenuButton disabled={freshness !== "fresh" || selectedPaths.length !== 1 || menu.path === currentStream} onClick={() => beginSwitch(menu)}>{t("switchToStream")}</MenuButton>
       <MenuButton onClick={() => {
         const paths = selectedPaths.includes(menu.path) ? selectedPaths : [menu.path];
         const show = paths.some((path) => !visible.has(path));

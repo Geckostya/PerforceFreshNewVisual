@@ -8,9 +8,10 @@ import {
   normalizeAppError,
 } from "../../shared/api";
 import type { AppError, ConnectionInput, OpenedFile, PendingChange, ShelvedFile } from "../../shared/models";
+import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
 import { groupChanges, shouldRefreshOnFocus, visibleShelfFiles } from "./changes";
 
-export type ChangesLoadState = "loading" | "ready" | "error";
+export type ChangesLoadState = "loading" | "fresh" | "stale" | "offline" | "permission" | "partial" | "error";
 
 export function useChangesData(
   connection: ConnectionInput,
@@ -26,9 +27,9 @@ export function useChangesData(
   const [error, setError] = useState<AppError>();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const lastFocusRefresh = useRef(0);
+  const hasSuccessfulSnapshot = useRef(false);
 
   const refreshData = useCallback(() => {
-    setShelfFiles({});
     setRefreshVersion((value) => value + 1);
   }, []);
 
@@ -47,12 +48,14 @@ export function useChangesData(
         setShelvedChanges(nextShelves);
         setFiles(nextFiles);
         onFileCountChange(nextFiles.length);
-        setState("ready");
+        hasSuccessfulSnapshot.current = true;
+        setState("fresh");
       })
       .catch((reason) => {
         if (!active) return;
-        setError(normalizeAppError(reason));
-        setState("error");
+        const nextError = normalizeAppError(reason);
+        setError(nextError);
+        setState(resourceFailureFreshness(hasSuccessfulSnapshot.current, nextError));
       });
     return () => { active = false; };
   }, [connection, onFileCountChange, refreshVersion]);

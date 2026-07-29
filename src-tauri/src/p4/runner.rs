@@ -382,14 +382,29 @@ fn classify_error_message(message: &str) -> (ErrorKind, &'static str, &'static s
             "Предварительный результат устарел.",
             "Обновите данные и повторите preview перед применением.",
         )
+    } else if normalized.contains("timed out") || normalized.contains("timeout") {
+        (
+            ErrorKind::Timeout,
+            "Истекло время ожидания ответа Perforce.",
+            "Проверьте соединение и повторите ограниченный refresh.",
+        )
+    } else if normalized.contains("unsupported")
+        || normalized.contains("not supported")
+        || normalized.contains("unknown command")
+    {
+        (
+            ErrorKind::UnsupportedCapability,
+            "Сервер не поддерживает эту возможность.",
+            "Проверьте версию сервера и доступные возможности.",
+        )
     } else if normalized.contains("maxresults")
         || normalized.contains("maxscan")
         || normalized.contains("maxlocktime")
         || normalized.contains("output truncated")
     {
         (
-            ErrorKind::PartialResult,
-            "Perforce вернул неполный результат.",
+            ErrorKind::ServerLimit,
+            "Perforce остановил запрос из-за лимита сервера.",
             "Сузьте область или фильтр и повторите запрос.",
         )
     } else if normalized.contains("authenticity")
@@ -475,7 +490,15 @@ mod tests {
         );
         assert_eq!(
             classify_error_message("maxscan limit reached").0,
-            ErrorKind::PartialResult
+            ErrorKind::ServerLimit
+        );
+        assert_eq!(
+            classify_error_message("read timed out").0,
+            ErrorKind::Timeout
+        );
+        assert_eq!(
+            classify_error_message("command not supported").0,
+            ErrorKind::UnsupportedCapability
         );
     }
 

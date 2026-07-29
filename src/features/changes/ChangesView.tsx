@@ -34,7 +34,7 @@ import { useLocale } from "../../shared/i18n";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { DiffViewer } from "../../shared/DiffViewer";
 import { ItemRowCopy, SelectableRow, SelectableSurface } from "../../shared/ItemList";
-import { startObservedOperation } from "../../shared/operations";
+import { isOperationTerminal, startObservedOperation } from "../../shared/operations";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, View } from "../../shared/View";
 import { SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
 import { RefreshButton } from "../../shared/RefreshButton";
@@ -164,9 +164,10 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     "changes",
     connection,
     groups.filter((group) => !group.isDefault).map((group) => group.id),
-    state === "ready",
+    state === "fresh",
   );
   const canSubmit = currentGroup.files.length > 0 || currentGroup.isShelved;
+  const mutationsBlocked = state !== "fresh";
   const safeSync = useSafeSync(connection, { refresh: refreshData, setNotice, setError });
 
   useEffect(() => {
@@ -176,7 +177,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }, []);
 
   useEffect(() => {
-    if (state !== "ready") return;
+    if (state !== "fresh") return;
     const available = groups.map((group) => group.id);
     setSelectedChanges((current) => {
       const retained = current.filter((id) => available.includes(id));
@@ -354,10 +355,10 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
           "submit",
           () => startSubmit(connection, currentGroup.id, currentGroup.isDefault ? submitDescription : undefined, mode),
           (event) => {
-            if (!["completed", "failed", "cancelled"].includes(event.kind)) return;
+            if (!isOperationTerminal(event.kind)) return;
             if (event.kind === "completed") setNotice(t("submitSucceeded"));
             else if (event.kind === "cancelled") setNotice(t("submitCancelled"));
-            else if (event.kind === "failed") setError({ kind: "command_failed", message: event.message || t("operationFailed"), hints: [] });
+            else setError({ kind: event.kind === "partial" ? "partial_result" : "command_failed", message: event.message || (event.kind === "unknown" ? t("operationUnknown") : t("operationFailed")), hints: [] });
             refreshData();
           },
         );
@@ -540,19 +541,20 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       actions={<>
           <span className="auto-refresh"><span aria-hidden="true" />{t("refreshOnFocus")}</span>
           <RefreshButton busy={state === "loading"} onClick={() => void refreshData()} />
-          <button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start(["//..."])} disabled={safeSync.phase !== "idle"}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button>
+          <button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start(["//..."])} disabled={mutationsBlocked || safeSync.phase !== "idle"} aria-describedby={mutationsBlocked ? "changes-stale-reason" : undefined}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button>
       </>}
     >
+      {mutationsBlocked && state !== "loading" && <p className="notice-banner" id="changes-stale-reason" role="status">{t("staleMutationBlocked")}</p>}
       <div className="change-toolbar">
         <div>
           <strong className={currentGroup.isDefault ? undefined : "changelist-number"}>{currentGroup.isDefault ? t("defaultChangelist") : `CL ${currentGroup.id}`}</strong>
           <ChangelistDescription value={currentGroup.description} fallback={t("noDescription")} compact />
         </div>
         <div className="change-toolbar-actions">
-          <button className="secondary-button" type="button" onClick={() => { setDescription(""); setDialog("create"); }}>
+          <button className="secondary-button" type="button" disabled={mutationsBlocked} aria-describedby={mutationsBlocked ? "changes-stale-reason" : undefined} onClick={() => { setDescription(""); setDialog("create"); }}>
             {t("newChangelist")}
           </button>
-          <button className="primary-button" type="button" disabled={!canSubmit} onClick={openSubmit}>
+          <button className="primary-button" type="button" disabled={mutationsBlocked || !canSubmit} aria-describedby={mutationsBlocked ? "changes-stale-reason" : undefined} onClick={openSubmit}>
             {currentGroup.isShelved && currentGroup.files.length === 0 ? t("submitShelf") : t("submitChange")}
           </button>
         </div>

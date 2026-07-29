@@ -2,7 +2,7 @@ import { useState } from "react";
 import { normalizeAppError, previewSync, repairSyncHaveList, startSync } from "./api";
 import { useLocale } from "./i18n";
 import type { AppError, ConnectionInput, OperationEvent, SyncPreview, SyncPreviewItem } from "./models";
-import { startObservedOperation, useActiveOperation } from "./operations";
+import { isOperationTerminal, startObservedOperation, useActiveOperation } from "./operations";
 import { Modal } from "./View";
 
 type SyncPhase = "idle" | "syncing" | "checking" | "forcing";
@@ -102,7 +102,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     setPhase("syncing");
     try {
       await startObservedOperation("sync", () => startSync(connection, scopes), (event) => {
-        if (["completed", "failed", "cancelled"].includes(event.kind)) void finishSafeSync(event, scopes);
+        if (isOperationTerminal(event.kind)) void finishSafeSync(event, scopes);
       });
     } catch (reason) {
       setPhase("idle");
@@ -144,7 +144,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     const selectedOverwriteScopes = exactOverwriteScopes(selectedOverwritePaths, conflictItems);
     try {
       await startObservedOperation("sync", () => startSync(connection, selectedOverwriteScopes, true), (event) => {
-        if (!["completed", "failed", "cancelled"].includes(event.kind)) return;
+        if (!isOperationTerminal(event.kind)) return;
         void finishForcedSync(event, selectedOverwritePaths);
       });
     } catch (reason) {

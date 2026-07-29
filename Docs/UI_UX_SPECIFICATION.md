@@ -71,10 +71,13 @@ No action is drag-only, hover-only, or color-only.
 - While a mutation runs, block duplicate submission and unsafe Escape closing. Explain disabled controls nearby or through accessible help.
 - Operations Center is the sole progress/cancel/retry surface for one long operation. A feature may show a compact transient status, but not a second operation controller.
 - Cancelling disables the action immediately; persistent `Cancelled` appears only after the backend publishes the terminal event and the feature refreshes.
-- Show kind, scope, status, processed count, current path, and bounded diagnostics. Do not invent totals, percentage, or ETA.
+- Show kind, scope, status, processed count, current path, and bounded diagnostics. Partial/unknown outcomes expose succeeded/failed/skipped counts, compensation state, read-back state, and a safe screen-specific recovery action. Do not invent totals, percentage, or ETA.
 - Render a progress bar only when the backend provides a real total. With no measurable total, show the current phase/count/path beside the spinner instead of adding an indeterminate bar that repeats the same activity signal.
 - Cancel is not rollback. Retry only an idempotent read or a newly confirmed mutation; never retry an unknown result automatically.
+- Announce start, cancel request, and terminal outcome through one polite `aria-live` region. Progress ticks are not announced.
 - Errors state what did not happen, why, and the safe next action. Warnings/errors remain in the bounded CLI log until viewed or cleared.
+
+My Changes and Streams keep their last successful resource snapshot readable when Refresh fails. Their mutation controls reference one accessible stale-state explanation and remain disabled until a controlled Refresh succeeds; selection and local presentation cleanup continue only from authoritative IDs.
 
 Files-specific progress, writable conflicts, and retry scope are in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
 
