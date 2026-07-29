@@ -4152,7 +4152,10 @@ fn append_missing_file_issues(
         let deleted_action = matches!(action.as_str(), "delete" | "move/delete" | "purge");
         let unmapped =
             field(record, &["isMapped"]).is_some() && !has_active_field(record, &["isMapped"]);
-        let missing = !deleted_action && (field(record, &["path"]).is_none() || unmapped);
+        // `p4 fstat -Ol` can return the mapped disk location as `clientFile`
+        // without a separate `path` field, including for files opened for add.
+        let missing =
+            !deleted_action && (field(record, &["path", "clientFile"]).is_none() || unmapped);
         if missing
             && !issues
                 .iter()
@@ -5705,7 +5708,7 @@ mod tests {
         let records = parse_json_lines(
             r#"{"depotFile":"//Acme/main/missing.txt","action":"edit","isMapped":"0"}
 {"depotFile":"//Acme/main/deleted.txt","action":"delete"}
-{"depotFile":"//Acme/main/ok.txt","action":"edit","path":"C:\\work\\ok.txt","isMapped":"1"}"#,
+{"depotFile":"//Acme/main/ok.txt","action":"edit","clientFile":"C:\\work\\ok.txt","isMapped":"1"}"#,
         )
         .unwrap();
         let expected = vec![
