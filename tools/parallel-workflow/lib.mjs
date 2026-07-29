@@ -12,8 +12,50 @@ const COMMIT_PATTERN = /^[0-9a-f]{40,64}$/i;
 const TASK_BUCKETS = ["pending", "active", "completed", "blocked"];
 const TASK_KINDS = new Set(["feature", "refactor", "stabilization"]);
 const QUALITY_TASK_KINDS = new Set(["refactor", "stabilization"]);
+const WORK_CLASSES = new Set(["implementation", "mechanical", "quality", "complex"]);
+const ALLOWED_REASONING_EFFORTS = Object.freeze({
+  implementation: new Set(["medium"]),
+  mechanical: new Set(["low", "medium"]),
+  quality: new Set(["medium"]),
+  complex: new Set(["high"]),
+});
+const DEFAULT_REASONING_EFFORT = Object.freeze({
+  implementation: "medium",
+  mechanical: "low",
+  quality: "medium",
+  complex: "high",
+});
 const DEFAULT_QUALITY_CHECKPOINT_EVERY = 4;
 const RESULT_TAIL_LIMIT = 12_000;
+
+export const ORCHESTRATOR_AGENT_PROFILE = Object.freeze({
+  model: "terra",
+  reasoningEffort: "low",
+  maximumReasoningEffort: "low",
+});
+
+const WORKER_AGENT_PROFILES = Object.freeze({
+  implementation: Object.freeze({
+    model: "terra",
+    reasoningEffort: "medium",
+    maximumReasoningEffort: "medium",
+  }),
+  mechanical: Object.freeze({
+    model: "luna",
+    reasoningEffort: "low",
+    maximumReasoningEffort: "medium",
+  }),
+  quality: Object.freeze({
+    model: "sol",
+    reasoningEffort: "medium",
+    maximumReasoningEffort: "medium",
+  }),
+  complex: Object.freeze({
+    model: "sol",
+    reasoningEffort: "high",
+    maximumReasoningEffort: "high",
+  }),
+});
 
 export class WorkflowError extends Error {
   constructor(message, code = "workflow_error") {
@@ -47,6 +89,7 @@ export async function initializeWorkflow({
     }
   } else {
     const workflowId = randomUUID();
+    const validationCheckoutRoot = path.join(tmpdir(), "p4fnv-v", workflowId.slice(0, 8));
     const resolvedQualityEvery = normalizeQualityEvery(qualityCheckpointEvery);
     const resolvedP4dRoot = p4dTestServerRoot
       ? await resolveP4dTestServerRoot(p4dTestServerRoot)
@@ -57,9 +100,12 @@ export async function initializeWorkflow({
       repoRoot: resolvedRepoRoot,
       stateRoot: resolvedStateRoot,
       toolchainRoot: await resolveToolchainRoot(resolvedRepoRoot),
-      validationCheckoutRoot: path.join(tmpdir(), "p4fnv-v", workflowId.slice(0, 8)),
+      validationCheckoutRoot,
+      validationWorktreePath: path.join(validationCheckoutRoot, "checkout"),
+      validationCargoTargetRoot: path.join(validationCheckoutRoot, "cargo-target"),
       defaultBaseRef: "main",
       defaultValidationProfile: "p4fnv-full",
+      orchestratorAgentProfile: ORCHESTRATOR_AGENT_PROFILE,
       qualityCheckpointEvery: resolvedQualityEvery,
       createdAt: now(),
       ...(resolvedP4dRoot ? { p4dTestServerRoot: resolvedP4dRoot } : {}),
@@ -85,6 +131,7 @@ export async function initializeWorkflow({
     );
   }
   await fs.mkdir(config.validationCheckoutRoot, { recursive: true });
+  await fs.mkdir(validationCargoTargetPath(config), { recursive: true });
 
   let enqueued = [];
   if (backlogFile) {
@@ -180,6 +227,23 @@ export function normalizeTaskInput(value, config) {
       "p4d_not_configured",
     );
   }
+  if (value.agentProfile !== undefined) {
+    throw new WorkflowError(
+      `Task ${taskId} cannot select agentProfile directly; use workClass.`,
+      "invalid_task",
+    );
+  }
+  const workClass = normalizeWorkClass(value.workClass, taskKind, taskId);
+  const reasoningEffort = normalizeReasoningEffort(value.reasoningEffort, workClass, taskId);
+  const resourceJustification = value.resourceJustification === undefined
+    ? undefined
+    : requireString(value.resourceJustification, `task ${taskId} resourceJustification`);
+  if ((workClass === "complex" || reasoningEffort !== DEFAULT_REASONING_EFFORT[workClass]) && !resourceJustification) {
+    throw new WorkflowError(
+      `Task ${taskId} requires resourceJustification for its elevated agent profile.`,
+      "resource_justification_required",
+    );
+  }
   const sourceTaskIds = uniqueTaskIds(value.sourceTaskIds ?? [], `task ${taskId} sourceTaskIds`);
   const coveredFeatureTaskIds = uniqueTaskIds(
     value.coveredFeatureTaskIds ?? [],
@@ -212,6 +276,10 @@ export function normalizeTaskInput(value, config) {
     description: requireString(value.description, `task ${taskId} description`),
     priority,
     taskKind,
+    workClass,
+    reasoningEffort,
+    agentProfile: agentProfileForWorkClass(workClass, reasoningEffort),
+    ...(resourceJustification ? { resourceJustification } : {}),
     dependsOn: uniqueTaskIds(value.dependsOn ?? [], `task ${taskId} dependsOn`),
     sourceTaskIds,
     coveredFeatureTaskIds,
@@ -234,6 +302,15 @@ export async function getNextTask(stateRoot) {
   const workflow = await loadWorkflow(stateRoot);
   const buckets = await loadTaskBuckets(workflow.stateRoot);
   return selectNextWorkflowItem(buckets, workflow.config);
+}
+
+export function agentProfileForTask(task) {
+  assertPlainObject(task, "task");
+  const taskId = task.taskId ?? "unknown";
+  const taskKind = task.taskKind ?? "feature";
+  const workClass = normalizeWorkClass(task.workClass, taskKind, taskId);
+  const reasoningEffort = normalizeReasoningEffort(task.reasoningEffort, workClass, taskId);
+  return agentProfileForWorkClass(workClass, reasoningEffort);
 }
 
 export function selectNextTask(tasks, completedIds) {
@@ -340,7 +417,7 @@ export async function createQualityCheckpoint({ stateRoot, checkpointId, sourceT
   const stabilizationTaskId = validateTaskId(`${id}-stabilization`);
   const baseSha = await mergeBase(
     workflow.config.repoRoot,
-    sourceTasks.map((task) => task.validatedCommitSha),
+    sourceTasks.map((task) => task.baseSha),
   );
   const priority = Math.min(...sourceTasks.map((task) => task.priority));
   const relevantPaths = [
@@ -369,10 +446,10 @@ export async function createQualityCheckpoint({ stateRoot, checkpointId, sourceT
           "All validated source ranges are integrated without dropping behavior.",
           "Duplicated logic, dead code, and unjustified abstractions in the touched area are removed or explicitly reported.",
           "Structural changes preserve dependency direction and keep tests and owning contracts current.",
-          "The full validation profile passes for the consolidated commit.",
+          "The fast debug validation profile passes for the consolidated commit.",
         ],
         baseRef: baseSha,
-        validationProfile: "p4fnv-full",
+        validationProfile: "p4fnv-fast",
         relevantPaths,
         metadata: { generatedBy: "quality-checkpoint" },
       },
@@ -418,10 +495,10 @@ function selectNextWorkflowItem(buckets, config) {
     QUALITY_TASK_KINDS.has(taskKindOf(task)),
   );
   if (qualityBarrier) {
-    return selectNextTask(
+    return taskForDispatch(selectNextTask(
       buckets.pending.filter((task) => QUALITY_TASK_KINDS.has(taskKindOf(task))),
       completedIds,
-    );
+    ));
   }
   if (quality.checkpointDraining) {
     return {
@@ -440,7 +517,7 @@ function selectNextWorkflowItem(buckets, config) {
       sourceTaskIds: quality.uncoveredFeatureTaskIds,
     };
   }
-  return selectNextTask(buckets.pending, completedIds);
+  return taskForDispatch(selectNextTask(buckets.pending, completedIds));
 }
 
 export async function claimTask({ stateRoot, taskId, workerId }) {
@@ -448,7 +525,7 @@ export async function claimTask({ stateRoot, taskId, workerId }) {
   const id = validateTaskId(taskId);
   const worker = requireString(workerId, "workerId");
   const pendingPath = taskPath(workflow.stateRoot, "pending", id);
-  const task = await readJson(pendingPath);
+  const task = taskForDispatch(await readJson(pendingPath));
 
   const buckets = await loadTaskBuckets(workflow.stateRoot);
   const quality = computeQualityState(buckets, workflow.config);
@@ -504,6 +581,7 @@ export async function claimTask({ stateRoot, taskId, workerId }) {
     baseSha,
     sourceCommits,
     validationProfile: task.validationProfile,
+    agentProfile: task.agentProfile,
     claimedAt: now(),
     task,
   };
@@ -666,6 +744,7 @@ export async function processNextValidation(workflowOrStateRoot) {
 async function validateRequest(workflow, request) {
   const startedAt = now();
   const checkoutPath = managedCheckoutPath(workflow.config, request.requestId);
+  const cargoTargetPath = validationCargoTargetPath(workflow.config);
   const logDirectory = path.join(
     workflow.stateRoot,
     "validation",
@@ -682,6 +761,7 @@ async function validateRequest(workflow, request) {
     validateStoredRequest(request, workflow.config);
     await assertCommitExists(workflow.config.repoRoot, request.commitSha);
     await fs.mkdir(logDirectory, { recursive: true });
+    await fs.mkdir(cargoTargetPath, { recursive: true });
     await removeManagedCheckout(workflow, checkoutPath, warnings);
     await runGit(
       workflow.config.repoRoot,
@@ -767,6 +847,10 @@ async function runValidationCommand(workflowConfig, checkoutPath, logDirectory, 
       .join(" ")}`,
     "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
   ].join("; ");
+  const validationEnvironment = {
+    ...process.env,
+    CARGO_TARGET_DIR: validationCargoTargetPath(workflowConfig),
+  };
   let result;
   try {
     result = await runProcess(
@@ -785,6 +869,7 @@ async function runValidationCommand(workflowConfig, checkoutPath, logDirectory, 
         timeoutMs: command.timeoutMs,
         captureLimit: RESULT_TAIL_LIMIT,
         logPath,
+        env: validationEnvironment,
       },
     );
   } catch (error) {
@@ -898,7 +983,12 @@ export async function workflowStatus(stateRoot) {
     schemaVersion: SCHEMA_VERSION,
     workflowId: workflow.config.workflowId,
     stateRoot: workflow.stateRoot,
+    orchestratorAgentProfile: structuredClone(
+      workflow.config.orchestratorAgentProfile ?? ORCHESTRATOR_AGENT_PROFILE,
+    ),
     validationCheckoutRoot: workflow.config.validationCheckoutRoot,
+    validationWorktreePath: validationWorktreePath(workflow.config),
+    validationCargoTargetRoot: validationCargoTargetPath(workflow.config),
     tasks: {
       pending: buckets.pending.length,
       active: buckets.active.length,
@@ -1080,11 +1170,20 @@ export function assertManagedPath(root, target) {
 }
 
 function managedCheckoutPath(config, requestId) {
-  const id = requireIdentifier(requestId, "requestId");
-  return assertManagedPath(
-    config.validationCheckoutRoot,
-    path.join(config.validationCheckoutRoot, id),
-  );
+  requireIdentifier(requestId, "requestId");
+  return validationWorktreePath(config);
+}
+
+export function validationWorktreePath(config) {
+  const checkout = config.validationWorktreePath
+    ?? path.join(config.validationCheckoutRoot, "checkout");
+  return assertManagedPath(config.validationCheckoutRoot, checkout);
+}
+
+export function validationCargoTargetPath(config) {
+  const target = config.validationCargoTargetRoot
+    ?? path.join(config.validationCheckoutRoot, "cargo-target");
+  return assertManagedPath(config.validationCheckoutRoot, target);
 }
 
 async function acquireValidatorLock(workflow) {
@@ -1355,6 +1454,7 @@ async function runProcess(executable, args, options = {}) {
     allowExitCodes = [0],
     captureLimit = RESULT_TAIL_LIMIT,
     logPath,
+    env = process.env,
   } = options;
   if (logPath) await fs.mkdir(path.dirname(logPath), { recursive: true });
   const logStream = logPath ? createWriteStream(logPath, { encoding: "utf8" }) : null;
@@ -1362,7 +1462,7 @@ async function runProcess(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd,
-      env: process.env,
+      env,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1436,6 +1536,8 @@ function validateConfig(config, expectedStateRoot) {
   if (!path.isAbsolute(config.toolchainRoot) || !path.isAbsolute(config.validationCheckoutRoot)) {
     throw new WorkflowError("Workflow toolchain and checkout paths must be absolute.", "invalid_config");
   }
+  validationCargoTargetPath(config);
+  validationWorktreePath(config);
   if (config.p4dTestServerRoot !== undefined && !path.isAbsolute(config.p4dTestServerRoot)) {
     throw new WorkflowError("Workflow P4D test server path must be absolute.", "invalid_config");
   }
@@ -1445,7 +1547,28 @@ function validateConfig(config, expectedStateRoot) {
   if (!Object.hasOwn(validationProfiles, config.defaultValidationProfile)) {
     throw new WorkflowError("Workflow default validation profile is unknown.", "invalid_config");
   }
+  if (
+    config.orchestratorAgentProfile !== undefined &&
+    !sameAgentProfile(config.orchestratorAgentProfile, ORCHESTRATOR_AGENT_PROFILE)
+  ) {
+    throw new WorkflowError(
+      "Workflow orchestrator profile must remain Terra/Low.",
+      "invalid_config",
+    );
+  }
   normalizeQualityEvery(config.qualityCheckpointEvery);
+}
+
+function sameAgentProfile(actual, expected) {
+  return Boolean(
+    actual &&
+    typeof actual === "object" &&
+    !Array.isArray(actual) &&
+    Object.keys(actual).length === Object.keys(expected).length &&
+    actual.model === expected.model &&
+    actual.reasoningEffort === expected.reasoningEffort &&
+    actual.maximumReasoningEffort === expected.maximumReasoningEffort
+  );
 }
 
 function qualityEvery(config) {
@@ -1465,6 +1588,71 @@ function normalizeQualityEvery(value) {
 
 function taskKindOf(task) {
   return task.taskKind ?? "feature";
+}
+
+function normalizeWorkClass(value, taskKind, taskId) {
+  const qualityTask = QUALITY_TASK_KINDS.has(taskKind);
+  const normalized = value ?? (qualityTask ? "quality" : "implementation");
+  if (!WORK_CLASSES.has(normalized)) {
+    throw new WorkflowError(`Task ${taskId} has unknown workClass ${normalized}.`, "invalid_task");
+  }
+  if (qualityTask && normalized !== "quality") {
+    throw new WorkflowError(
+      `Quality task ${taskId} must use the quality workClass.`,
+      "invalid_task",
+    );
+  }
+  if (!qualityTask && normalized === "quality") {
+    throw new WorkflowError(
+      `Feature task ${taskId} cannot use the quality workClass.`,
+      "invalid_task",
+    );
+  }
+  return normalized;
+}
+
+function normalizeReasoningEffort(value, workClass, taskId) {
+  const normalized = value ?? DEFAULT_REASONING_EFFORT[workClass];
+  if (!ALLOWED_REASONING_EFFORTS[workClass]?.has(normalized)) {
+    throw new WorkflowError(
+      `Task ${taskId} cannot use ${normalized} reasoning for ${workClass} work.`,
+      "agent_profile_exceeds_limit",
+    );
+  }
+  return normalized;
+}
+
+function agentProfileForWorkClass(workClass, reasoningEffort) {
+  const profile = WORKER_AGENT_PROFILES[workClass];
+  if (!profile) {
+    throw new WorkflowError(`No agent profile exists for ${workClass}.`, "invalid_task");
+  }
+  return { ...structuredClone(profile), reasoningEffort };
+}
+
+function taskForDispatch(task) {
+  if (!task) return null;
+  const workClass = normalizeWorkClass(task.workClass, taskKindOf(task), task.taskId);
+  const reasoningEffort = normalizeReasoningEffort(
+    task.reasoningEffort,
+    workClass,
+    task.taskId,
+  );
+  if (
+    (workClass === "complex" || reasoningEffort !== DEFAULT_REASONING_EFFORT[workClass]) &&
+    !task.resourceJustification
+  ) {
+    throw new WorkflowError(
+      `Task ${task.taskId} requires resourceJustification for its elevated agent profile.`,
+      "resource_justification_required",
+    );
+  }
+  return {
+    ...task,
+    workClass,
+    reasoningEffort,
+    agentProfile: agentProfileForWorkClass(workClass, reasoningEffort),
+  };
 }
 
 function compareTasks(left, right) {

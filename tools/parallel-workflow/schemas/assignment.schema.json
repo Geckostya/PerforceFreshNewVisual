@@ -17,6 +17,7 @@
     "baseSha",
     "sourceCommits",
     "validationProfile",
+    "agentProfile",
     "claimedAt",
     "task"
   ],
@@ -70,6 +71,9 @@
     },
     "validationProfile": {
       "enum": ["p4fnv-fast", "p4fnv-full", "p4fnv-full-p4d"]
+    },
+    "agentProfile": {
+      "$ref": "./task.schema.json#/$defs/agentProfile"
     },
     "claimedAt": { "type": "string", "format": "date-time" },
     "task": {

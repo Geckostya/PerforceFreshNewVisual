@@ -6,13 +6,14 @@
     "title": "Implement the prerequisite feature slice",
     "description": "Replace this example with the highest-priority independent feature.",
     "priority": 10,
+    "workClass": "implementation",
     "dependsOn": [],
     "acceptanceCriteria": [
       "The requested behavior is implemented with focused tests.",
       "The worker worktree is clean and the implementation is committed."
     ],
     "baseRef": "main",
-    "validationProfile": "p4fnv-full",
+    "validationProfile": "p4fnv-fast",
     "relevantPaths": [
       "src/",
       "src-tauri/src/"
@@ -25,17 +26,18 @@
     "schemaVersion": 1,
     "taskId": "feature-dependent",
     "taskKind": "feature",
-    "title": "Implement a dependent feature slice",
-    "description": "This task becomes eligible only after feature-foundation is validated.",
+    "title": "Add focused tests and documentation",
+    "description": "This mechanical task becomes eligible only after feature-foundation is validated.",
     "priority": 20,
+    "workClass": "mechanical",
     "dependsOn": [
       "feature-foundation"
     ],
     "acceptanceCriteria": [
-      "The dependent behavior is implemented and covered by focused tests.",
-      "The full validation profile passes for the submitted commit."
+      "Focused regression tests cover the implemented behavior.",
+      "The owning contract is current and the fast validation profile passes."
     ],
     "baseRef": "main",
-    "validationProfile": "p4fnv-full"
+    "validationProfile": "p4fnv-fast"
   }
 ]

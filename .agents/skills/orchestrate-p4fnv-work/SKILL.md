@@ -21,12 +21,14 @@ Do not place shared queue state in a worker worktree. Do not start feature work 
 
 1. Call `npm run workflow -- next --state <path>`.
 2. If `next` returns `quality-checkpoint-draining`, assign no new features and wait for the listed active feature workers. If it returns `quality-checkpoint-required`, run `quality-checkpoint --state <path>` before creating more workers. Schedule its refactor task and then its dependent stabilization task; pending, active, or blocked quality work is a hard feature barrier.
-3. Discover the saved P4FNV project, then create a Codex task with `environment.type: "worktree"`. Use the task's `baseRef` as the starting branch only when the thread API requires an explicit existing state.
+3. Run coordinator-only scheduling and status work on Terra/Low when the task surface supports model selection. Read the selected task's derived `agentProfile`, then create its Codex task with that exact model and reasoning effort plus `environment.type: "worktree"`. If the profile is unavailable, leave the task pending and report it; never silently upgrade or substitute. Use the task's `baseRef` as the starting branch only when the thread API requires an explicit existing state.
 4. Wait until creation returns a real thread ID. Claim the task with that ID and send the emitted assignment JSON unchanged to the worker.
 5. Ask a feature worker to implement only its assignment. Ask a quality worker to integrate every immutable `sourceCommits` range exactly once before its refactor or stabilization audit. All workers commit, leave the worktree clean, submit `HEAD` with `request`, and return the request JSON.
 6. Fill free worker slots with the next eligible priorities. Never skip a higher-priority dependency-ready task or assign a feature across a quality barrier.
 
-Use `wait_threads` for bounded progress snapshots. Do not repeatedly read full task histories and do not mistake commentary for completion.
+Workers use focused and debug checks only. They never start, stop, or mutate the shared disposable P4D server; the serialized stabilization validator owns release regression and writable P4D smoke.
+
+Use event-driven `wait_threads` with a bounded timeout after dispatch. Inspect workflow or repository status only when a worker event arrives or the timeout expires; do not poll diffs between events. Do not repeatedly read full task histories and do not mistake commentary for completion.
 
 ## Validate and return feedback
 

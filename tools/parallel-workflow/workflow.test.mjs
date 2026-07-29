@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ORCHESTRATOR_AGENT_PROFILE,
   WorkflowError,
   assertManagedPath,
   claimTask,
@@ -14,6 +15,8 @@ import {
   initializeWorkflow,
   normalizeTaskInput,
   selectNextTask,
+  validationCargoTargetPath,
+  validationWorktreePath,
   workflowStatus,
 } from "./lib.mjs";
 
@@ -51,7 +54,14 @@ describe("parallel workflow queue", () => {
       ],
     });
 
-    expect((await getNextTask(stateRoot)).taskId).toBe("first");
+    expect(await getNextTask(stateRoot)).toMatchObject({
+      taskId: "first",
+      agentProfile: {
+        model: "terra",
+        reasoningEffort: "medium",
+        maximumReasoningEffort: "medium",
+      },
+    });
     const assignment = await claimTask({
       stateRoot,
       taskId: "first",
@@ -61,6 +71,11 @@ describe("parallel workflow queue", () => {
     expect(assignment.taskKind).toBe("feature");
     expect(assignment.sourceCommits).toEqual([]);
     expect(assignment.baseSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(assignment.agentProfile).toEqual({
+      model: "terra",
+      reasoningEffort: "medium",
+      maximumReasoningEffort: "medium",
+    });
 
     const status = await workflowStatus(stateRoot);
     expect(status.tasks).toMatchObject({
@@ -70,6 +85,19 @@ describe("parallel workflow queue", () => {
       blocked: 0,
       next: null,
     });
+    expect(status.validationCargoTargetRoot).toBe(
+      path.join(status.validationCheckoutRoot, "cargo-target"),
+    );
+    expect(validationCargoTargetPath({
+      validationCheckoutRoot: status.validationCheckoutRoot,
+    })).toBe(status.validationCargoTargetRoot);
+    expect(status.validationWorktreePath).toBe(
+      path.join(status.validationCheckoutRoot, "checkout"),
+    );
+    expect(status.orchestratorAgentProfile).toEqual(ORCHESTRATOR_AGENT_PROFILE);
+    expect(validationWorktreePath({
+      validationCheckoutRoot: status.validationCheckoutRoot,
+    })).toBe(status.validationWorktreePath);
   });
 
   it("pauses feature scheduling for refactoring and stabilization checkpoints", async () => {
@@ -104,6 +132,12 @@ describe("parallel workflow queue", () => {
       workerId: "quality-worker",
     });
     expect(assignment.taskKind).toBe("refactor");
+    expect(assignment.validationProfile).toBe("p4fnv-fast");
+    expect(assignment.agentProfile).toEqual({
+      model: "sol",
+      reasoningEffort: "medium",
+      maximumReasoningEffort: "medium",
+    });
     expect(assignment.sourceCommits.map((source) => source.taskId)).toEqual([
       "feature-one",
       "feature-two",
@@ -129,6 +163,12 @@ describe("parallel workflow queue", () => {
     expect(stabilizationAssignment.sourceCommits).toEqual([
       expect.objectContaining({ taskId: checkpoint.tasks[0].taskId, commitSha: head }),
     ]);
+    expect(stabilizationAssignment.validationProfile).toBe("p4fnv-full");
+    expect(stabilizationAssignment.agentProfile).toEqual({
+      model: "sol",
+      reasoningEffort: "medium",
+      maximumReasoningEffort: "medium",
+    });
 
     await finishActiveTask(stateRoot, stabilization.taskId, head);
     expect((await getNextTask(stateRoot)).taskId).toBe("feature-three");
@@ -139,6 +179,23 @@ describe("parallel workflow queue", () => {
       status: "quality-checkpoint-required",
       sourceTaskIds: ["feature-three"],
     });
+  });
+
+  it("starts a checkpoint before sequential feature ranges", async () => {
+    const stateRoot = await temporaryStateRoot();
+    await initializeWorkflow({ stateRoot, repoRoot: repositoryRoot });
+    const head = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    const parent = execFileSync("git", ["-C", repositoryRoot, "rev-parse", "HEAD^"], {
+      encoding: "utf8",
+    }).trim();
+    await seedCompletedFeature(stateRoot, "sequential-one", 10, head, parent);
+    await seedCompletedFeature(stateRoot, "sequential-two", 20, head, head);
+
+    const checkpoint = await createQualityCheckpoint({ stateRoot });
+    expect(checkpoint.baseSha).toBe(parent);
+    expect(checkpoint.tasks[0].baseRef).toBe(parent);
   });
 
   it("drains active feature workers and enforces the quality barrier on claims", async () => {
@@ -183,6 +240,72 @@ describe("parallel workflow queue", () => {
       normalizeTaskInput(
         { ...task("bad-profile", 10, []), validationProfile: "run-anything" },
         { defaultBaseRef: "main", defaultValidationProfile: "p4fnv-full" },
+      ),
+    ).toThrowError(WorkflowError);
+  });
+
+  it("enforces resource profiles by work class", () => {
+    const config = { defaultBaseRef: "main", defaultValidationProfile: "p4fnv-fast" };
+
+    expect(normalizeTaskInput(task("implementation", 10, []), config)).toMatchObject({
+      workClass: "implementation",
+      agentProfile: {
+        model: "terra",
+        reasoningEffort: "medium",
+        maximumReasoningEffort: "medium",
+      },
+    });
+    expect(
+      normalizeTaskInput({ ...task("mechanical", 10, []), workClass: "mechanical" }, config),
+    ).toMatchObject({
+      workClass: "mechanical",
+      agentProfile: {
+        model: "luna",
+        reasoningEffort: "low",
+        maximumReasoningEffort: "medium",
+      },
+    });
+    expect(() =>
+      normalizeTaskInput(
+        {
+          ...task("mechanical-medium", 10, []),
+          workClass: "mechanical",
+          reasoningEffort: "medium",
+        },
+        config,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "resource_justification_required" }));
+    expect(
+      normalizeTaskInput(
+        {
+          ...task("mechanical-medium", 10, []),
+          workClass: "mechanical",
+          reasoningEffort: "medium",
+          resourceJustification: "The documentation change requires cross-contract judgment.",
+        },
+        config,
+      ).agentProfile,
+    ).toEqual({ model: "luna", reasoningEffort: "medium", maximumReasoningEffort: "medium" });
+    expect(() =>
+      normalizeTaskInput({ ...task("complex", 10, []), workClass: "complex" }, config),
+    ).toThrowError(expect.objectContaining({ code: "resource_justification_required" }));
+    expect(
+      normalizeTaskInput(
+        {
+          ...task("complex", 10, []),
+          workClass: "complex",
+          resourceJustification: "The task resolves an architectural conflict.",
+        },
+        config,
+      ).agentProfile,
+    ).toEqual({ model: "sol", reasoningEffort: "high", maximumReasoningEffort: "high" });
+    expect(() =>
+      normalizeTaskInput(
+        {
+          ...task("bypass", 10, []),
+          agentProfile: { model: "sol", reasoningEffort: "high" },
+        },
+        config,
       ),
     ).toThrowError(WorkflowError);
   });
@@ -250,7 +373,7 @@ function task(taskId, priority, dependsOn) {
   };
 }
 
-async function seedCompletedFeature(stateRoot, taskId, priority, commitSha) {
+async function seedCompletedFeature(stateRoot, taskId, priority, commitSha, baseSha = commitSha) {
   const timestamp = new Date().toISOString();
   await fs.writeFile(
     path.join(stateRoot, "tasks", "completed", `${taskId}.json`),
@@ -264,7 +387,7 @@ async function seedCompletedFeature(stateRoot, taskId, priority, commitSha) {
         status: "completed",
         attempt: 1,
         createdAt: timestamp,
-        baseSha: commitSha,
+        baseSha,
         validatedCommitSha: commitSha,
         completedAt: timestamp,
       },

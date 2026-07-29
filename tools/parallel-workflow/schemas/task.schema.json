@@ -25,6 +25,12 @@
     "taskKind": {
       "enum": ["feature", "refactor", "stabilization"]
     },
+    "workClass": {
+      "enum": ["implementation", "mechanical", "quality", "complex"]
+    },
+    "agentProfile": { "$ref": "#/$defs/agentProfile" },
+    "reasoningEffort": { "enum": ["low", "medium", "high"] },
+    "resourceJustification": { "type": "string", "minLength": 1 },
     "dependsOn": {
       "type": "array",
       "uniqueItems": true,
@@ -94,6 +100,16 @@
     "requeuedAt": { "type": "string", "format": "date-time" }
   },
   "$defs": {
+    "agentProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "reasoningEffort", "maximumReasoningEffort"],
+      "properties": {
+        "model": { "enum": ["terra", "luna", "sol"] },
+        "reasoningEffort": { "enum": ["low", "medium", "high"] },
+        "maximumReasoningEffort": { "enum": ["low", "medium", "high"] }
+      }
+    },
     "commitSha": {
       "type": "string",
       "pattern": "^[0-9a-f]{40,64}$"
