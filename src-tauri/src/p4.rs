@@ -1,30 +1,41 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     thread,
+    time::UNIX_EPOCH,
 };
 
 use serde_json::{Map, Value};
 
 use crate::models::{
-    AnnotationLine, AppError, ChangeExportResult, CherryPickPreviewItem, CliLogLevel,
-    ConnectionInput, CreateStreamInput, CreateStreamPreview, CreateStreamType, DepotDirectory,
-    DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
-    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem,
-    RevertPreviewItem, ShelvedFile, StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode,
-    SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
-    SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SyncPreview, SyncPreviewItem,
-    TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
-    WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary,
+    AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
+    CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
+    CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
+    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
+    ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide,
+    ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile,
+    StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
+    StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
+    StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
+    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
+    SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
+    SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
+    UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
+    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSpec,
+    WorkspaceSummary,
 };
 
+mod auth;
+mod capabilities;
 mod jobs;
 mod labels;
 mod runner;
+mod trust;
 mod validation;
 
 use jobs::parse_fixes;
@@ -36,9 +47,12 @@ pub use labels::list_labels;
 use labels::parse_labels;
 use runner::*;
 pub use runner::{clear_cli_log, cli_log};
+#[cfg(test)]
+use trust::parse_trust_entries;
 use validation::*;
 
 const MAX_RECORDS: &str = "200";
+const MAX_INTEGRATION_PREVIEW_ITEMS: usize = 200;
 const MAX_HISTORY_RECORDS: &str = "5000";
 const MAX_SUBMITTED_DETAIL_PREVIEW_FILES: u32 = 1000;
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
@@ -75,7 +89,9 @@ pub fn info(input: &ConnectionInput) -> Result<P4Info, AppError> {
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "info"]);
     let records = run_json(&path, &mut command)?;
-    parse_info_records(&records)
+    let mut info = parse_info_records(&records)?;
+    info.capabilities = Some(capabilities::build(input, &info));
+    Ok(info)
 }
 
 pub fn open_workspace(input: &ConnectionInput) -> Result<P4Info, AppError> {
@@ -88,15 +104,27 @@ pub fn open_workspace(input: &ConnectionInput) -> Result<P4Info, AppError> {
 }
 
 pub fn login(input: &ConnectionInput, password: &str) -> Result<(), AppError> {
-    validate_password(password)?;
-    let (path, mut command) = configured_command(input)?;
-    command.args(["login"]);
-    let output = run_output_with_stdin(&path, &mut command, format!("{password}\n").as_bytes())?;
-    if !output.status.success() {
-        return Err(command_error(&output));
-    }
-    log_stderr_warning(&output, "p4 login вернул предупреждение.");
-    Ok(())
+    auth::password_login(input, password)
+}
+
+pub fn begin_auth(input: &ConnectionInput) -> Result<AuthStage, AppError> {
+    auth::begin(input)
+}
+
+pub fn select_auth_method(
+    input: &ConnectionInput,
+    method: &str,
+) -> Result<(AuthStage, Option<String>), AppError> {
+    let result = auth::select_method(input, method)?;
+    Ok((result.stage, result.browser_url))
+}
+
+pub fn check_auth(
+    input: &ConnectionInput,
+    response: Option<&str>,
+    polling_attempt: u8,
+) -> Result<AuthStage, AppError> {
+    auth::check(input, response, polling_attempt)
 }
 
 pub fn login_status(input: &ConnectionInput) -> Result<LoginStatus, AppError> {
@@ -128,18 +156,15 @@ pub fn logout(input: &ConnectionInput) -> Result<(), AppError> {
 }
 
 pub fn list_trust(input: &ConnectionInput) -> Result<Vec<TrustEntry>, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["trust", "-l"]);
-    let output = command
-        .output()
-        .map_err(|error| launch_error(&path, error))?;
-    if !output.status.success() {
-        return Err(command_error(&output));
-    }
-    log_stderr_warning(&output, "p4 trust -l вернул предупреждение.");
-    Ok(parse_trust_entries(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    trust::list(input)
+}
+
+pub fn inspect_trust(input: &ConnectionInput) -> Result<TrustChallenge, AppError> {
+    trust::inspect(input)
+}
+
+pub fn confirm_trust(input: &ConnectionInput, fingerprint: &str) -> Result<TrustEntry, AppError> {
+    trust::confirm(input, fingerprint)
 }
 
 pub fn list_workspaces(input: &ConnectionInput) -> Result<Vec<WorkspaceSummary>, AppError> {
@@ -478,6 +503,303 @@ fn form_single_value(lines: &[String], field: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+fn form_multiline_values(lines: &[String], field: &str) -> Vec<String> {
+    let prefix = format!("{field}:");
+    let Some(start) = lines.iter().position(|line| line.starts_with(&prefix)) else {
+        return Vec::new();
+    };
+    lines[start + 1..]
+        .iter()
+        .take_while(|line| line.starts_with('\t') || line.starts_with(' '))
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+pub fn inspect_stream(
+    input: &ConnectionInput,
+    stream_path: &str,
+) -> Result<StreamDetail, AppError> {
+    validate_stream_path(stream_path)?;
+    let stream = exact_stream(input, stream_path)?.ok_or_else(|| {
+        AppError::new(ErrorKind::Stale, "The selected stream no longer exists.")
+            .with_hint("Refresh Streams and select it again.")
+    })?;
+    let (path, mut command) = configured_command(input)?;
+    command.args(["stream", "-o", &stream.path]);
+    let output = command
+        .output()
+        .map_err(|error| launch_error(&path, error))?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    let lines = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    let mut warnings = Vec::new();
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "streamlog", "-m", "20", &stream.path]);
+    let history = match run_json_collecting_diagnostics(&path, &mut command) {
+        Ok((records, diagnostics, _)) => {
+            warnings.extend(diagnostics);
+            records
+                .into_iter()
+                .filter(|record| !is_message_record(record))
+                .map(|record| StreamHistoryEntry {
+                    revision: field(&record, &["rev", "Rev"]).unwrap_or_else(|| "?".to_owned()),
+                    action: field(&record, &["action", "Action"])
+                        .unwrap_or_else(|| "edit".to_owned()),
+                    change: field(&record, &["change", "Change"]),
+                    user: field(&record, &["user", "User"]),
+                    time: field(&record, &["time", "date", "Date"]),
+                    description: field(&record, &["desc", "Description"]),
+                })
+                .collect()
+        }
+        Err(error) => {
+            warnings.push(error.message);
+            Vec::new()
+        }
+    };
+
+    let mut hints = Vec::new();
+    for (direction, reverse) in [
+        (StreamIntegrationDirection::CopyUp, false),
+        (StreamIntegrationDirection::MergeDown, true),
+    ] {
+        let (path, mut command) = configured_command(input)?;
+        command.args(["-ztag", "-Mj", "istat", "-Af"]);
+        if reverse {
+            command.arg("-r");
+        }
+        command.arg(&stream.path);
+        match run_json_collecting_diagnostics(&path, &mut command) {
+            Ok((records, diagnostics, partial)) => {
+                let message = records
+                    .iter()
+                    .find_map(|record| field(record, &["data", "fmt"]))
+                    .or_else(|| diagnostics.first().cloned())
+                    .unwrap_or_else(|| "Server returned no integration status details.".to_owned());
+                hints.push(StreamIntegrationHint {
+                    direction,
+                    state: if partial {
+                        CapabilityState::Unknown
+                    } else {
+                        CapabilityState::Supported
+                    },
+                    message,
+                });
+                warnings.extend(diagnostics);
+            }
+            Err(error) => hints.push(StreamIntegrationHint {
+                direction,
+                state: CapabilityState::Unknown,
+                message: error.message,
+            }),
+        }
+    }
+
+    Ok(StreamDetail {
+        stream,
+        parent_view: form_single_value(&lines, "ParentView")
+            .unwrap_or_else(|| "inherit".to_owned()),
+        options: form_single_value(&lines, "Options")
+            .map(|value| value.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        paths: form_multiline_values(&lines, "Paths"),
+        remapped: form_multiline_values(&lines, "Remapped"),
+        ignored: form_multiline_values(&lines, "Ignored"),
+        history,
+        hints,
+        warnings,
+    })
+}
+
+fn validate_stream_integration(
+    input: &StreamIntegrationInput,
+) -> Result<(StreamSummary, StreamSummary, String), AppError> {
+    let client = required_client(&input.connection)?.to_owned();
+    validate_stream_path(&input.source_stream)?;
+    validate_stream_path(&input.target_stream)?;
+    validate_change(&input.target_change)?;
+    let source = exact_stream(&input.connection, &input.source_stream)?
+        .ok_or_else(|| AppError::new(ErrorKind::Stale, "The source stream no longer exists."))?;
+    let target = exact_stream(&input.connection, &input.target_stream)?
+        .ok_or_else(|| AppError::new(ErrorKind::Stale, "The target stream no longer exists."))?;
+    let relation_is_valid = match input.direction {
+        StreamIntegrationDirection::MergeDown => target
+            .parent
+            .as_deref()
+            .is_some_and(|parent| parent.eq_ignore_ascii_case(&source.path)),
+        StreamIntegrationDirection::CopyUp => source
+            .parent
+            .as_deref()
+            .is_some_and(|parent| parent.eq_ignore_ascii_case(&target.path)),
+    };
+    if !relation_is_valid {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The selected streams are no longer an adjacent parent/child pair for this direction.",
+        )
+        .with_hint("Refresh Streams and create a new preview."));
+    }
+    let current_stream = info(&input.connection)?.client_stream.unwrap_or_default();
+    if !current_stream.eq_ignore_ascii_case(&target.path) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The current workspace is not switched to the integration target stream.",
+        )
+        .with_hint(format!(
+            "Switch workspace {client} to {} before preview/apply.",
+            target.path
+        )));
+    }
+    if input.target_change != "default"
+        && !list_pending_changes(&input.connection)?
+            .iter()
+            .any(|change| change.id == input.target_change)
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The target pending changelist no longer exists in this workspace.",
+        )
+        .with_hint("Refresh changelists and create a new preview."));
+    }
+    Ok((source, target, client))
+}
+
+fn stream_integration_arguments(input: &StreamIntegrationInput, preview: bool) -> Vec<String> {
+    let mut arguments = vec!["-ztag".to_owned(), "-Mj".to_owned()];
+    match input.direction {
+        StreamIntegrationDirection::MergeDown => {
+            arguments.push("integrate".to_owned());
+            if preview {
+                arguments.push("-n".to_owned());
+            }
+            arguments.extend([
+                "-c".to_owned(),
+                input.target_change.clone(),
+                "-S".to_owned(),
+                input.target_stream.clone(),
+                "-r".to_owned(),
+                "-Af".to_owned(),
+            ]);
+        }
+        StreamIntegrationDirection::CopyUp => {
+            arguments.push("copy".to_owned());
+            if preview {
+                arguments.push("-n".to_owned());
+            }
+            arguments.extend([
+                "-c".to_owned(),
+                input.target_change.clone(),
+                "-S".to_owned(),
+                input.source_stream.clone(),
+                "-Af".to_owned(),
+            ]);
+        }
+    }
+    if preview {
+        arguments.extend([
+            "-m".to_owned(),
+            (MAX_INTEGRATION_PREVIEW_ITEMS + 1).to_string(),
+        ]);
+    }
+    arguments
+}
+
+pub fn preview_stream_integration(
+    input: &StreamIntegrationInput,
+) -> Result<StreamIntegrationPreview, AppError> {
+    let (source, target, client) = validate_stream_integration(input)?;
+    let (path, mut command) = configured_command(&input.connection)?;
+    command.args(stream_integration_arguments(input, true));
+    let (records, mut warnings, partial) = run_json_collecting_diagnostics(&path, &mut command)?;
+    let mut items = records
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .filter_map(|record| {
+            let target_path = field(record, &["depotFile", "toFile"])?;
+            Some(StreamIntegrationPreviewItem {
+                source_path: field(record, &["fromFile", "sourceFile"])
+                    .unwrap_or_else(|| source.path.clone()),
+                target_path,
+                local_path: field(record, &["path", "clientFile"]),
+                action: field(record, &["action", "how"]).unwrap_or_else(|| "integrate".to_owned()),
+                source_start_revision: field(record, &["startFromRev", "srev"]),
+                source_end_revision: field(record, &["endFromRev", "erev"]),
+                resolve_type: field(record, &["resolveType"]),
+                file_type: field(record, &["type"]),
+            })
+        })
+        .collect::<Vec<_>>();
+    let truncated = items.len() > MAX_INTEGRATION_PREVIEW_ITEMS;
+    items.truncate(MAX_INTEGRATION_PREVIEW_ITEMS);
+    if truncated {
+        warnings.push(format!(
+            "Preview is limited to {MAX_INTEGRATION_PREVIEW_ITEMS} files; apply is disabled."
+        ));
+    }
+    let mut hasher = DefaultHasher::new();
+    input.direction.hash(&mut hasher);
+    source.path.to_ascii_lowercase().hash(&mut hasher);
+    source.updated.hash(&mut hasher);
+    target.path.to_ascii_lowercase().hash(&mut hasher);
+    target.updated.hash(&mut hasher);
+    client.to_ascii_lowercase().hash(&mut hasher);
+    input.target_change.hash(&mut hasher);
+    items.hash(&mut hasher);
+    let identity = format!("stream-integration-{:016x}", hasher.finish());
+    let partial = integration_preview_is_partial(partial, &warnings);
+    Ok(StreamIntegrationPreview {
+        identity,
+        direction: input.direction,
+        source_stream: source.path,
+        target_stream: target.path,
+        target_workspace: client,
+        target_change: input.target_change.clone(),
+        revision_scope: "all eligible revisions".to_owned(),
+        items,
+        warnings,
+        truncated,
+        partial,
+    })
+}
+
+fn integration_preview_is_partial(command_partial: bool, warnings: &[String]) -> bool {
+    command_partial || !warnings.is_empty()
+}
+
+pub fn stream_integration_command(
+    input: &StreamIntegrationInput,
+    preview_identity: &str,
+) -> Result<(PathBuf, Command, StreamIntegrationPreview), AppError> {
+    let preview = preview_stream_integration(input)?;
+    if preview.identity != preview_identity {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The integration preview is stale because stream/workspace state changed.",
+        )
+        .with_hint("Run preview again before applying."));
+    }
+    if preview.partial || preview.truncated || preview.items.is_empty() {
+        return Err(AppError::new(
+            if preview.partial {
+                ErrorKind::PartialResult
+            } else {
+                ErrorKind::Conflict
+            },
+            "This integration preview cannot be applied safely.",
+        )
+        .with_hint("Refresh the preview and resolve its warnings first."));
+    }
+    let (path, mut command) = configured_command(&input.connection)?;
+    command.args(stream_integration_arguments(input, false));
+    Ok((path, command, preview))
 }
 
 pub fn switch_stream(
@@ -2028,7 +2350,7 @@ pub fn resolve_files(
     input: &ConnectionInput,
     paths: &[String],
     mode: &ResolveMode,
-) -> Result<(), AppError> {
+) -> Result<ResolveApplyResult, AppError> {
     required_client(input)?;
     validate_depot_paths(paths)?;
     if paths.is_empty() {
@@ -2038,7 +2360,10 @@ pub fn resolve_files(
     command.args(["-ztag", "-Mj", "resolve", resolve_mode_flag(mode)]);
     command.args(paths);
     run_json(&path, &mut command)?;
-    Ok(())
+    Ok(match preview_resolve(input, paths) {
+        Ok(pending) => resolve_read_back(paths, &pending),
+        Err(error) => resolve_unknown_read_back(paths, &error.message),
+    })
 }
 
 pub fn preview_resolve(
@@ -2053,7 +2378,7 @@ pub fn preview_resolve(
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "resolve", "-n"]);
     command.args(paths);
-    let records = run_json(&path, &mut command)?;
+    let records = run_json_allowing_empty_match(&path, &mut command)?;
     Ok(parse_resolve_preview(&records))
 }
 
@@ -2062,14 +2387,264 @@ fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewIt
         .iter()
         .filter(|record| !is_message_record(record))
         .filter_map(|record| {
+            let conflict_kind = classify_resolve_conflict(record);
+            let allowed_actions = resolve_allowed_actions(&conflict_kind);
             Some(ResolvePreviewItem {
                 depot_path: field(record, &["depotFile", "clientFile", "path"])?,
                 action: field(record, &["how", "action", "status"])
                     .unwrap_or_else(|| "resolve".to_owned()),
                 detail: field(record, &["fromFile", "baseFile", "type"]),
+                client_path: field(record, &["clientFile"]),
+                local_path: field(record, &["path"]),
+                conflict_kind,
+                base_identifier: revision_identifier(
+                    record,
+                    "baseFile",
+                    &["baseRev", "baseRevision"],
+                ),
+                source_identifier: revision_identifier(
+                    record,
+                    "fromFile",
+                    &["endFromRev", "fromRev", "sourceRev"],
+                ),
+                workspace_identifier: field(record, &["path", "clientFile", "depotFile"])
+                    .unwrap_or_else(|| "workspace".to_owned()),
+                allowed_actions,
+                read_back: ResolveReadBackState::Pending,
             })
         })
         .collect()
+}
+
+fn revision_identifier(
+    record: &Map<String, Value>,
+    path_field: &str,
+    revision_fields: &[&str],
+) -> Option<String> {
+    let path = field(record, &[path_field])?;
+    if path.contains('#') || path.contains('@') {
+        return Some(path);
+    }
+    field(record, revision_fields)
+        .map(|revision| format!("{path}#{}", revision.trim_start_matches('#')))
+        .or(Some(path))
+}
+
+fn classify_resolve_conflict(record: &Map<String, Value>) -> ResolveConflictKind {
+    let description = ["resolveType", "type", "how", "action", "status"]
+        .into_iter()
+        .filter_map(|name| field(record, &[name]))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if description.contains("stream") {
+        ResolveConflictKind::StreamSpec
+    } else if description.contains("move") || description.contains("rename") {
+        ResolveConflictKind::MoveName
+    } else if description.contains("attribute") || description.contains("filetype") {
+        ResolveConflictKind::FiletypeAttribute
+    } else if description.contains("binary") || description.contains("utf16") {
+        ResolveConflictKind::Binary
+    } else if description.contains("text")
+        || description.contains("content")
+        || record.contains_key("fromFile")
+        || record.contains_key("baseFile")
+    {
+        ResolveConflictKind::Text
+    } else {
+        ResolveConflictKind::Unknown
+    }
+}
+
+fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
+    match kind {
+        ResolveConflictKind::Text => vec![
+            ResolveMode::Yours,
+            ResolveMode::Theirs,
+            ResolveMode::AutoSafe,
+            ResolveMode::AutoMerge,
+            ResolveMode::EditResult,
+        ],
+        _ => vec![ResolveMode::Yours, ResolveMode::Theirs],
+    }
+}
+
+fn resolve_read_back(paths: &[String], pending: &[ResolvePreviewItem]) -> ResolveApplyResult {
+    ResolveApplyResult {
+        items: paths
+            .iter()
+            .map(|path| {
+                let unresolved = pending.iter().any(|item| item.depot_path == *path);
+                ResolveApplyItem {
+                    depot_path: path.clone(),
+                    state: if unresolved {
+                        ResolveReadBackState::Pending
+                    } else {
+                        ResolveReadBackState::Resolved
+                    },
+                    reason: unresolved
+                        .then(|| "Server still reports a pending resolve.".to_owned()),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn resolve_unknown_read_back(paths: &[String], reason: &str) -> ResolveApplyResult {
+    ResolveApplyResult {
+        items: paths
+            .iter()
+            .map(|path| ResolveApplyItem {
+                depot_path: path.clone(),
+                state: ResolveReadBackState::Unknown,
+                reason: Some(format!(
+                    "Resolve was applied, but read-back failed: {reason}"
+                )),
+            })
+            .collect(),
+    }
+}
+
+const MAX_RESOLVE_TEXT_BYTES: usize = 2 * 1024 * 1024;
+
+pub fn load_resolve_content(
+    input: &ConnectionInput,
+    root: &Path,
+    depot_path: &str,
+) -> Result<ResolveContent, AppError> {
+    let preview = preview_resolve(input, &[depot_path.to_owned()])?
+        .into_iter()
+        .find(|item| item.depot_path == depot_path)
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Resolve больше не требуется."))?;
+    if preview.conflict_kind != ResolveConflictKind::Text {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Этот тип конфликта нельзя открыть в текстовом resolve editor.",
+        ));
+    }
+    let local_path = preview.local_path.as_deref().ok_or_else(|| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Сервер не вернул локальный путь файла.",
+        )
+    })?;
+    let root = fs::canonicalize(root)
+        .map_err(|error| local_file_error("Не удалось проверить root workspace.", error))?;
+    let local_path = validated_recovery_target(&root, local_path)?;
+    let workspace_bytes = fs::read(&local_path)
+        .map_err(|error| local_file_error("Не удалось прочитать workspace-файл.", error))?;
+    let preview_token = resolve_editor_token(&preview, &workspace_bytes);
+    let base = load_resolve_side(input, preview.base_identifier.as_deref(), "base")?;
+    let source = load_resolve_side(input, preview.source_identifier.as_deref(), "source")?;
+    let workspace = resolve_content_side(preview.workspace_identifier, workspace_bytes);
+    Ok(ResolveContent {
+        depot_path: preview.depot_path,
+        local_path: local_path.to_string_lossy().into_owned(),
+        preview_token,
+        base,
+        source,
+        workspace,
+    })
+}
+
+fn load_resolve_side(
+    input: &ConnectionInput,
+    identifier: Option<&str>,
+    label: &str,
+) -> Result<ResolveContentSide, AppError> {
+    let identifier = identifier.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            format!("Сервер не вернул {label} revision для text resolve."),
+        )
+    })?;
+    if !identifier.starts_with("//") || identifier.contains(['\r', '\n']) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Сервер вернул некорректный revision identifier.",
+        ));
+    }
+    let (path, mut command) = configured_command(input)?;
+    command.args(["print", "-q", identifier]);
+    Ok(resolve_content_side(
+        identifier.to_owned(),
+        run_binary(&path, &mut command)?,
+    ))
+}
+
+fn resolve_content_side(identifier: String, bytes: Vec<u8>) -> ResolveContentSide {
+    let truncated = bytes.len() > MAX_RESOLVE_TEXT_BYTES;
+    let bounded = &bytes[..bytes.len().min(MAX_RESOLVE_TEXT_BYTES)];
+    let binary = bounded.contains(&0) || std::str::from_utf8(bounded).is_err();
+    ResolveContentSide {
+        identifier,
+        text: (!binary && !truncated).then(|| String::from_utf8_lossy(bounded).into_owned()),
+        binary,
+        truncated,
+    }
+}
+
+fn resolve_editor_token(preview: &ResolvePreviewItem, workspace_bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in serde_json::to_vec(preview)
+        .unwrap_or_default()
+        .into_iter()
+        .chain(workspace_bytes.iter().copied())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("resolve-v1-{hash:016x}")
+}
+
+pub fn save_resolve_result(
+    input: &ConnectionInput,
+    root: &Path,
+    depot_path: &str,
+    local_path: &str,
+    preview_token: &str,
+    result: &str,
+) -> Result<ResolveApplyResult, AppError> {
+    required_client(input)?;
+    validate_depot_path(depot_path)?;
+    if result.len() > MAX_RESOLVE_TEXT_BYTES || result.contains('\0') {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Результат text resolve превышает лимит или содержит binary-данные.",
+        ));
+    }
+    let preview = preview_resolve(input, &[depot_path.to_owned()])?
+        .into_iter()
+        .find(|item| item.depot_path == depot_path)
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Resolve больше не требуется."))?;
+    if preview.conflict_kind != ResolveConflictKind::Text
+        || preview.local_path.as_deref() != Some(local_path)
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Resolve preview изменился; обновите его перед сохранением.",
+        ));
+    }
+    let root = fs::canonicalize(root)
+        .map_err(|error| local_file_error("Не удалось проверить root workspace.", error))?;
+    let target = validated_recovery_target(&root, local_path)?;
+    let current_workspace = fs::read(&target).map_err(|error| {
+        local_file_error("Не удалось повторно прочитать workspace-файл.", error)
+    })?;
+    if preview_token.is_empty()
+        || resolve_editor_token(&preview, &current_workspace) != preview_token
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Resolve preview или workspace-файл изменился; откройте редактор заново.",
+        ));
+    }
+    let temporary = recovery_temporary_path(&target)?;
+    fs::write(&temporary, result.as_bytes()).map_err(|error| {
+        local_file_error("Не удалось записать временный resolve result.", error)
+    })?;
+    replace_recovery_file(&temporary, &target)?;
+    resolve_files(input, &[depot_path.to_owned()], &ResolveMode::EditResult)
 }
 
 fn resolve_mode_flag(mode: &ResolveMode) -> &'static str {
@@ -2078,6 +2653,7 @@ fn resolve_mode_flag(mode: &ResolveMode) -> &'static str {
         ResolveMode::Theirs => "-at",
         ResolveMode::AutoSafe => "-as",
         ResolveMode::AutoMerge => "-am",
+        ResolveMode::EditResult => "-ae",
     }
 }
 
@@ -2140,11 +2716,138 @@ pub fn parse_reconcile_output_record(line: &str) -> Option<ReconcileItem> {
 }
 
 fn reconcile_item(record: &Map<String, Value>) -> Option<ReconcileItem> {
+    let original_action = field(record, &["action", "status"])?.to_lowercase();
+    let action = if original_action.contains("move") {
+        "move"
+    } else if original_action.contains("add") {
+        "add"
+    } else if original_action.contains("delete") || original_action.contains("remove") {
+        "delete"
+    } else if original_action.contains("edit") || original_action.contains("update") {
+        "edit"
+    } else {
+        "unsafe"
+    }
+    .to_owned();
+    let depot_path = field(record, &["depotFile", "clientFile"])?;
     Some(ReconcileItem {
-        depot_path: field(record, &["depotFile", "clientFile"])?,
-        action: field(record, &["action", "status"])?.to_lowercase(),
+        stable_id: format!("{depot_path}\0{original_action}"),
+        preview_token: String::new(),
+        depot_path,
+        action,
+        original_action: Some(original_action),
+        client_path: field(record, &["clientFile"]),
         local_path: field(record, &["path", "clientFile"]),
+        mapping_state: WorkspaceMappingState::Unmapped,
+        ignored: false,
+        unsafe_item: false,
+        reasons: Vec::new(),
+        move_partner: field(record, &["fromFile", "movedFile", "toFile"]),
+        local_size: None,
+        local_modified: None,
     })
+}
+
+fn reconcile_local_metadata(item: &mut ReconcileItem) {
+    let Some(path) = item.local_path.as_deref() else {
+        return;
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    item.local_size = Some(metadata.len());
+    item.local_modified = metadata.modified().ok().and_then(|modified| {
+        modified
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|duration| format!("{}.{:09}", duration.as_secs(), duration.subsec_nanos()))
+    });
+}
+
+fn reconcile_preview_token(scope: &str, items: &[ReconcileItem]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in scope
+        .bytes()
+        .chain(serde_json::to_vec(items).unwrap_or_default())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("reconcile-v1-{hash:016x}")
+}
+
+pub fn reconcile_preview_snapshot(
+    input: &ConnectionInput,
+    scope: &str,
+    visible_items: Vec<ReconcileItem>,
+) -> Result<Vec<ReconcileItem>, AppError> {
+    let all_items = preview_reconcile_internal(input, Some(scope), true)?;
+    let visible_ids = visible_items
+        .iter()
+        .map(|item| item.stable_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut items = visible_items;
+    for item in all_items {
+        if !items
+            .iter()
+            .any(|existing| existing.stable_id == item.stable_id)
+        {
+            items.push(item);
+        }
+    }
+    let queries = items
+        .iter()
+        .map(|item| item.depot_path.clone())
+        .collect::<Vec<_>>();
+    let mapping_batch = (!queries.is_empty())
+        .then(|| map_workspace_paths(input, &queries))
+        .transpose()?;
+    for (index, item) in items.iter_mut().enumerate() {
+        item.ignored = !visible_ids.contains(&item.stable_id);
+        if let Some(mapping) = mapping_batch
+            .as_ref()
+            .and_then(|batch| batch.mappings.get(index))
+        {
+            item.mapping_state = mapping.state.clone();
+            item.depot_path = mapping
+                .depot_path
+                .clone()
+                .unwrap_or_else(|| item.depot_path.clone());
+            item.client_path = mapping
+                .client_path
+                .clone()
+                .or_else(|| item.client_path.clone());
+            item.local_path = mapping
+                .local_path
+                .clone()
+                .or_else(|| item.local_path.clone());
+        }
+        if item.ignored {
+            item.reasons.push("ignored_by_p4ignore".to_owned());
+        }
+        match item.mapping_state {
+            WorkspaceMappingState::Mapped => {}
+            WorkspaceMappingState::Excluded => {
+                item.reasons.push("excluded_by_client_view".to_owned())
+            }
+            WorkspaceMappingState::Unmapped => item.reasons.push("not_mapped_by_server".to_owned()),
+        }
+        if item.action == "move" && item.move_partner.is_none() {
+            item.reasons.push("incomplete_move_pair".to_owned());
+        }
+        if item.action == "unsafe" {
+            item.reasons.push("unknown_reconcile_action".to_owned());
+        }
+        item.unsafe_item = item.action == "unsafe"
+            || !matches!(item.mapping_state, WorkspaceMappingState::Mapped)
+            || (item.action == "move" && item.move_partner.is_none());
+        reconcile_local_metadata(item);
+    }
+    let token = reconcile_preview_token(scope, &items);
+    for item in &mut items {
+        item.preview_token.clone_from(&token);
+    }
+    Ok(items)
 }
 
 pub fn move_file(
@@ -2664,18 +3367,19 @@ pub fn submit_change(
     match mode {
         SubmitMode::Local => {
             submit_local(input, change, description)?;
-            Ok(SubmitOutcome {
-                preserved_local_change: None,
-            })
+            Ok(submit_outcome(input, change, None, &["submit_local"]))
         }
         SubmitMode::Shelf => submit_shelf_preserving_local(input, change),
         SubmitMode::LocalDeleteShelf => {
             validate_numbered_change(change)?;
             delete_shelf_files(input, change, &[])?;
             submit_local(input, change, None)?;
-            Ok(SubmitOutcome {
-                preserved_local_change: None,
-            })
+            Ok(submit_outcome(
+                input,
+                change,
+                None,
+                &["delete_shelf", "submit_local"],
+            ))
         }
         SubmitMode::LocalUpdateShelf => {
             validate_numbered_change(change)?;
@@ -2700,34 +3404,79 @@ pub fn submit_change(
                 }
                 return Err(error);
             }
-            Ok(SubmitOutcome {
-                preserved_local_change: None,
-            })
+            Ok(submit_outcome(
+                input,
+                change,
+                None,
+                &["update_shelf", "delete_shelf", "submit_local"],
+            ))
         }
     }
 }
 
-pub fn submit_readback_hint(input: &ConnectionInput, change: &str) -> String {
+pub fn submit_readback(input: &ConnectionInput, change: &str) -> SubmitReadBack {
     let pending = list_pending_changes(input)
         .ok()
         .is_some_and(|changes| changes.iter().any(|item| item.id == change));
     if pending {
-        return format!(
-            "Submit read-back: CL {change} remains pending; local work was not confirmed as submitted."
-        );
+        return SubmitReadBack {
+            outcome: SubmitTerminalOutcome::Pending,
+            affected_change: Some(change.to_owned()),
+            message: format!(
+                "Submit read-back: CL {change} remains pending; local work was not confirmed as submitted."
+            ),
+            recovery_actions: vec![
+                "Refresh Changes and rerun submit preflight before retrying.".to_owned(),
+            ],
+        };
     }
     if change != "default"
         && query_submitted_change(input, change)
             .ok()
             .is_some_and(|changes| changes.iter().any(|item| item.id == change))
     {
-        return format!(
-            "Submit read-back: CL {change} is visible as submitted; refresh History before retrying."
-        );
+        return SubmitReadBack {
+            outcome: SubmitTerminalOutcome::Submitted,
+            affected_change: Some(change.to_owned()),
+            message: format!("Submit read-back: CL {change} is visible as submitted."),
+            recovery_actions: Vec::new(),
+        };
     }
-    format!(
-        "Submit read-back: result for CL {change} is unknown; refresh Changes and History before retrying."
-    )
+    SubmitReadBack {
+        outcome: SubmitTerminalOutcome::Unknown,
+        affected_change: None,
+        message: format!(
+            "Submit read-back: result for CL {change} is unknown; refresh Changes and History before retrying."
+        ),
+        recovery_actions: vec![
+            "Refresh Changes and History; do not retry submit until server state is known."
+                .to_owned(),
+            "Run submit preflight again after refresh.".to_owned(),
+        ],
+    }
+}
+
+fn submit_outcome(
+    input: &ConnectionInput,
+    change: &str,
+    preserved_local_change: Option<String>,
+    completed_steps: &[&str],
+) -> SubmitOutcome {
+    let read_back = submit_readback(input, change);
+    SubmitOutcome {
+        preserved_local_change,
+        terminal: read_back.outcome,
+        affected_change: read_back.affected_change,
+        recovery_actions: read_back.recovery_actions,
+        steps: completed_steps
+            .iter()
+            .map(|step| SubmitStepResult {
+                step: (*step).to_owned(),
+                status: "completed".to_owned(),
+                detail: None,
+            })
+            .collect(),
+    }
 }
 
 fn query_submitted_change(
@@ -3232,6 +3981,134 @@ fn workspace_paths(
     Ok(parse_workspace_paths(&records))
 }
 
+pub fn map_workspace_paths(
+    input: &ConnectionInput,
+    queries: &[String],
+) -> Result<WorkspaceMappingBatch, AppError> {
+    required_client(input)?;
+    if queries.is_empty() {
+        validate_mapping_queries(queries)?;
+    }
+    let mut mappings = Vec::with_capacity(queries.len());
+    let mut diagnostics = Vec::new();
+    let mut partial = false;
+    for chunk in queries.chunks(256) {
+        validate_mapping_queries(chunk)?;
+        let batch = map_workspace_paths_chunk(input, chunk)?;
+        mappings.extend(batch.mappings);
+        diagnostics.extend(batch.diagnostics);
+        partial |= batch.partial;
+    }
+    Ok(WorkspaceMappingBatch {
+        mappings,
+        partial,
+        diagnostics,
+    })
+}
+
+fn map_workspace_paths_chunk(
+    input: &ConnectionInput,
+    queries: &[String],
+) -> Result<WorkspaceMappingBatch, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "where"]);
+    command.args(queries);
+    let (records, diagnostics, partial) = run_json_collecting_diagnostics(&path, &mut command)?;
+    Ok(parse_workspace_mapping_batch(
+        queries,
+        &records,
+        diagnostics,
+        partial,
+    ))
+}
+
+fn mapping_path(value: Option<String>) -> (Option<String>, Option<char>) {
+    let Some(value) = value else {
+        return (None, None);
+    };
+    let marker = value
+        .chars()
+        .next()
+        .filter(|marker| matches!(marker, '-' | '+' | '&'));
+    let value = marker.map_or(value.clone(), |_| value[1..].to_owned());
+    ((!value.is_empty()).then_some(value), marker)
+}
+
+fn parse_workspace_mapping_batch(
+    queries: &[String],
+    records: &[Map<String, Value>],
+    diagnostics: Vec<String>,
+    partial: bool,
+) -> WorkspaceMappingBatch {
+    let mappings = queries
+        .iter()
+        .map(|query| {
+            let candidates = records
+                .iter()
+                .filter(|record| mapping_record_matches_query(record, query))
+                .collect::<Vec<_>>();
+            let Some(record) = candidates.last() else {
+                return WorkspaceMapping {
+                    query: query.clone(),
+                    state: WorkspaceMappingState::Unmapped,
+                    depot_path: None,
+                    client_path: None,
+                    local_path: None,
+                    diagnostics: diagnostics.clone(),
+                };
+            };
+            let (depot_path, depot_marker) = mapping_path(field(record, &["depotFile"]));
+            let (client_path, client_marker) = mapping_path(field(record, &["clientFile"]));
+            let (local_path, local_marker) = mapping_path(field(record, &["path"]));
+            let marker = depot_marker.or(client_marker).or(local_marker);
+            let state = if marker == Some('-') {
+                WorkspaceMappingState::Excluded
+            } else if depot_path.is_some() && client_path.is_some() && local_path.is_some() {
+                WorkspaceMappingState::Mapped
+            } else {
+                WorkspaceMappingState::Unmapped
+            };
+            let mapped = matches!(state, WorkspaceMappingState::Mapped);
+            let mut item_diagnostics = Vec::new();
+            if candidates.len() > 1 {
+                item_diagnostics.push(
+                    "Server returned multiple client-view mappings; the final effective mapping was selected."
+                        .to_owned(),
+                );
+            }
+            if marker == Some('+') {
+                item_diagnostics.push("Server selected an overlay mapping.".to_owned());
+            } else if marker == Some('&') {
+                item_diagnostics.push("Server selected a ditto mapping.".to_owned());
+            }
+            WorkspaceMapping {
+                query: query.clone(),
+                state,
+                depot_path,
+                client_path,
+                local_path: mapped.then_some(local_path).flatten(),
+                diagnostics: item_diagnostics,
+            }
+        })
+        .collect();
+    WorkspaceMappingBatch {
+        mappings,
+        partial,
+        diagnostics,
+    }
+}
+
+fn mapping_record_matches_query(record: &Map<String, Value>, query: &str) -> bool {
+    ["depotFile", "clientFile", "path"]
+        .iter()
+        .any(|field_name| {
+            field(record, &[*field_name]).is_some_and(|value| {
+                let (value, _) = mapping_path(Some(value));
+                value.is_some_and(|value| value.eq_ignore_ascii_case(query))
+            })
+        })
+}
+
 fn probe_workspace_paths(
     input: &ConnectionInput,
     depot_paths: &[String],
@@ -3465,9 +4342,7 @@ fn submit_shelf_preserving_local(
         .collect::<Vec<_>>();
     if local_files.is_empty() {
         submit_shelf_direct(input, change)?;
-        return Ok(SubmitOutcome {
-            preserved_local_change: None,
-        });
+        return Ok(submit_outcome(input, change, None, &["submit_shelf"]));
     }
 
     let recovery_description = format!("Local work preserved before submitting shelf CL {change}");
@@ -3506,9 +4381,12 @@ fn submit_shelf_preserving_local(
         return Err(error);
     }
 
-    Ok(SubmitOutcome {
-        preserved_local_change: Some(recovery_change),
-    })
+    Ok(submit_outcome(
+        input,
+        change,
+        Some(recovery_change),
+        &["create_recovery_change", "move_local_files", "submit_shelf"],
+    ))
 }
 
 fn create_shelf_from_all(input: &ConnectionInput, change: &str) -> Result<(), AppError> {
@@ -3663,6 +4541,7 @@ fn parse_info_records(records: &[Map<String, Value>]) -> Result<P4Info, AppError
         security: take_field(&fields, &["security"]),
         client_address: take_field(&fields, &["clientAddress"]),
         user_email: take_field(&fields, &["userEmail"]),
+        capabilities: None,
     };
 
     if info.server_address.is_none() && info.server_version.is_none() {
@@ -3793,23 +4672,6 @@ fn parse_depot_files(records: &[Map<String, Value>]) -> Result<Vec<DepotFile>, A
                 action: optional_field(record, &["action"]),
                 change: optional_field(record, &["change"]),
                 file_type: optional_field(record, &["type", "filetype"]),
-            })
-        })
-        .collect()
-}
-
-fn parse_trust_entries(text: &str) -> Vec<TrustEntry> {
-    text.lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let server = fields.next()?.trim();
-            let fingerprint = fields.collect::<Vec<_>>().join(" ");
-            if !server.starts_with("ssl:") || fingerprint.is_empty() {
-                return None;
-            }
-            Some(TrustEntry {
-                server: server.to_owned(),
-                fingerprint,
             })
         })
         .collect()
@@ -4287,6 +5149,29 @@ mod tests {
 
     use super::*;
 
+    fn test_reconcile_item(
+        depot_path: &str,
+        action: &str,
+        local_path: Option<&str>,
+    ) -> ReconcileItem {
+        ReconcileItem {
+            stable_id: format!("{depot_path}\0{action}"),
+            preview_token: String::new(),
+            depot_path: depot_path.to_owned(),
+            action: action.to_owned(),
+            original_action: Some(action.to_owned()),
+            client_path: None,
+            local_path: local_path.map(str::to_owned),
+            mapping_state: WorkspaceMappingState::Unmapped,
+            ignored: false,
+            unsafe_item: false,
+            reasons: Vec::new(),
+            move_partner: None,
+            local_size: None,
+            local_modified: None,
+        }
+    }
+
     #[test]
     fn derives_child_stream_path_in_the_parent_namespace() {
         assert_eq!(
@@ -4630,12 +5515,14 @@ mod tests {
 
     #[test]
     fn parses_only_ssl_trust_lines_and_preserves_fingerprint_text() {
-        let entries = parse_trust_entries(
-            "ssl:p4.example:1666  SHA256:AA:BB:CC\nnot-a-server informational line\nssl:other:1666 MD5:11:22",
-        );
+        let sha256 = "SHA256:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+        let md5 = "MD5:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00";
+        let entries = parse_trust_entries(&format!(
+            "ssl:p4.example:1666  {sha256}\nnot-a-server informational line\nssl:other:1666 {md5}"
+        ));
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].server, "ssl:p4.example:1666");
-        assert_eq!(entries[0].fingerprint, "SHA256:AA:BB:CC");
+        assert_eq!(entries[0].fingerprint, sha256);
     }
 
     #[test]
@@ -4747,6 +5634,90 @@ mod tests {
                 "C:\\work\\new.txt".to_owned()
             )]
         );
+    }
+
+    #[test]
+    fn mapping_batch_preserves_server_order_and_never_invents_excluded_paths() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/a.txt","clientFile":"//alex-main/a.txt","path":"C:\\work\\a.txt"}
+{"depotFile":"-//Acme/private/secret.txt","clientFile":"-//alex-main/private/secret.txt","path":"-C:\\work\\private\\secret.txt"}"#,
+        )
+        .unwrap();
+        let batch = parse_workspace_mapping_batch(
+            &[
+                "//Acme/main/a.txt".to_owned(),
+                "//Acme/private/secret.txt".to_owned(),
+                "//Acme/missing.txt".to_owned(),
+            ],
+            &records,
+            Vec::new(),
+            false,
+        );
+        assert_eq!(batch.mappings[0].state, WorkspaceMappingState::Mapped);
+        assert_eq!(batch.mappings[1].state, WorkspaceMappingState::Excluded);
+        assert!(batch.mappings[1].local_path.is_none());
+        assert_eq!(batch.mappings[2].state, WorkspaceMappingState::Unmapped);
+    }
+
+    #[test]
+    fn mapping_batch_selects_the_final_effective_record_per_query() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"-//Acme/main/a.txt","clientFile":"-//alex-main/a.txt","path":"-C:\\old\\a.txt"}
+{"depotFile":"//Acme/main/a.txt","clientFile":"//alex-main/a.txt","path":"C:\\work\\a.txt"}
+{"depotFile":"//Acme/main/b.txt","clientFile":"//alex-main/b.txt","path":"C:\\work\\b.txt"}"#,
+        )
+        .unwrap();
+        let batch = parse_workspace_mapping_batch(
+            &[
+                "//Acme/main/a.txt".to_owned(),
+                "//Acme/main/b.txt".to_owned(),
+            ],
+            &records,
+            Vec::new(),
+            false,
+        );
+
+        assert_eq!(batch.mappings[0].state, WorkspaceMappingState::Mapped);
+        assert_eq!(
+            batch.mappings[0].local_path.as_deref(),
+            Some("C:\\work\\a.txt")
+        );
+        assert_eq!(
+            batch.mappings[1].depot_path.as_deref(),
+            Some("//Acme/main/b.txt")
+        );
+        assert_eq!(
+            batch.mappings[1].local_path.as_deref(),
+            Some("C:\\work\\b.txt")
+        );
+        assert_eq!(batch.mappings[0].diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn reconcile_token_changes_with_action_mapping_or_local_metadata() {
+        let mut item = test_reconcile_item("//Acme/main/a.txt", "edit", Some("C:\\work\\a.txt"));
+        item.mapping_state = WorkspaceMappingState::Mapped;
+        let original = reconcile_preview_token("//...", &[item.clone()]);
+        item.action = "delete".to_owned();
+        assert_ne!(reconcile_preview_token("//...", &[item.clone()]), original);
+        item.action = "edit".to_owned();
+        item.local_size = Some(42);
+        assert_ne!(reconcile_preview_token("//...", &[item]), original);
+    }
+
+    #[test]
+    fn reconcile_parser_keeps_server_move_pair_identity() {
+        let item = parse_reconcile_output_record(
+            r#"{"depotFile":"//Acme/main/new.txt","action":"move/add","fromFile":"//Acme/main/old.txt"}"#,
+        )
+        .unwrap();
+        let case_only_partner = parse_reconcile_output_record(
+            r#"{"depotFile":"//Acme/main/New.txt","action":"move/delete","toFile":"//Acme/main/new.txt"}"#,
+        )
+        .unwrap();
+        assert_eq!(item.action, "move");
+        assert_eq!(item.move_partner.as_deref(), Some("//Acme/main/old.txt"));
+        assert_ne!(item.stable_id, case_only_partner.stable_id);
     }
 
     #[test]
@@ -5224,6 +6195,7 @@ mod tests {
         assert_eq!(resolve_mode_flag(&ResolveMode::Theirs), "-at");
         assert_eq!(resolve_mode_flag(&ResolveMode::AutoSafe), "-as");
         assert_eq!(resolve_mode_flag(&ResolveMode::AutoMerge), "-am");
+        assert_eq!(resolve_mode_flag(&ResolveMode::EditResult), "-ae");
     }
 
     #[test]
@@ -5259,7 +6231,76 @@ mod tests {
         assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
         assert_eq!(items[0].action, "vs");
         assert_eq!(items[0].detail.as_deref(), Some("//Acme/main/a.txt#8"));
+        assert_eq!(items[0].conflict_kind, ResolveConflictKind::Text);
+        assert!(items[0].allowed_actions.contains(&ResolveMode::EditResult));
         assert_eq!(items[1].action, "copy");
+        assert_eq!(items[1].conflict_kind, ResolveConflictKind::Unknown);
+        assert!(!items[1].allowed_actions.contains(&ResolveMode::AutoMerge));
+    }
+
+    #[test]
+    fn resolve_editor_token_rejects_changed_preview_or_workspace_content() {
+        let mut preview = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/a.txt","path":"C:/ws/a.txt","type":"text","baseFile":"//Acme/main/a.txt#7","fromFile":"//Acme/main/a.txt#8"}"#,
+            )
+            .unwrap(),
+        )
+        .remove(0);
+        let original = resolve_editor_token(&preview, b"workspace");
+
+        preview.source_identifier = Some("//Acme/main/a.txt#9".to_owned());
+        assert_ne!(resolve_editor_token(&preview, b"workspace"), original);
+        preview.source_identifier = Some("//Acme/main/a.txt#8".to_owned());
+        assert_ne!(
+            resolve_editor_token(&preview, b"changed workspace"),
+            original
+        );
+    }
+
+    #[test]
+    fn classifies_specialized_resolves_without_exposing_text_editor() {
+        let items = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/a.bin","type":"binary"}
+{"depotFile":"//Acme/main/name.txt","how":"move resolve"}
+{"depotFile":"//Acme/main/type.txt","resolveType":"filetype resolve"}
+{"depotFile":"//Acme/main/stream","resolveType":"stream spec"}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(items[0].conflict_kind, ResolveConflictKind::Binary);
+        assert_eq!(items[1].conflict_kind, ResolveConflictKind::MoveName);
+        assert_eq!(
+            items[2].conflict_kind,
+            ResolveConflictKind::FiletypeAttribute
+        );
+        assert_eq!(items[3].conflict_kind, ResolveConflictKind::StreamSpec);
+        assert!(
+            items
+                .iter()
+                .all(|item| !item.allowed_actions.contains(&ResolveMode::EditResult))
+        );
+    }
+
+    #[test]
+    fn post_mutation_readback_distinguishes_pending_resolved_and_unknown() {
+        let paths = vec![
+            "//Acme/main/a.txt".to_owned(),
+            "//Acme/main/b.txt".to_owned(),
+        ];
+        let pending = parse_resolve_preview(
+            &parse_json_lines(r#"{"depotFile":"//Acme/main/a.txt","type":"text"}"#).unwrap(),
+        );
+        let result = resolve_read_back(&paths, &pending);
+        assert_eq!(result.items[0].state, ResolveReadBackState::Pending);
+        assert_eq!(result.items[1].state, ResolveReadBackState::Resolved);
+        assert!(
+            resolve_unknown_read_back(&paths, "offline")
+                .items
+                .iter()
+                .all(|item| item.state == ResolveReadBackState::Unknown)
+        );
     }
 
     #[test]
@@ -5738,13 +6779,7 @@ mod tests {
         .unwrap();
         let items = records
             .iter()
-            .filter_map(|record| {
-                Some(ReconcileItem {
-                    depot_path: field(record, &["depotFile", "clientFile"])?,
-                    action: field(record, &["action", "status"])?.to_lowercase(),
-                    local_path: field(record, &["path", "clientFile"]),
-                })
-            })
+            .filter_map(reconcile_item)
             .collect::<Vec<_>>();
         assert_eq!(items[0].action, "add");
         assert_eq!(items[0].local_path.as_deref(), Some("C:\\work\\new.txt"));
@@ -5764,11 +6799,12 @@ mod tests {
 
     #[test]
     fn guarded_reconcile_rejects_paths_missing_from_fresh_preview() {
-        let candidates = vec![ReconcileItem {
-            depot_path: "//Acme/main/kept.txt".to_owned(),
-            action: "edit".to_owned(),
-            local_path: None,
-        }];
+        let candidates = vec![
+            parse_reconcile_output_record(
+                r#"{"depotFile":"//Acme/main/kept.txt","action":"edit"}"#,
+            )
+            .unwrap(),
+        ];
         assert!(
             ensure_reconcile_candidates(&["//Acme/main/kept.txt".to_owned()], &candidates,).is_ok()
         );
@@ -5788,21 +6824,9 @@ mod tests {
         )
         .unwrap();
         let candidates = vec![
-            ReconcileItem {
-                depot_path: "//Acme/main/new.txt".to_owned(),
-                action: "add".to_owned(),
-                local_path: Some("C:\\work\\new.txt".to_owned()),
-            },
-            ReconcileItem {
-                depot_path: "//Acme/main/existing.txt".to_owned(),
-                action: "add".to_owned(),
-                local_path: None,
-            },
-            ReconcileItem {
-                depot_path: "//Acme/main/missing.txt".to_owned(),
-                action: "delete".to_owned(),
-                local_path: None,
-            },
+            test_reconcile_item("//Acme/main/new.txt", "add", Some("C:\\work\\new.txt")),
+            test_reconcile_item("//Acme/main/existing.txt", "add", None),
+            test_reconcile_item("//Acme/main/missing.txt", "delete", None),
         ];
         merge_untracked_workspace_files(&mut files, &candidates, &candidates[..1]);
         assert_eq!(files.len(), 2);
@@ -5848,5 +6872,85 @@ mod tests {
         );
         assert!(validate_stream_path("//Acme/dev").is_ok());
         assert!(validate_stream_path("//Acme/dev@42").is_err());
+    }
+
+    #[test]
+    fn builds_direction_specific_stream_integration_arguments() {
+        let connection = ConnectionInput {
+            p4_path: None,
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-dev".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let input = |direction, source: &str, target: &str| StreamIntegrationInput {
+            connection: connection.clone(),
+            direction,
+            source_stream: source.to_owned(),
+            target_stream: target.to_owned(),
+            target_change: "123".to_owned(),
+        };
+        assert_eq!(
+            stream_integration_arguments(
+                &input(
+                    StreamIntegrationDirection::MergeDown,
+                    "//Acme/main",
+                    "//Acme/dev"
+                ),
+                false
+            ),
+            [
+                "-ztag",
+                "-Mj",
+                "integrate",
+                "-c",
+                "123",
+                "-S",
+                "//Acme/dev",
+                "-r",
+                "-Af"
+            ]
+        );
+        assert_eq!(
+            stream_integration_arguments(
+                &input(
+                    StreamIntegrationDirection::CopyUp,
+                    "//Acme/dev",
+                    "//Acme/main"
+                ),
+                false
+            ),
+            [
+                "-ztag",
+                "-Mj",
+                "copy",
+                "-c",
+                "123",
+                "-S",
+                "//Acme/dev",
+                "-Af"
+            ]
+        );
+        let preview = stream_integration_arguments(
+            &input(
+                StreamIntegrationDirection::MergeDown,
+                "//Acme/main",
+                "//Acme/dev",
+            ),
+            true,
+        );
+        assert!(preview.contains(&"-n".to_owned()));
+        assert!(preview.contains(&"201".to_owned()));
+    }
+
+    #[test]
+    fn stream_integration_warning_makes_preview_non_applyable() {
+        assert!(integration_preview_is_partial(
+            false,
+            &["Some files were skipped.".to_owned()]
+        ));
+        assert!(!integration_preview_is_partial(false, &[]));
     }
 }

@@ -9,18 +9,19 @@ import { RefreshButton } from "../../shared/RefreshButton";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { ItemRowCopy, SelectableRow, SelectableSurface, TreeItemRow } from "../../shared/ItemList";
-import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
+import { isContextMenuShortcut, retainAvailableSelection, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
-import { buildWorkspaceTree, filterWorkspaceFiles, formatWorkspaceHistoryTime, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
+import { ResolveDialog } from "./ResolveDialog";
+import { buildWorkspaceTree, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, toggleReconcileSelection, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
 type WorkspaceDialog = "details" | "create" | "edit" | "rename" | "delete";
 type WorkspaceDraft = { name: string; root: string; stream: string; description: string };
 
 const emptyDraft: WorkspaceDraft = { name: "", root: "", stream: "", description: "" };
 
-export function WorkspaceView({ connection, info, initialScope, sourceControl, onDeleted, onRenamed }: { connection: ConnectionInput; info: P4Info; initialScope?: string; sourceControl?: ReactNode; onDeleted?: () => void; onRenamed?: (name: string) => void }) {
+export function WorkspaceView({ connection, info, initialScope, initialResolveRequest, sourceControl, onNavigateDepot, onDeleted, onRenamed }: { connection: ConnectionInput; info: P4Info; initialScope?: string; initialResolveRequest?: { id: number; change: string; paths: string[] }; sourceControl?: ReactNode; onNavigateDepot?: (scope: string) => void; onDeleted?: () => void; onRenamed?: (name: string) => void }) {
   const { t, language } = useLocale();
   const initialWorkspaceScope = initialScope?.trim() || "//...";
   const initialLazyRoot = workspaceLazyRoot(connection, initialWorkspaceScope);
@@ -35,10 +36,12 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [change, setChange] = useState("default");
   const [reconcileCandidates, setReconcileCandidates] = useState<ReconcileItem[]>();
   const [reconcileSelected, setReconcileSelected] = useState<ReconcileItem[]>([]);
+  const [reconcileStale, setReconcileStale] = useState(false);
   const [reconcileOperation, setReconcileOperation] = useState<OperationEvent>();
   const [pendingResolveMode, setPendingResolveMode] = useState<ResolveMode>();
   const [pendingResolvePaths, setPendingResolvePaths] = useState<string[]>([]);
   const [resolvePreview, setResolvePreview] = useState<ResolvePreviewItem[]>([]);
+  const [resolveEditorItem, setResolveEditorItem] = useState<ResolvePreviewItem>();
   const [workspaceSpec, setWorkspaceSpec] = useState<WorkspaceSpec>();
   const [workspaceDialog, setWorkspaceDialog] = useState<WorkspaceDialog>();
   const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>(emptyDraft);
@@ -55,6 +58,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const [deleteLocalPath, setDeleteLocalPath] = useState<string>();
   const workspaceMenu = useContextMenu<{ file: WorkspaceFile; paths: string[] }>();
   const selectionAnchor = useRef<string | undefined>(undefined);
+  const handledResolveRequest = useRef<number | undefined>(undefined);
   const [filter, setFilter] = useState<WorkspaceFilter>("all");
   const [viewMode, setViewMode] = useState<"list" | "tree">("tree");
   const [query, setQuery] = useState("");
@@ -95,6 +99,8 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     setDirectoryPaths([...directories]);
     setIgnoredDirectoryPaths(ignoredDirectories);
     setFiles(nextFiles);
+    setSelected((current) => retainAvailableSelection(current, nextFiles.map((file) => file.depotPath)));
+    setSelectedFolders((current) => retainAvailableSelection(current, [...directories]));
     setLoadingDirectoryPaths(new Set(loadingDirectories.current));
     setLoadedDirectoryPaths(new Set(loadedDirectories.current));
   }
@@ -209,19 +215,25 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     if (loadSequence.current === sequence) setBusy(false);
   }
 
-  async function loadEager(nextScope: string) {
+  async function loadEager(nextScope: string, preserveSelection = false) {
     const sequence = ++loadSequence.current;
     setBusy(true);
     setError(undefined);
-    setSelected([]);
-    setSelectedFolders([]);
-    setExpandedFolders(new Set());
-    setCollapsedFolders(new Set());
+    if (!preserveSelection) {
+      setSelected([]);
+      setSelectedFolders([]);
+      setExpandedFolders(new Set());
+      setCollapsedFolders(new Set());
+    }
     lazyRoot.current = undefined;
     const key = workspaceFileCacheKey(connection, nextScope);
     let cached = loadWorkspaceFileCache(key);
     setFiles(cached);
     setDirectoryPaths(workspaceDirectoryPaths(cached));
+    if (preserveSelection && cached.length) {
+      setSelected((current) => retainAvailableSelection(current, cached.map((file) => file.depotPath)));
+      setSelectedFolders((current) => retainAvailableSelection(current, workspaceDirectoryPaths(cached)));
+    }
     setIgnoredDirectoryPaths(new Set());
     setLoadingDirectoryPaths(new Set());
     setLoadedDirectoryPaths(new Set());
@@ -231,6 +243,10 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
       cached = persisted;
       setFiles(cached);
       setDirectoryPaths(workspaceDirectoryPaths(cached));
+      if (preserveSelection && cached.length) {
+        setSelected((current) => retainAvailableSelection(current, cached.map((file) => file.depotPath)));
+        setSelectedFolders((current) => retainAvailableSelection(current, workspaceDirectoryPaths(cached)));
+      }
     }
     const cachedVersion = loadWorkspaceStatusVersion(key);
     try {
@@ -246,6 +262,10 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
         if (loadSequence.current !== sequence) return;
         setFiles(nextFiles);
         setDirectoryPaths(workspaceDirectoryPaths(nextFiles));
+        if (preserveSelection) {
+          setSelected((current) => retainAvailableSelection(current, nextFiles.map((file) => file.depotPath)));
+          setSelectedFolders((current) => retainAvailableSelection(current, workspaceDirectoryPaths(nextFiles)));
+        }
         await saveWorkspaceFileCache(key, nextFiles);
       }
     } catch (reason) {
@@ -255,15 +275,15 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     }
   }
 
-  async function load(nextScope = scope) {
+  async function load(nextScope = scope, preserveSelection = false) {
     const nextRoot = workspaceLazyRoot(connection, nextScope);
     if (nextRoot) await loadLazy(nextRoot);
-    else await loadEager(nextScope);
+    else await loadEager(nextScope, preserveSelection);
   }
 
   async function refreshLoadedDirectories() {
     const root = lazyRoot.current;
-    if (!root) return load();
+    if (!root) return load(scope, true);
     setBusy(true);
     setError(undefined);
     statusVersionRequest.current = statusVersion(root);
@@ -295,6 +315,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     setBusy(true);
     setError(undefined);
     setNotice("");
+    setReconcileStale(false);
     try {
       await startObservedOperation("reconcile_preview", () => startReconcilePreview(connection, scope), (event) => {
         setReconcileOperation(isOperationTerminal(event.kind) ? undefined : event);
@@ -303,11 +324,11 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
         if (event.kind === "completed") {
           const items = event.reconcileItems || [];
           setReconcileCandidates(items);
-          setReconcileSelected(items);
+          setReconcileSelected(defaultReconcileSelection(items));
         } else if (event.kind === "cancelled") {
           setNotice(t("reconcilePreviewCancelled"));
         } else {
-          setError({ kind: "command_failed", message: event.message || t("operationFailed"), hints: [] });
+          setError({ kind: event.kind === "partial" ? "partial_result" : "command_failed", message: event.message || (event.kind === "unknown" ? t("operationUnknown") : t("operationFailed")), hints: [] });
         }
       });
     } catch (reason) {
@@ -318,14 +339,14 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   }
 
   async function applyReconcile() {
-    const paths = reconcileSelected.map((item) => item.depotPath);
     const previousCandidates = reconcileCandidates;
+    const previousSelection = reconcileSelected;
     setReconcileCandidates(undefined);
     setBusy(true);
     setError(undefined);
     setNotice("");
     try {
-      await startObservedOperation("reconcile", () => startReconcile(connection, change, paths), (event) => {
+      await startObservedOperation("reconcile", () => startReconcile(connection, change, scope, reconcileSelected), (event) => {
         setReconcileOperation(isOperationTerminal(event.kind) ? undefined : event);
         if (!isOperationTerminal(event.kind)) return;
         void (async () => {
@@ -333,7 +354,17 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
             await refreshLoadedDirectories();
             if (event.kind === "completed") setNotice(t("reconcileSucceeded"));
             else if (event.kind === "cancelled") setNotice(t("reconcileCancelled"));
-            else setError({ kind: "command_failed", message: event.message || t("operationFailed"), hints: [] });
+            else {
+              setReconcileCandidates(previousCandidates);
+              setReconcileSelected(previousSelection);
+              const stale = (event.message || "").toLowerCase().includes("stale");
+              setReconcileStale(stale);
+              setError({
+                kind: stale ? "stale" : event.kind === "partial" ? "partial_result" : "command_failed",
+                message: event.message || (event.kind === "unknown" ? t("operationUnknown") : t("operationFailed")),
+                hints: [],
+              });
+            }
           } catch (reason) {
             setError(normalizeAppError(reason));
           } finally {
@@ -345,6 +376,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
       setBusy(false);
       setReconcileOperation(undefined);
       setReconcileCandidates(previousCandidates);
+      setReconcileSelected(previousSelection);
       setError(normalizeAppError(reason));
     }
   }
@@ -361,6 +393,13 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     finally { setBusy(false); }
   }
 
+  useEffect(() => {
+    if (!initialResolveRequest || handledResolveRequest.current === initialResolveRequest.id) return;
+    handledResolveRequest.current = initialResolveRequest.id;
+    setChange(initialResolveRequest.change);
+    void showResolvePreview("autoSafe", initialResolveRequest.paths);
+  }, [initialResolveRequest?.id]);
+
   async function applyResolve() {
     if (!pendingResolveMode || !pendingResolvePaths.length) return;
     const mode = pendingResolveMode;
@@ -368,7 +407,33 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
     setPendingResolveMode(undefined);
     setPendingResolvePaths([]);
     setResolvePreview([]);
-    await run(() => resolveFiles(connection, paths, mode), t("resolveSucceeded"));
+    setBusy(true);
+    setError(undefined);
+    try {
+      const readBack = await resolveFiles(connection, paths, mode);
+      const pending = readBack.items.filter((item) => item.state !== "resolved");
+      await refreshLoadedDirectories();
+      if (pending.length) {
+        setError({ kind: "partial_result", message: t("resolveStillPending"), hints: pending.map((item) => item.depotPath) });
+      } else {
+        setNotice(t("resolveSucceeded"));
+      }
+    } catch (reason) { setError(normalizeAppError(reason)); }
+    finally { setBusy(false); }
+  }
+
+  async function showResolveEditor(path: string) {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const item = (await previewResolve(connection, [path])).find((candidate) => candidate.depotPath === path);
+      if (!item || item.conflictKind !== "text" || !item.allowedActions.includes("editResult")) {
+        setError({ kind: "command_failed", message: t("resolveEditorUnsupportedContent"), hints: [] });
+        return;
+      }
+      setResolveEditorItem(item);
+    } catch (reason) { setError(normalizeAppError(reason)); }
+    finally { setBusy(false); }
   }
 
   async function copyPath(path: string) {
@@ -624,11 +689,13 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
   const reconcileDetail = reconcileOperation
     ? [reconcileCurrentPath, reconcileRatio === undefined ? undefined : reconcilePhase, reconcileCount].filter(Boolean).join(" · ")
     : undefined;
+  const reconcileGroups = groupReconcileItems(reconcileCandidates || []);
 
   return <View
     id="workspace-files-title"
     title={t("filesTitle")}
     subtitle={`${info.clientRoot || connection.client} · ${t("workspaceFilesBody")}`}
+    busy={busy}
     error={error}
     notice={notice}
     operationLabel={reconcileOperation ? reconcilePhase : safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
@@ -690,6 +757,7 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
       {menu.paths.length === 1 && <MenuButton onClick={() => void copyPath(menu.file.depotPath)}>{t("copyDepotPath")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void copyPath(menu.file.localPath!)}>{t("copyLocalPath")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void revealLocalPath(menu.file.localPath!)}>{t("revealInExplorer")}</MenuButton>}
+      {menu.paths.length === 1 && menu.file.mapped && onNavigateDepot && <MenuButton onClick={() => onNavigateDepot(menu.file.depotPath)}>{t("showInDepotFiles")}</MenuButton>}
       {menuFiles.every((file) => !file.action && !file.untracked) && <MenuButton onClick={() => void run(() => editFiles(connection, change, menu.paths))}>{t("openForEdit")}</MenuButton>}
       {menuFiles.every((file) => file.untracked && !file.ignored) && <MenuButton onClick={() => void run(() => addFiles(connection, change, menu.paths))}>{t("markForAdd")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.untracked && menu.file.localPath && <MenuButton onClick={() => void run(() => ignoreLocalFile(connection, menu.file.localPath!), t("fileIgnored"))}>{t("addToIgnore")}</MenuButton>}
@@ -701,15 +769,18 @@ export function WorkspaceView({ connection, info, initialScope, sourceControl, o
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("theirs", menu.paths)}>{t("resolveAcceptServer")}</MenuButton>}
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoSafe", menu.paths)}>{t("resolveAutoSafe")}</MenuButton>}
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoMerge", menu.paths)}>{t("resolveAutoMerge")}</MenuButton>}
+      {menuCanResolve && menu.paths.length === 1 && <MenuButton onClick={() => void showResolveEditor(menu.paths[0])}>{t("resolveEditor")}</MenuButton>}
       {menuCanRevert && <MenuButton danger onClick={() => void openRevert(menu.paths)}>{t("revertSelected")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.localPath && <MenuButton danger onClick={() => setDeleteLocalPath(menu.file.localPath)}>{t("deleteLocally")}</MenuButton>}
     </ContextMenu>}
 
     <SafeSyncConflictDialog sync={safeSync} />
 
-    {reconcileCandidates && <ActionDialog title={t("reconcilePreviewTitle")} confirmLabel={t("applyReconcile")} busy={busy} confirmDisabled={!reconcileSelected.length} onClose={() => setReconcileCandidates(undefined)} onConfirm={() => void applyReconcile()}><p>{t("reconcilePreviewBody")}</p><div className="resource-detail-list">{reconcileCandidates.length ? reconcileCandidates.map((item) => <SelectableRow selected={reconcileSelected.some((selectedItem) => selectedItem.depotPath === item.depotPath)} className="resource-entry preview-select" key={`${item.depotPath}-${item.action}`} onClick={() => setReconcileSelected((current) => current.some((selectedItem) => selectedItem.depotPath === item.depotPath) ? current.filter((selectedItem) => selectedItem.depotPath !== item.depotPath) : [...current, item])}><ItemRowCopy primary={item.depotPath} secondary={<>{item.action}{item.localPath ? ` · ${item.localPath}` : ""}</>} /></SelectableRow>) : <CompactEmpty text={t("noReconcileChanges")} />}</div></ActionDialog>}
+    {reconcileCandidates && <ActionDialog title={t("reconcilePreviewTitle")} confirmLabel={t("applyReconcile")} busy={busy} confirmDisabled={!reconcileSelected.length || reconcileStale} onClose={() => setReconcileCandidates(undefined)} onConfirm={() => void applyReconcile()}><p>{reconcileStale ? t("reconcileStaleBody") : t("reconcilePreviewBody")}</p>{reconcileStale && <button className="secondary-button" type="button" onClick={() => void showReconcilePreview()}>{t("refreshReconcilePreview")}</button>}<div className="resource-detail-list">{reconcileCandidates.length ? reconcileGroups.map((group) => <section key={group.action} className="reconcile-group"><h3>{t(`reconcileGroup_${group.action}` as never)} · {group.items.length}</h3>{group.items.map((item) => { const disabled = item.ignored || item.unsafeItem || item.action === "unsafe"; const reasons = item.reasons.map((reason) => t(`reconcileReason_${reason}` as never)).join(" · "); return <SelectableRow aria-disabled={disabled} selected={reconcileSelected.some((selectedItem) => selectedItem.stableId === item.stableId)} className="resource-entry preview-select" key={item.stableId} onClick={() => setReconcileSelected((current) => toggleReconcileSelection(current, item))}><ItemRowCopy primary={item.depotPath} secondary={<>{t(`reconcileGroup_${item.action}` as never)}{item.localPath ? ` · ${item.localPath}` : ""}{reasons ? ` · ${reasons}` : ""}</>} /></SelectableRow>; })}</section>) : <CompactEmpty text={t("noReconcileChanges")} />}</div></ActionDialog>}
 
-    {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length} onClose={() => { setPendingResolveMode(undefined); setPendingResolvePaths([]); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={item.depotPath}><span><strong>{item.depotPath}</strong><small>{item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
+    {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length || resolvePreview.some((item) => !item.allowedActions.includes(pendingResolveMode))} onClose={() => { setPendingResolveMode(undefined); setPendingResolvePaths([]); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={`${item.depotPath}-${item.conflictKind}-${item.action}`}><span><strong>{item.depotPath}</strong><small>{t(`resolveKind_${item.conflictKind}` as never)} · {item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
+
+    {resolveEditorItem && <ResolveDialog connection={connection} item={resolveEditorItem} onClose={() => setResolveEditorItem(undefined)} onResolved={() => { setResolveEditorItem(undefined); setNotice(t("resolveSucceeded")); void refreshLoadedDirectories(); }} onError={setError} />}
 
     {renameDestination !== undefined && selectedFile && <ActionDialog title={t("renameFile")} confirmLabel={t("renameFile")} busy={busy} confirmDisabled={!renameDestination.trim() || renameDestination.trim() === selectedFile.depotPath} onClose={() => setRenameDestination(undefined)} onConfirm={() => void applyRename()}><p>{selectedFile.depotPath}</p><label className="field"><span className="field-label">{t("renameDestinationPrompt")}</span><input autoFocus value={renameDestination} onChange={(event) => setRenameDestination(event.target.value)} /></label></ActionDialog>}
 

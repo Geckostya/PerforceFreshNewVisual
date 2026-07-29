@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StreamSummary } from "../../shared/models";
-import { buildStreamForest, childStreamPath, flattenStreamForest, isValidStreamName, layoutStreamGraph, mergeSelectedStreamViewPaths, streamDescendantPaths, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
+import { buildStreamForest, childStreamPath, flattenStreamForest, isValidStreamName, layoutStreamGraph, mergeSelectedStreamViewPaths, streamDescendantPaths, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
 
 const stream = (path: string, parent?: string): StreamSummary => ({
   path,
@@ -74,5 +74,24 @@ describe("stream hierarchy", () => {
     const streams = [stream("//Acme/main"), stream("//Acme/dev", "//Acme/main"), stream("//Acme/task", "//Acme/dev")];
     expect(updateArchivedStreamPaths(streams, [], ["//Acme/dev"], true)).toEqual(["//Acme/dev", "//Acme/task"]);
     expect(updateArchivedStreamPaths(streams, ["//Acme/dev", "//Acme/task"], ["//Acme/dev"], false)).toEqual(["//Acme/task"]);
+  });
+
+  it("derives only parent/child integrations whose target is the current workspace stream", () => {
+    const streams = [stream("//Acme/main"), stream("//Acme/dev", "//Acme/main"), stream("//Acme/task", "//Acme/dev")];
+    expect(streamIntegrationCandidates(streams, "//Acme/dev")).toEqual([
+      { direction: "mergeDown", sourceStream: "//Acme/main", targetStream: "//Acme/dev" },
+      { direction: "copyUp", sourceStream: "//Acme/task", targetStream: "//Acme/dev" },
+    ]);
+    expect(streamIntegrationCandidates(streams, "//Acme/missing")).toEqual([]);
+  });
+
+  it("offers only integration routes related to the selected stream", () => {
+    const candidates = streamIntegrationCandidates(
+      [stream("//Acme/main"), stream("//Acme/dev", "//Acme/main"), stream("//Acme/task", "//Acme/dev"), stream("//Acme/other")],
+      "//Acme/dev",
+    );
+    expect(streamIntegrationCandidatesForSelection(candidates, "//Acme/main")).toEqual([candidates[0]]);
+    expect(streamIntegrationCandidatesForSelection(candidates, "//Acme/dev")).toEqual(candidates);
+    expect(streamIntegrationCandidatesForSelection(candidates, "//Acme/other")).toEqual([]);
   });
 });

@@ -27,6 +27,28 @@ pub(super) fn validate_depot_paths(paths: &[String]) -> Result<(), AppError> {
     paths.iter().try_for_each(|path| validate_depot_path(path))
 }
 
+pub(super) fn validate_mapping_queries(paths: &[String]) -> Result<(), AppError> {
+    if paths.is_empty() || paths.len() > 256 {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Mapping lookup requires between 1 and 256 paths.",
+        ));
+    }
+    if paths.iter().any(|path| {
+        let path = path.trim();
+        path.is_empty()
+            || path.len() > 4096
+            || path.contains(['\r', '\n', '\0'])
+            || path.chars().any(|character| character.is_control())
+    }) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "A mapping path is invalid.",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_stream_path(stream: &str) -> Result<(), AppError> {
     let stream = stream.trim();
     if stream.starts_with("//")

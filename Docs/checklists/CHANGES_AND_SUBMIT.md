@@ -12,14 +12,14 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 - [x] P0 Submit local-only, shelf-only, and all local+shelf strategies with recovery/compensation.
 - [x] P0 Submit preflight shows missing, unresolved, out-of-date, other-open/lock, jobs, stream spec, size, and server warnings.
 - [x] P0 Submitted screen defaults to the current user's changes across all streams, shows mapped streams, supports server-backed stream/user/workspace/job filters, details, exact safe retrieval, undo, and safe foreign-stream cherry-pick.
-- [~] P0 Basic resolve preview and keep-workspace/use-server/auto-safe/auto-merge actions exist; specialized resolve remains.
+- [x] P0 Typed resolve preview, keep-workspace/use-server/auto-safe/auto-merge, three-way text editor, bounded content, atomic save, and server read-back.
+- [x] P1 Stream integration hands exact succeeded paths to the existing Resolve preview and its pending changelist to existing Review/Submit; neither resolve nor submit is automatic.
 
 ## P0 gaps
 
-- [ ] Provide a three-way text resolve editor with base/source/workspace/result, conflict navigation, save, and server read-back.
-- [ ] Separate binary, move/name, filetype/attribute, and stream-spec resolve flows.
-- [ ] After submit cancellation/network loss, present `submitted`, `pending`, or `unknown` with a concrete recovery action.
-- [ ] Publish shelf-preserving submit modes through the same operation protocol as local submit.
+- [~] Add specialized action dialogs for binary, move/name, filetype/attribute, and stream-spec resolve; they are already classified and excluded from the text editor.
+- [x] After submit cancellation/network loss, present `submitted`, `pending`, or `unknown` with a concrete recovery action.
+- [x] Publish shelf-preserving submit modes through the same operation protocol as local submit without weakening compensation behavior.
 - [ ] Show succeeded/failed/skipped items and compensation results consistently for every compound mutation.
 - [ ] Improve trigger diagnostics without assuming client preflight can replace server validation.
 

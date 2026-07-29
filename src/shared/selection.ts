@@ -40,3 +40,28 @@ export function retainAvailableSelection(selected: string[], available: string[]
 export function isContextMenuShortcut(key: string, shiftKey = false): boolean {
   return key === "ContextMenu" || (shiftKey && key === "F10");
 }
+
+export type CollectionNavigationKey = "ArrowDown" | "ArrowUp" | "Home" | "End" | "PageDown" | "PageUp";
+
+export function collectionTargetIndex(current: number, total: number, key: CollectionNavigationKey, pageSize = 10): number {
+  if (total <= 0) return -1;
+  if (key === "Home") return 0;
+  if (key === "End") return total - 1;
+  const delta = key === "ArrowDown" ? 1 : key === "ArrowUp" ? -1 : key === "PageDown" ? pageSize : -pageSize;
+  return Math.max(0, Math.min(total - 1, Math.max(0, current) + delta));
+}
+
+export function focusCollectionItem(current: HTMLElement, key: string): boolean {
+  if (!["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(key)) return false;
+  const container = current.closest<HTMLElement>("[data-keyboard-collection], [role='listbox'], [role='tree'], [role='list']") || current.parentElement;
+  if (!container) return false;
+  const items = [...container.querySelectorAll<HTMLElement>("[data-keyboard-item]:not([disabled]):not([aria-disabled='true'])")]
+    .filter((item) => !item.closest("[hidden], [aria-hidden='true']"));
+  const index = items.indexOf(current);
+  if (index < 0) return false;
+  const next = collectionTargetIndex(index, items.length, key as CollectionNavigationKey);
+  if (next < 0 || next === index) return true;
+  items[next].focus({ preventScroll: true });
+  items[next].scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}

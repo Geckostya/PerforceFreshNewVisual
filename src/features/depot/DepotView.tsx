@@ -31,7 +31,7 @@ type FullHistoryState = {
   error?: AppError;
 };
 
-export function DepotView({ connection, initialScope, sourceControl }: { connection: ConnectionInput; initialScope?: string; sourceControl?: ReactNode }) {
+export function DepotView({ connection, initialScope, sourceControl, onNavigateLocal }: { connection: ConnectionInput; initialScope?: string; sourceControl?: ReactNode; onNavigateLocal?: (scope: string) => void }) {
   const { t } = useLocale();
   const [overviewRefreshKey, setOverviewRefreshKey] = useState(0);
   const [overviewBusy, setOverviewBusy] = useState(true);
@@ -131,6 +131,7 @@ export function DepotView({ connection, initialScope, sourceControl }: { connect
     id="depot-title"
     title={t("depotTitle")}
     subtitle={t("depotOverviewBody")}
+    busy={overviewBusy || busy || Boolean(fullHistory?.busy)}
     error={error}
     notice={notice}
     operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
@@ -145,6 +146,7 @@ export function DepotView({ connection, initialScope, sourceControl }: { connect
       onBusyChange={setOverviewBusy}
       onDownload={(target) => void showSyncPreview(resourceTarget(target).syncScope)}
       onContextMenu={(target, position) => depotMenu.openAt(resourceTarget(target), position)}
+      onNavigateLocal={onNavigateLocal}
     />
 
     {menu && depotMenu.menu && <ContextMenu x={depotMenu.menu.x} y={depotMenu.menu.y} onSelect={depotMenu.close}>
@@ -154,7 +156,7 @@ export function DepotView({ connection, initialScope, sourceControl }: { connect
 
     {fullHistory && <Modal title={fullHistory.kind === "file" ? t("depotFullFileHistory") : t("depotFullFolderHistory")} busy={fullHistory.busy} wide onClose={() => setFullHistory(undefined)}>
       <div className="dialog-body depot-full-history">
-        <div className="depot-full-history-heading"><div><strong>{fullHistory.path}</strong><small>{pageStart}–{pageEnd} · {t("depotHistoryPage")} {fullHistory.page + 1}</small></div><PathActions depotPath={fullHistory.path} /></div>
+        <div className="depot-full-history-heading"><div><strong>{fullHistory.path}</strong><small>{pageStart}–{pageEnd} · {t("depotHistoryPage")} {fullHistory.page + 1}</small></div><PathActions depotPath={fullHistory.path} connection={connection} onNavigateLocal={(mapping) => mapping.depotPath && onNavigateLocal?.(mapping.depotPath)} /></div>
         {fullHistory.error && <ErrorBanner error={fullHistory.error} />}
         {fullHistory.kind === "file" ? <div className="selection-history" key={`${fullHistory.kind}:${fullHistory.path}:${fullHistory.page}`}>
           {fullHistory.busy && !visibleHistoryCount ? <CompactEmpty text={t("loadingHistory")} /> : visibleRevisions.map((revision) => {

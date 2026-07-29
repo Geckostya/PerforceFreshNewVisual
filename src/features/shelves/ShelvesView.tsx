@@ -7,7 +7,8 @@ import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, PendingChange, ShelvedFile, UnshelvePreview } from "../../shared/models";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { useMultiSelection } from "../../shared/useMultiSelection";
-import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
+import { ActionDialog, BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
+import { SERVER_LIST_LIMIT } from "../../shared/scale";
 import { canApplyUnshelve, filterShelves, groupShelvesByUser, nextShelfSelection, shelfTimestamp, splitUnshelvePaths, type ShelfAgeFilter } from "./shelves";
 
 type ShelfDialog = { kind: "export"; outputPath: string } | { kind: "reshelve" };
@@ -168,6 +169,7 @@ export function ShelvesView({ connection }: { connection: ConnectionInput }) {
     id="shelves-title"
     title={t("shelvesTitle")}
     subtitle={t("shelvesBody")}
+    busy={busy}
     error={error}
     notice={notice}
     onDismissNotice={() => setNotice("")}
@@ -183,6 +185,7 @@ export function ShelvesView({ connection }: { connection: ConnectionInput }) {
       <label className="shelves-filter-control"><GitBranch aria-hidden="true" /><select data-agent-id="shelves-stream-filter" value={streamFilter} aria-label={t("factStream")} onChange={(event) => setStreamFilter(event.target.value)}><option value="all">{t("allStreams")}</option>{shelfStreams.map((stream) => <option key={stream} value={stream}>{stream}</option>)}</select></label>
       <label className="shelves-filter-control shelves-age-control"><CalendarClock aria-hidden="true" /><select data-agent-id="shelves-age-filter" value={ageFilter} aria-label={t("shelfAgeFilter")} onChange={(event) => setAgeFilter(event.target.value as ShelfAgeFilter)}><option value="all">{t("shelfAgeAny")}</option><option value="day">{t("shelfAgeDay")}</option><option value="week">{t("shelfAgeWeek")}</option><option value="month">{t("shelfAgeMonth")}</option></select></label>
     </div>
+    {shelves.length >= SERVER_LIST_LIMIT && <BoundedListNotice count={SERVER_LIST_LIMIT} />}
 
     <div className="resource-workbench shelves-people-workbench">
       <div className="shelves-people-board">

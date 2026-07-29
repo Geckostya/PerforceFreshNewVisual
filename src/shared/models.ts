@@ -5,6 +5,9 @@ export type ErrorKind =
   | "permission"
   | "conflict"
   | "offline"
+  | "timeout"
+  | "unsupported_capability"
+  | "server_limit"
   | "cancelled"
   | "stale"
   | "partial_result"
@@ -77,6 +80,31 @@ export interface P4Info {
   security?: string;
   clientAddress?: string;
   userEmail?: string;
+  capabilities?: CapabilitySnapshot;
+}
+
+export type CapabilityState = "supported" | "unsupported" | "unknown";
+export type CapabilityEvidence = "client" | "server" | "workspace" | "topology" | "permission" | "unavailable";
+
+export interface CapabilityFact {
+  state: CapabilityState;
+  reason: string;
+  evidence: CapabilityEvidence;
+}
+
+export interface CapabilitySnapshot {
+  cliVersion?: string;
+  serverVersion?: string;
+  serverServices?: string;
+  serverId?: string;
+  topology?: string;
+  unicode?: string;
+  caseHandling?: string;
+  security?: string;
+  workspaceKind: "stream" | "classic" | "unknown";
+  depotModes: string[];
+  commands: Record<string, CapabilityFact>;
+  facts: Record<string, CapabilityFact>;
 }
 
 export interface LoginStatus {
@@ -116,6 +144,51 @@ export interface StreamSummary {
   description: string;
   owner?: string;
   updated?: string;
+}
+
+export type StreamIntegrationDirection = "mergeDown" | "copyUp";
+export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; time?: string; description?: string; }
+export interface StreamIntegrationHint { direction: StreamIntegrationDirection; state: "supported" | "unsupported" | "unknown"; message: string; }
+export interface StreamDetail {
+  stream: StreamSummary;
+  parentView: string;
+  options: string[];
+  paths: string[];
+  remapped: string[];
+  ignored: string[];
+  history: StreamHistoryEntry[];
+  hints: StreamIntegrationHint[];
+  warnings: string[];
+}
+export interface StreamIntegrationInput {
+  connection: ConnectionInput;
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  targetChange: string;
+}
+export interface StreamIntegrationPreviewItem {
+  sourcePath: string;
+  targetPath: string;
+  localPath?: string;
+  action: string;
+  sourceStartRevision?: string;
+  sourceEndRevision?: string;
+  resolveType?: string;
+  fileType?: string;
+}
+export interface StreamIntegrationPreview {
+  identity: string;
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  targetWorkspace: string;
+  targetChange: string;
+  revisionScope: string;
+  items: StreamIntegrationPreviewItem[];
+  warnings: string[];
+  truncated: boolean;
+  partial: boolean;
 }
 
 export type CreateStreamType = "development" | "release" | "virtual" | "task";
@@ -173,11 +246,67 @@ export interface DepotFile {
 
 export interface TrustEntry { server: string; fingerprint: string; }
 
-export type OperationEventKind = "started" | "progress" | "completed" | "failed" | "cancelled";
+export interface TrustChallenge {
+  server: string;
+  presentedFingerprint: string;
+  existingFingerprint?: string;
+  reason: "new" | "changed";
+}
+
+export type AuthStageKind =
+  | "password_required"
+  | "method_selection"
+  | "second_factor"
+  | "external_browser"
+  | "waiting"
+  | "success"
+  | "expired"
+  | "cancelled"
+  | "failed"
+  | "unsupported";
+
+export interface AuthStage {
+  kind: AuthStageKind;
+  methods: string[];
+  pollingAttempt: number;
+  maxPollingAttempts: number;
+}
+
+export type OperationEventKind =
+  | "started"
+  | "progress"
+  | "cancel_requested"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "partial"
+  | "unknown";
+export type OperationItemStatus = "succeeded" | "failed" | "skipped";
+export type OperationCompensationStatus = "not_required" | "succeeded" | "failed" | "unknown";
+export type OperationReadBackStatus = "succeeded" | "failed" | "not_required" | "unknown";
+export interface OperationDiagnostic {
+  code: string;
+  message: string;
+  itemId?: string;
+}
+export interface OperationItemResult {
+  itemId: string;
+  path?: string;
+  status: OperationItemStatus;
+  reason?: string;
+  compensation: OperationCompensationStatus;
+  recoveryActionId?: "refresh_workspace" | "refresh_changes" | "refresh_streams" | string;
+}
+export interface OperationReadBack {
+  status: OperationReadBackStatus;
+  affectedState: string[];
+  message?: string;
+}
 export interface OperationEvent {
   operationId: string;
-  operationKind: "sync" | "submit" | string;
+  operationKind: "sync" | "submit" | "reconcile" | "reconcile_preview" | "stream_switch" | "integrate" | string;
   kind: OperationEventKind;
+  startedAtMs?: number;
   processed: number;
   totalFiles?: number;
   processedBytes: number;
@@ -188,7 +317,27 @@ export interface OperationEvent {
   scopes?: string[];
   phase?: "scan" | "validate" | "apply" | string;
   reconcileItems?: ReconcileItem[];
+  submitOutcome?: SubmitOutcome;
+  diagnostics?: OperationDiagnostic[];
+  itemResults?: OperationItemResult[];
+  readBack?: OperationReadBack;
   retryable: boolean;
+}
+
+export type ResourceFreshness =
+  | "fresh"
+  | "loading"
+  | "stale"
+  | "offline"
+  | "permission"
+  | "partial"
+  | "error";
+
+export interface ResourceSnapshot<T> {
+  freshness: ResourceFreshness;
+  data?: T;
+  lastSuccessfulAt?: number;
+  error?: AppError;
 }
 
 export interface PendingChange {
@@ -256,6 +405,21 @@ export interface WorkspaceLocalBatch {
   ignoredDirectories: string[];
   files: WorkspaceFile[];
   completedDirectories: string[];
+}
+
+export type WorkspaceMappingState = "mapped" | "unmapped" | "excluded";
+export interface WorkspaceMapping {
+  query: string;
+  state: WorkspaceMappingState;
+  depotPath?: string;
+  clientPath?: string;
+  localPath?: string;
+  diagnostics: string[];
+}
+export interface WorkspaceMappingBatch {
+  mappings: WorkspaceMapping[];
+  partial: boolean;
+  diagnostics: string[];
 }
 
 export interface UiControlSnapshot {
@@ -332,7 +496,9 @@ export interface UiAgentResponse {
   error?: string;
 }
 
-export type ResolveMode = "yours" | "theirs" | "autoSafe" | "autoMerge";
+export type ResolveMode = "yours" | "theirs" | "autoSafe" | "autoMerge" | "editResult";
+export type ResolveConflictKind = "text" | "binary" | "move_name" | "filetype_attribute" | "stream_spec" | "unknown";
+export type ResolveReadBackState = "pending" | "resolved" | "unknown";
 
 export interface SyncPreviewItem {
   depotPath: string;
@@ -344,9 +510,48 @@ export interface SyncPreviewItem {
 
 export interface SyncPreview { items: SyncPreviewItem[]; totalBytes: number; modifiedFiles: string[]; writableFiles: string[]; missingHaveFiles: string[]; }
 
-export interface ReconcileItem { depotPath: string; action: string; localPath?: string; }
+export type ReconcileAction = "add" | "edit" | "delete" | "move" | "unsafe";
+export interface ReconcileItem {
+  stableId: string;
+  previewToken: string;
+  depotPath: string;
+  action: ReconcileAction;
+  originalAction?: string;
+  clientPath?: string;
+  localPath?: string;
+  mappingState: WorkspaceMappingState;
+  ignored: boolean;
+  unsafeItem: boolean;
+  reasons: string[];
+  movePartner?: string;
+  localSize?: number;
+  localModified?: string;
+}
 
-export interface ResolvePreviewItem { depotPath: string; action: string; detail?: string; }
+export interface ResolvePreviewItem {
+  depotPath: string;
+  clientPath?: string;
+  localPath?: string;
+  action: string;
+  detail?: string;
+  conflictKind: ResolveConflictKind;
+  baseIdentifier?: string;
+  sourceIdentifier?: string;
+  workspaceIdentifier: string;
+  allowedActions: ResolveMode[];
+  readBack: ResolveReadBackState;
+}
+export interface ResolveApplyItem { depotPath: string; state: ResolveReadBackState; reason?: string; }
+export interface ResolveApplyResult { items: ResolveApplyItem[]; }
+export interface ResolveContentSide { identifier: string; text?: string; binary: boolean; truncated: boolean; }
+export interface ResolveContent {
+  depotPath: string;
+  localPath: string;
+  previewToken: string;
+  base: ResolveContentSide;
+  source: ResolveContentSide;
+  workspace: ResolveContentSide;
+}
 
 export interface RevertPreviewItem { depotPath: string; action: string; }
 
@@ -374,6 +579,10 @@ export type SubmitMode =
 
 export interface SubmitOutcome {
   preservedLocalChange?: string;
+  terminal: "submitted" | "pending" | "unknown";
+  affectedChange?: string;
+  recoveryActions: string[];
+  steps: Array<{ step: string; status: string; detail?: string }>;
 }
 
 export interface SubmitPreflightIssue {

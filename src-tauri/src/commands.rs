@@ -1,18 +1,23 @@
 use crate::{
     diagnostics, locales,
     models::{
-        AnnotationLine, AppError, AppSettings, ChangeExportResult, CherryPickPreviewItem,
-        CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput, CreateStreamPreview,
-        DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile, DepotSummary, DiffInput,
-        EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, Job, Label,
-        LocaleCatalog, MoveInput, OpenedFile, OperationEvent, OperationEventKind, P4Detection,
-        P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
-        ResolveInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput,
-        SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamSummary,
-        SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmittedChangeDetail,
-        SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode, TrustEntry,
-        UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile,
-        WorkspaceLocalBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
+        CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
+        CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
+        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
+        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
+        OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
+        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
+        ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput,
+        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
+        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
+        StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
+        SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
+        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
+        TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
+        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
+        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -27,8 +32,10 @@ use std::{
     process::{Command, Stdio},
     sync::{Arc, Mutex, atomic::Ordering, mpsc},
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Default)]
 pub struct WorkspaceRootRegistry {
@@ -156,6 +163,48 @@ pub async fn login(input: ConnectionInput, password: String) -> Result<(), AppEr
 }
 
 #[tauri::command]
+pub async fn begin_auth(input: ConnectionInput) -> Result<AuthStage, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::begin_auth(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn select_auth_method(
+    app: tauri::AppHandle,
+    input: ConnectionInput,
+    method: String,
+) -> Result<AuthStage, AppError> {
+    let (stage, browser_url) =
+        tauri::async_runtime::spawn_blocking(move || p4::select_auth_method(&input, &method))
+            .await
+            .map_err(task_error)??;
+    if let Some(url) = browser_url {
+        app.opener().open_url(url, None::<String>).map_err(|_| {
+            AppError::new(
+                ErrorKind::Auth,
+                "The system browser could not be opened for authentication.",
+            )
+            .with_hint("Retry the authentication handoff or use password sign-in.")
+        })?;
+    }
+    Ok(stage)
+}
+
+#[tauri::command]
+pub async fn check_auth(
+    input: ConnectionInput,
+    response: Option<String>,
+    polling_attempt: u8,
+) -> Result<AuthStage, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::check_auth(&input, response.as_deref(), polling_attempt)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn login_status(input: ConnectionInput) -> Result<crate::models::LoginStatus, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::login_status(&input))
         .await
@@ -172,6 +221,23 @@ pub async fn logout(input: ConnectionInput) -> Result<(), AppError> {
 #[tauri::command]
 pub async fn list_trust(input: ConnectionInput) -> Result<Vec<TrustEntry>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_trust(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_trust(input: ConnectionInput) -> Result<TrustChallenge, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::inspect_trust(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn confirm_trust(
+    input: ConnectionInput,
+    fingerprint: String,
+) -> Result<TrustEntry, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::confirm_trust(&input, &fingerprint))
         .await
         .map_err(task_error)?
 }
@@ -308,6 +374,25 @@ pub async fn rename_workspace(
 #[tauri::command]
 pub async fn list_streams(input: ConnectionInput) -> Result<Vec<StreamSummary>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_streams(&input))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_stream(
+    input: ConnectionInput,
+    stream_path: String,
+) -> Result<StreamDetail, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::inspect_stream(&input, &stream_path))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_stream_integration(
+    input: StreamIntegrationInput,
+) -> Result<StreamIntegrationPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::preview_stream_integration(&input))
         .await
         .map_err(task_error)?
 }
@@ -639,6 +724,16 @@ pub async fn list_workspace_files(
 }
 
 #[tauri::command]
+pub async fn map_workspace_paths(
+    input: ConnectionInput,
+    paths: Vec<String>,
+) -> Result<WorkspaceMappingBatch, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::map_workspace_paths(&input, &paths))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn list_local_workspace_directory(
     input: ConnectionInput,
     directory: String,
@@ -730,6 +825,415 @@ fn sync_operation_succeeded(force: bool, process_success: bool, readback_current
 }
 
 const MAX_SYNC_RETRY_SCOPES: usize = 1000;
+const MAX_OPERATION_DIAGNOSTIC_CHARS: usize = 2048;
+
+fn operation_started_at_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn operation_workspace(input: &ConnectionInput) -> String {
+    format!(
+        "{}/{}/{}",
+        input.port.trim().to_lowercase(),
+        input.user.trim().to_lowercase(),
+        input
+            .client
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+    )
+}
+
+fn bounded_operation_diagnostics(message: Option<&str>) -> Vec<OperationDiagnostic> {
+    message
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| OperationDiagnostic {
+            code: "p4_operation".to_owned(),
+            message: value.chars().take(MAX_OPERATION_DIAGNOSTIC_CHARS).collect(),
+            item_id: None,
+        })
+        .into_iter()
+        .collect()
+}
+
+fn submitted_change_from_record(
+    record: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let value = record.get("submittedChange")?;
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_u64().map(|value| value.to_string()))
+}
+
+fn operation_event(
+    operation_id: &str,
+    operation_kind: &str,
+    kind: OperationEventKind,
+    started_at_ms: u64,
+) -> OperationEvent {
+    OperationEvent {
+        operation_id: operation_id.to_owned(),
+        operation_kind: operation_kind.to_owned(),
+        kind,
+        started_at_ms,
+        processed: 0,
+        total_files: None,
+        processed_bytes: 0,
+        total_bytes: None,
+        current_path: None,
+        message: None,
+        scope: None,
+        scopes: None,
+        phase: None,
+        reconcile_items: None,
+        submit_outcome: None,
+        diagnostics: Vec::new(),
+        item_results: Vec::new(),
+        read_back: OperationReadBack {
+            status: OperationReadBackStatus::NotRequired,
+            affected_state: Vec::new(),
+            message: None,
+        },
+        retryable: false,
+    }
+}
+
+fn integration_output_path(line: &str) -> Option<String> {
+    let record = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(line).ok()?;
+    ["depotFile", "toFile", "clientFile", "path"]
+        .iter()
+        .find_map(|key| {
+            record
+                .get(*key)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+}
+
+fn confirmed_integration_paths(
+    expected: &BTreeSet<String>,
+    baseline: &BTreeSet<String>,
+    output: &BTreeSet<String>,
+    opened: &[OpenedFile],
+    target_change: &str,
+) -> BTreeSet<String> {
+    opened
+        .iter()
+        .filter(|item| item.change == target_change)
+        .map(|item| item.depot_path.to_ascii_lowercase())
+        .filter(|path| {
+            expected.contains(path) && (!baseline.contains(path) || output.contains(path))
+        })
+        .collect()
+}
+
+fn unexpected_integration_paths(
+    expected: &BTreeSet<String>,
+    baseline: &BTreeSet<String>,
+    output: &BTreeSet<String>,
+    opened: &[OpenedFile],
+    target_change: &str,
+) -> BTreeSet<String> {
+    let mut unexpected = output
+        .difference(expected)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    unexpected.extend(
+        opened
+            .iter()
+            .filter(|item| item.change == target_change)
+            .map(|item| item.depot_path.to_ascii_lowercase())
+            .filter(|path| !baseline.contains(path) && !expected.contains(path)),
+    );
+    unexpected
+}
+
+#[tauri::command]
+pub async fn start_stream_integration(
+    app: tauri::AppHandle,
+    registry: State<'_, OperationRegistry>,
+    input: StreamIntegrationInput,
+    preview_identity: String,
+) -> Result<String, AppError> {
+    let recovery_input = input.clone();
+    let (path, mut command, preview) = p4::stream_integration_command(&input, &preview_identity)?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (cancel, cancellation) = mpsc::channel();
+    let operation_id = registry.new_id();
+    let started_at_ms = operation_started_at_ms();
+    if !registry.insert_if_kind_idle(
+        operation_id.clone(),
+        OperationHandle {
+            kind: "integrate",
+            workspace: operation_workspace(&input.connection),
+            started_at_ms,
+            cancel,
+            cancelled: cancelled.clone(),
+        },
+    ) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Another workspace mutation is already running.",
+        ));
+    }
+    let baseline_opened = match p4::list_opened_files(&input.connection) {
+        Ok(opened) => opened
+            .into_iter()
+            .filter(|item| item.change == input.target_change)
+            .map(|item| item.depot_path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>(),
+        Err(error) => {
+            registry.remove(&operation_id);
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Could not establish the pre-integration server state.",
+            )
+            .with_diagnostics(error.message)
+            .with_hint("Refresh the pending changelist and retry."));
+        }
+    };
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            registry.remove(&operation_id);
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Could not start the stream integration command.",
+            )
+            .with_diagnostics(format!("{}: {error}", path.display())));
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let scope = format!("{} → {}", preview.source_stream, preview.target_stream);
+    let _ = app.emit(
+        "operation-event",
+        OperationEvent {
+            operation_id: operation_id.clone(),
+            operation_kind: "integrate".to_owned(),
+            kind: OperationEventKind::Started,
+            total_files: Some(preview.items.len() as u64),
+            scope: Some(scope.clone()),
+            phase: Some("apply".to_owned()),
+            ..operation_event(
+                &operation_id,
+                "integrate",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
+        },
+    );
+    let stdout_thread = stdout.map(|stdout| {
+        let app = app.clone();
+        let id = operation_id.clone();
+        let scope = scope.clone();
+        let total = preview.items.len() as u64;
+        thread::spawn(move || {
+            let mut paths = Vec::new();
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let Some(current_path) = integration_output_path(&line) else {
+                    continue;
+                };
+                paths.push(current_path.clone());
+                let _ = app.emit(
+                    "operation-event",
+                    OperationEvent {
+                        operation_id: id.clone(),
+                        operation_kind: "integrate".to_owned(),
+                        kind: OperationEventKind::Progress,
+                        processed: paths.len() as u64,
+                        total_files: Some(total),
+                        current_path: Some(current_path),
+                        scope: Some(scope.clone()),
+                        phase: Some("apply".to_owned()),
+                        ..operation_event(
+                            &id,
+                            "integrate",
+                            OperationEventKind::Progress,
+                            started_at_ms,
+                        )
+                    },
+                );
+            }
+            paths
+        })
+    });
+    let stderr_thread = stderr.map(|stderr| {
+        thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    });
+    let app_for_wait = app.clone();
+    let registry_for_wait = registry.inner().clone();
+    let id_for_wait = operation_id.clone();
+    thread::spawn(move || {
+        let process_success = wait_for_process(child, cancellation);
+        let was_cancelled = cancelled.load(Ordering::Acquire);
+        let output_paths = stdout_thread
+            .and_then(|worker| worker.join().ok())
+            .unwrap_or_default();
+        let stderr_text = stderr_thread
+            .and_then(|worker| worker.join().ok())
+            .unwrap_or_default();
+        let readback = p4::list_opened_files(&recovery_input.connection);
+        let expected = preview
+            .items
+            .iter()
+            .map(|item| item.target_path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let output_path_set = output_paths
+            .iter()
+            .map(|path| path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let confirmed = readback.as_ref().map(|opened| {
+            confirmed_integration_paths(
+                &expected,
+                &baseline_opened,
+                &output_path_set,
+                opened,
+                &recovery_input.target_change,
+            )
+        });
+        let unexpected = readback.as_ref().map(|opened| {
+            unexpected_integration_paths(
+                &expected,
+                &baseline_opened,
+                &output_path_set,
+                opened,
+                &recovery_input.target_change,
+            )
+        });
+        let confirmed_count = confirmed.as_ref().map(BTreeSet::len).unwrap_or_default();
+        let has_unexpected = unexpected.as_ref().is_ok_and(|paths| !paths.is_empty());
+        let kind = if readback.is_err() || has_unexpected {
+            OperationEventKind::Unknown
+        } else if was_cancelled && confirmed_count > 0 {
+            OperationEventKind::Partial
+        } else if was_cancelled {
+            OperationEventKind::Cancelled
+        } else if process_success && confirmed_count == expected.len() {
+            OperationEventKind::Completed
+        } else if confirmed_count > 0 {
+            OperationEventKind::Partial
+        } else {
+            OperationEventKind::Failed
+        };
+        let mut item_results = preview
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let succeeded = confirmed
+                    .as_ref()
+                    .is_ok_and(|paths| paths.contains(&item.target_path.to_ascii_lowercase()));
+                OperationItemResult {
+                    item_id: format!("integration-{index}"),
+                    path: Some(item.target_path.clone()),
+                    status: if succeeded {
+                        OperationItemStatus::Succeeded
+                    } else if was_cancelled {
+                        OperationItemStatus::Skipped
+                    } else {
+                        OperationItemStatus::Failed
+                    },
+                    reason: (!succeeded).then(|| {
+                        if readback.is_err() {
+                            "Authoritative read-back failed."
+                        } else {
+                            "Target file was not confirmed in the pending changelist."
+                        }
+                        .to_owned()
+                    }),
+                    compensation: OperationCompensationStatus::NotRequired,
+                    recovery_action_id: Some("refresh_changes".to_owned()),
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Ok(paths) = &unexpected {
+            item_results.extend(paths.iter().enumerate().map(|(index, path)| {
+                OperationItemResult {
+                    item_id: format!("integration-unexpected-{index}"),
+                    path: Some(path.clone()),
+                    status: OperationItemStatus::Failed,
+                    reason: Some(
+                        "The server changed a path that was not present in the approved preview."
+                            .to_owned(),
+                    ),
+                    compensation: OperationCompensationStatus::NotRequired,
+                    recovery_action_id: Some("refresh_changes".to_owned()),
+                }
+            }));
+        }
+        let read_back = OperationReadBack {
+            status: if readback.is_ok() {
+                OperationReadBackStatus::Succeeded
+            } else {
+                OperationReadBackStatus::Unknown
+            },
+            affected_state: vec![
+                "opened_files".to_owned(),
+                "pending_changes".to_owned(),
+                "resolve_state".to_owned(),
+            ],
+            message: Some(match &readback {
+                Ok(_) if has_unexpected => format!(
+                    "Confirmed {confirmed_count} of {} previewed files, but detected {} unexpected path(s) in CL {}.",
+                    expected.len(),
+                    unexpected.as_ref().map(BTreeSet::len).unwrap_or_default(),
+                    recovery_input.target_change
+                ),
+                Ok(_) => format!(
+                    "Confirmed {confirmed_count} of {} previewed files in CL {}.",
+                    expected.len(),
+                    recovery_input.target_change
+                ),
+                Err(error) => format!(
+                    "Integration may have changed server state, but read-back failed: {}",
+                    error.message
+                ),
+            }),
+        };
+        let message = match kind {
+            OperationEventKind::Completed => {
+                Some("Integration is pending. Resolve and review it before submit.".to_owned())
+            }
+            OperationEventKind::Cancelled if stderr_text.trim().is_empty() => {
+                Some("Integration was cancelled before any target file was confirmed.".to_owned())
+            }
+            _ if !stderr_text.trim().is_empty() => Some(stderr_text),
+            _ => read_back.message.clone(),
+        };
+        let _ = app_for_wait.emit(
+            "operation-event",
+            OperationEvent {
+                operation_id: id_for_wait.clone(),
+                operation_kind: "integrate".to_owned(),
+                kind: kind.clone(),
+                processed: confirmed_count as u64,
+                total_files: Some(expected.len() as u64),
+                message: message.clone(),
+                scope: Some(scope),
+                phase: Some("read_back".to_owned()),
+                diagnostics: bounded_operation_diagnostics(message.as_deref()),
+                item_results,
+                read_back,
+                ..operation_event(&id_for_wait, "integrate", kind, started_at_ms)
+            },
+        );
+        registry_for_wait.remove(&id_for_wait);
+    });
+    Ok(operation_id)
+}
 
 fn sync_operation_scope(scopes: &[String]) -> String {
     match scopes {
@@ -760,6 +1264,8 @@ pub async fn start_sync(
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
+    let started_at_ms = operation_started_at_ms();
+    let workspace = operation_workspace(&input);
     let operation_scope = Some(sync_operation_scope(&scopes));
     let retryable = !force && scopes.len() <= MAX_SYNC_RETRY_SCOPES;
     let retry_scopes = retryable.then_some(scopes);
@@ -767,6 +1273,8 @@ pub async fn start_sync(
         operation_id.clone(),
         OperationHandle {
             kind: "sync",
+            workspace,
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
@@ -807,6 +1315,12 @@ pub async fn start_sync(
             phase: None,
             reconcile_items: None,
             retryable,
+            ..operation_event(
+                &operation_id,
+                "sync",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
 
@@ -856,6 +1370,12 @@ pub async fn start_sync(
                         phase: None,
                         reconcile_items: None,
                         retryable,
+                        ..operation_event(
+                            &id_for_output,
+                            "sync",
+                            OperationEventKind::Progress,
+                            started_at_ms,
+                        )
                     },
                 );
             }
@@ -892,16 +1412,20 @@ pub async fn start_sync(
             process_success && stdin_error.is_none(),
             readback_current,
         );
-        let kind = if was_cancelled {
-            OperationEventKind::Cancelled
-        } else if success {
-            OperationEventKind::Completed
-        } else {
-            OperationEventKind::Failed
-        };
         let (processed, processed_bytes, total_files, total_bytes) = stdout_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
+        let kind = if was_cancelled && processed > 0 {
+            OperationEventKind::Partial
+        } else if was_cancelled {
+            OperationEventKind::Cancelled
+        } else if success {
+            OperationEventKind::Completed
+        } else if processed > 0 {
+            OperationEventKind::Partial
+        } else {
+            OperationEventKind::Failed
+        };
         let stderr_text = stderr_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
@@ -918,12 +1442,25 @@ pub async fn start_sync(
                 detail
             }
         });
+        let read_back = OperationReadBack {
+            status: if readback_current {
+                OperationReadBackStatus::Succeeded
+            } else if was_cancelled {
+                OperationReadBackStatus::Unknown
+            } else {
+                OperationReadBackStatus::Failed
+            },
+            affected_state: vec!["workspace_files".to_owned(), "have_list".to_owned()],
+            message: (!readback_current)
+                .then(|| "The authoritative workspace read-back did not complete.".to_owned()),
+        };
+        let diagnostics = bounded_operation_diagnostics(message.as_deref());
         let _ = app_for_wait.emit(
             "operation-event",
             OperationEvent {
                 operation_id: id_for_wait.clone(),
                 operation_kind: "sync".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed,
                 total_files,
                 processed_bytes,
@@ -934,7 +1471,10 @@ pub async fn start_sync(
                 scopes: completion_scopes,
                 phase: None,
                 reconcile_items: None,
+                diagnostics,
+                read_back,
                 retryable,
+                ..operation_event(&id_for_wait, "sync", kind, started_at_ms)
             },
         );
         registry_for_wait.remove(&id_for_wait);
@@ -949,11 +1489,135 @@ pub async fn start_submit(
     input: SubmitInput,
 ) -> Result<String, AppError> {
     if !matches!(input.mode, SubmitMode::Local) {
-        return Err(AppError::new(
-            ErrorKind::CommandFailed,
-            "This submit mode uses the compensation-safe workflow.",
-        )
-        .with_hint("Use the standard submit action for shelf-preserving modes."));
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (cancel, cancellation) = mpsc::channel();
+        let operation_id = registry.new_id();
+        let started_at_ms = operation_started_at_ms();
+        if !registry.insert_if_kind_idle(
+            operation_id.clone(),
+            OperationHandle {
+                kind: "submit",
+                workspace: operation_workspace(&input.connection),
+                started_at_ms,
+                cancel,
+                cancelled: cancelled.clone(),
+            },
+        ) {
+            return Err(AppError::new(
+                ErrorKind::Conflict,
+                "A submit operation is already running for this workspace.",
+            ));
+        }
+        let _ = app.emit(
+            "operation-event",
+            OperationEvent {
+                phase: Some("apply".to_owned()),
+                ..operation_event(
+                    &operation_id,
+                    "submit",
+                    OperationEventKind::Started,
+                    started_at_ms,
+                )
+            },
+        );
+        let app_for_wait = app.clone();
+        let registry_for_wait = registry.inner().clone();
+        let id_for_wait = operation_id.clone();
+        thread::spawn(move || {
+            let _keep_cancellation_open = cancellation;
+            let result = p4::submit_change(
+                &input.connection,
+                &input.change,
+                input.description.as_deref(),
+                &input.mode,
+            );
+            let was_cancelled = cancelled.load(Ordering::Acquire);
+            let (kind, message, diagnostics, read_back, submit_outcome) = match result {
+                Ok(outcome) => {
+                    let kind = match outcome.terminal {
+                        SubmitTerminalOutcome::Submitted => OperationEventKind::Completed,
+                        SubmitTerminalOutcome::Pending if was_cancelled => {
+                            OperationEventKind::Cancelled
+                        }
+                        SubmitTerminalOutcome::Pending => OperationEventKind::Partial,
+                        SubmitTerminalOutcome::Unknown => OperationEventKind::Unknown,
+                    };
+                    let message = (!outcome.recovery_actions.is_empty())
+                        .then(|| outcome.recovery_actions.join(" "));
+                    let diagnostics = bounded_operation_diagnostics(message.as_deref());
+                    let status = match outcome.terminal {
+                        SubmitTerminalOutcome::Submitted | SubmitTerminalOutcome::Pending => {
+                            OperationReadBackStatus::Succeeded
+                        }
+                        SubmitTerminalOutcome::Unknown => OperationReadBackStatus::Unknown,
+                    };
+                    (
+                        kind,
+                        message.clone(),
+                        diagnostics,
+                        OperationReadBack {
+                            status,
+                            affected_state: vec![
+                                "pending_changes".to_owned(),
+                                "submitted_changes".to_owned(),
+                                "shelves".to_owned(),
+                                "opened_files".to_owned(),
+                            ],
+                            message,
+                        },
+                        Some(outcome),
+                    )
+                }
+                Err(error) => {
+                    let readback = p4::submit_readback(&input.connection, &input.change);
+                    let kind = match readback.outcome {
+                        SubmitTerminalOutcome::Submitted => OperationEventKind::Partial,
+                        SubmitTerminalOutcome::Pending if was_cancelled => {
+                            OperationEventKind::Cancelled
+                        }
+                        SubmitTerminalOutcome::Pending => OperationEventKind::Failed,
+                        SubmitTerminalOutcome::Unknown => OperationEventKind::Unknown,
+                    };
+                    let message = Some(format!("{}\n{}", error.message, readback.message));
+                    (
+                        kind,
+                        message.clone(),
+                        bounded_operation_diagnostics(message.as_deref()),
+                        OperationReadBack {
+                            status: if matches!(readback.outcome, SubmitTerminalOutcome::Unknown) {
+                                OperationReadBackStatus::Unknown
+                            } else {
+                                OperationReadBackStatus::Succeeded
+                            },
+                            affected_state: vec![
+                                "pending_changes".to_owned(),
+                                "submitted_changes".to_owned(),
+                                "shelves".to_owned(),
+                                "opened_files".to_owned(),
+                            ],
+                            message: Some(readback.message),
+                        },
+                        None,
+                    )
+                }
+            };
+            let _ = app_for_wait.emit(
+                "operation-event",
+                OperationEvent {
+                    operation_id: id_for_wait.clone(),
+                    operation_kind: "submit".to_owned(),
+                    kind: kind.clone(),
+                    message,
+                    phase: Some("validate".to_owned()),
+                    diagnostics,
+                    read_back,
+                    submit_outcome,
+                    ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
+                },
+            );
+            registry_for_wait.remove(&id_for_wait);
+        });
+        return Ok(operation_id);
     }
     let (path, mut command) = p4::submit_command(
         &input.connection,
@@ -961,23 +1625,37 @@ pub async fn start_submit(
         input.description.as_deref(),
     )?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        AppError::new(ErrorKind::CommandFailed, "Не удалось запустить submit.")
-            .with_diagnostics(format!("{}: {error}", path.display()))
-    })?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
-    registry.insert(
+    let started_at_ms = operation_started_at_ms();
+    if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
             kind: "submit",
+            workspace: operation_workspace(&input.connection),
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
-    );
+    ) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "A submit operation is already running for this workspace.",
+        ));
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            registry.remove(&operation_id);
+            return Err(
+                AppError::new(ErrorKind::CommandFailed, "Не удалось запустить submit.")
+                    .with_diagnostics(format!("{}: {error}", path.display())),
+            );
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
     let _ = app.emit(
         "operation-event",
         OperationEvent {
@@ -995,6 +1673,12 @@ pub async fn start_submit(
             phase: None,
             reconcile_items: None,
             retryable: false,
+            ..operation_event(
+                &operation_id,
+                "submit",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
     let stderr_thread = stderr.map(|stderr| {
@@ -1011,22 +1695,25 @@ pub async fn start_submit(
         let id_for_output = operation_id.clone();
         thread::spawn(move || {
             let mut processed = 0;
+            let mut submitted_change = None;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
                 }
                 processed += 1;
-                let current_path =
-                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&line)
-                        .ok()
-                        .and_then(|record| {
-                            ["depotFile", "clientFile", "path"].iter().find_map(|key| {
-                                record
-                                    .get(*key)
-                                    .and_then(|value| value.as_str())
-                                    .map(str::to_owned)
-                            })
-                        });
+                let record =
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&line).ok();
+                if let Some(value) = record.as_ref().and_then(submitted_change_from_record) {
+                    submitted_change = Some(value);
+                }
+                let current_path = record.and_then(|record| {
+                    ["depotFile", "clientFile", "path"].iter().find_map(|key| {
+                        record
+                            .get(*key)
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned)
+                    })
+                });
                 let _ = app_for_output.emit(
                     "operation-event",
                     OperationEvent {
@@ -1044,10 +1731,16 @@ pub async fn start_submit(
                         phase: None,
                         reconcile_items: None,
                         retryable: false,
+                        ..operation_event(
+                            &id_for_output,
+                            "submit",
+                            OperationEventKind::Progress,
+                            started_at_ms,
+                        )
                     },
                 );
             }
-            processed
+            (processed, submitted_change)
         })
     });
     let app_for_wait = app.clone();
@@ -1058,34 +1751,51 @@ pub async fn start_submit(
     thread::spawn(move || {
         let success = wait_for_process(child, cancellation);
         let was_cancelled = cancelled.load(Ordering::Acquire);
-        let kind = if was_cancelled {
-            OperationEventKind::Cancelled
-        } else if success {
-            OperationEventKind::Completed
-        } else {
-            OperationEventKind::Failed
-        };
-        let processed = stdout_thread
+        let (processed, submitted_change) = stdout_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
         let stderr_text = stderr_thread
             .and_then(|thread| thread.join().ok())
             .unwrap_or_default();
-        let message = (!success && !was_cancelled).then(|| {
+        let readback_change = submitted_change.as_deref().unwrap_or(&change);
+        let readback = p4::submit_readback(&connection, readback_change);
+        let submit_outcome = SubmitOutcome {
+            preserved_local_change: None,
+            terminal: readback.outcome,
+            affected_change: readback.affected_change.clone(),
+            recovery_actions: readback.recovery_actions.clone(),
+            steps: vec![SubmitStepResult {
+                step: "submit_local".to_owned(),
+                status: if success { "completed" } else { "uncertain" }.to_owned(),
+                detail: None,
+            }],
+        };
+        let message = if !success && !was_cancelled {
             let detail = stderr_text.trim();
-            let readback = p4::submit_readback_hint(&connection, &change);
-            if detail.is_empty() {
-                readback
+            Some(if detail.is_empty() {
+                readback.message.clone()
             } else {
-                format!("{detail}\n{readback}")
-            }
-        });
+                format!("{detail}\n{}", readback.message)
+            })
+        } else if !matches!(readback.outcome, SubmitTerminalOutcome::Submitted) {
+            Some(readback.message.clone())
+        } else {
+            None
+        };
+        let kind = match readback.outcome {
+            SubmitTerminalOutcome::Submitted => OperationEventKind::Completed,
+            SubmitTerminalOutcome::Pending if was_cancelled => OperationEventKind::Cancelled,
+            SubmitTerminalOutcome::Pending if !success => OperationEventKind::Failed,
+            SubmitTerminalOutcome::Pending => OperationEventKind::Partial,
+            SubmitTerminalOutcome::Unknown => OperationEventKind::Unknown,
+        };
+        let diagnostics = bounded_operation_diagnostics(message.as_deref());
         let _ = app_for_wait.emit(
             "operation-event",
             OperationEvent {
                 operation_id: id_for_wait.clone(),
                 operation_kind: "submit".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed,
                 total_files: None,
                 processed_bytes: 0,
@@ -1096,7 +1806,25 @@ pub async fn start_submit(
                 scopes: None,
                 phase: None,
                 reconcile_items: None,
+                submit_outcome: Some(submit_outcome),
+                diagnostics,
+                read_back: OperationReadBack {
+                    status: match readback.outcome {
+                        SubmitTerminalOutcome::Submitted | SubmitTerminalOutcome::Pending => {
+                            OperationReadBackStatus::Succeeded
+                        }
+                        SubmitTerminalOutcome::Unknown => OperationReadBackStatus::Unknown,
+                    },
+                    affected_state: vec![
+                        "pending_changes".to_owned(),
+                        "submitted_changes".to_owned(),
+                        "shelves".to_owned(),
+                        "opened_files".to_owned(),
+                    ],
+                    message: Some(readback.message),
+                },
                 retryable: false,
+                ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
             },
         );
         registry_for_wait.remove(&id_for_wait);
@@ -1106,10 +1834,30 @@ pub async fn start_submit(
 
 #[tauri::command]
 pub async fn cancel_operation(
+    app: tauri::AppHandle,
     registry: State<'_, OperationRegistry>,
     operation_id: String,
 ) -> Result<bool, AppError> {
-    Ok(registry.cancel(&operation_id))
+    let Some(request) = registry.cancel(&operation_id) else {
+        return Ok(false);
+    };
+    let _ = app.emit(
+        "operation-event",
+        OperationEvent {
+            message: Some(
+                "Cancellation requested. Completed server mutations are not rolled back."
+                    .to_owned(),
+            ),
+            scope: Some(request.workspace),
+            ..operation_event(
+                &operation_id,
+                request.kind,
+                OperationEventKind::CancelRequested,
+                request.started_at_ms,
+            )
+        },
+    );
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1151,9 +1899,43 @@ async fn run_file_operation(
 }
 
 #[tauri::command]
-pub async fn resolve_files(input: ResolveInput) -> Result<(), AppError> {
+pub async fn resolve_files(input: ResolveInput) -> Result<ResolveApplyResult, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::resolve_files(&input.connection, &input.depot_paths, &input.mode)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn load_resolve_content(
+    input: ConnectionInput,
+    depot_path: String,
+    roots: State<'_, WorkspaceRootRegistry>,
+) -> Result<ResolveContent, AppError> {
+    let root = roots.root(&input)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::load_resolve_content(&input, &root, &depot_path)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_resolve_result(
+    input: ResolveResultInput,
+    roots: State<'_, WorkspaceRootRegistry>,
+) -> Result<ResolveApplyResult, AppError> {
+    let root = roots.root(&input.connection)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_resolve_result(
+            &input.connection,
+            &root,
+            &input.depot_path,
+            &input.local_path,
+            &input.preview_token,
+            &input.result,
+        )
     })
     .await
     .map_err(task_error)?
@@ -1200,6 +1982,7 @@ struct ReconcileProcessContext {
     scope: Option<String>,
     total_files: Option<u64>,
     processed_offset: u64,
+    started_at_ms: u64,
 }
 
 fn reconcile_output_error(line: &str) -> Option<String> {
@@ -1268,7 +2051,7 @@ fn run_reconcile_process(
                 let Some(item) = p4::parse_reconcile_output_record(&line) else {
                     continue;
                 };
-                if !seen.insert(item.depot_path.to_lowercase()) {
+                if !seen.insert(item.stable_id.clone()) {
                     continue;
                 }
                 let processed = context.processed_offset + seen.len() as u64;
@@ -1294,6 +2077,12 @@ fn run_reconcile_process(
                         phase: Some(context.phase.to_owned()),
                         reconcile_items: None,
                         retryable: false,
+                        ..operation_event(
+                            &context.operation_id,
+                            context.operation_kind,
+                            OperationEventKind::Progress,
+                            context.started_at_ms,
+                        )
                     },
                 );
             }
@@ -1364,10 +2153,13 @@ pub async fn start_reconcile_preview(
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
+    let started_at_ms = operation_started_at_ms();
     if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
-            kind: "reconcile",
+            kind: "reconcile_preview",
+            workspace: operation_workspace(&input),
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
@@ -1394,13 +2186,20 @@ pub async fn start_reconcile_preview(
             phase: Some("scan".to_owned()),
             reconcile_items: None,
             retryable: false,
+            ..operation_event(
+                &operation_id,
+                "reconcile_preview",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
     let app_for_run = app.clone();
     let registry_for_run = registry.inner().clone();
     let id_for_run = operation_id.clone();
+    let input_for_run = input.clone();
     thread::spawn(move || {
-        let result = run_reconcile_process(
+        let mut result = run_reconcile_process(
             path,
             command,
             &cancellation,
@@ -1413,8 +2212,19 @@ pub async fn start_reconcile_preview(
                 scope: Some(scope.clone()),
                 total_files: None,
                 processed_offset: 0,
+                started_at_ms,
             },
         );
+        if result.success {
+            let items = std::mem::take(&mut result.items);
+            match p4::reconcile_preview_snapshot(&input_for_run, &scope, items) {
+                Ok(items) => result.items = items,
+                Err(error) => {
+                    result.success = false;
+                    result.message = Some(error.message);
+                }
+            }
+        }
         let kind = if result.cancelled {
             OperationEventKind::Cancelled
         } else if result.success {
@@ -1427,18 +2237,29 @@ pub async fn start_reconcile_preview(
             OperationEvent {
                 operation_id: id_for_run.clone(),
                 operation_kind: "reconcile_preview".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed: result.processed,
                 total_files: None,
                 processed_bytes: 0,
                 total_bytes: None,
                 current_path: None,
-                message: result.message,
+                message: result.message.clone(),
                 scope: Some(scope),
                 scopes: None,
                 phase: Some("scan".to_owned()),
-                reconcile_items: result.success.then_some(result.items),
+                reconcile_items: result.success.then_some(result.items.clone()),
+                diagnostics: bounded_operation_diagnostics(result.message.as_deref()),
+                read_back: OperationReadBack {
+                    status: if result.success {
+                        OperationReadBackStatus::Succeeded
+                    } else {
+                        OperationReadBackStatus::Failed
+                    },
+                    affected_state: vec!["reconcile_preview".to_owned()],
+                    message: result.message.clone(),
+                },
                 retryable: false,
+                ..operation_event(&id_for_run, "reconcile_preview", kind, started_at_ms)
             },
         );
         registry_for_run.remove(&id_for_run);
@@ -1452,40 +2273,59 @@ pub async fn start_reconcile(
     registry: State<'_, OperationRegistry>,
     input: crate::models::ReconcileInput,
 ) -> Result<String, AppError> {
-    if input.depot_paths.is_empty() {
+    if input.items.is_empty() {
         return Err(AppError::new(
             ErrorKind::CommandFailed,
             "Select at least one reconcile candidate.",
         ));
     }
-    let preview_commands = input
-        .depot_paths
+    if input
+        .items
         .iter()
-        .map(|depot_path| {
-            p4::reconcile_command(
-                &input.connection,
-                None,
-                std::slice::from_ref(depot_path),
-                true,
-            )
-            .map(|(path, command)| (depot_path.clone(), path, command))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let (apply_path, apply_command) = p4::reconcile_command(
+        .any(|item| item.ignored || item.unsafe_item)
+    {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Ignored or unsafe reconcile candidates cannot be applied.",
+        ));
+    }
+    if input.preview_token.trim().is_empty()
+        || input
+            .items
+            .iter()
+            .any(|item| item.preview_token != input.preview_token)
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Reconcile preview is stale. Refresh the preview.",
+        ));
+    }
+    let depot_paths = input
+        .items
+        .iter()
+        .map(|item| item.depot_path.clone())
+        .collect::<Vec<_>>();
+    let preview_scope = input.preview_scope.trim().to_owned();
+    let (preview_path, preview_command) = p4::reconcile_command(
         &input.connection,
-        Some(&input.change),
-        &input.depot_paths,
-        false,
+        None,
+        std::slice::from_ref(&preview_scope),
+        true,
     )?;
+    let (apply_path, apply_command) =
+        p4::reconcile_command(&input.connection, Some(&input.change), &depot_paths, false)?;
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (cancel, cancellation) = mpsc::channel();
     let operation_id = registry.new_id();
-    let operation_scope = reconcile_scope(&input.depot_paths);
-    let total_files = input.depot_paths.len() as u64;
+    let started_at_ms = operation_started_at_ms();
+    let operation_scope = reconcile_scope(&depot_paths);
+    let total_files = depot_paths.len() as u64;
     if !registry.insert_if_kind_idle(
         operation_id.clone(),
         OperationHandle {
             kind: "reconcile",
+            workspace: operation_workspace(&input.connection),
+            started_at_ms,
             cancel,
             cancelled: cancelled.clone(),
         },
@@ -1512,49 +2352,55 @@ pub async fn start_reconcile(
             phase: Some("validate".to_owned()),
             reconcile_items: None,
             retryable: false,
+            ..operation_event(
+                &operation_id,
+                "reconcile",
+                OperationEventKind::Started,
+                started_at_ms,
+            )
         },
     );
     let app_for_run = app.clone();
     let registry_for_run = registry.inner().clone();
     let id_for_run = operation_id.clone();
     thread::spawn(move || {
-        let mut checked = 0;
         let mut validation_message = None;
-        let mut validation_cancelled = false;
-        for (index, (depot_path, path, command)) in preview_commands.into_iter().enumerate() {
-            let preview = run_reconcile_process(
-                path,
-                command,
-                &cancellation,
-                &cancelled,
-                ReconcileProcessContext {
-                    app: app_for_run.clone(),
-                    operation_id: id_for_run.clone(),
-                    operation_kind: "reconcile",
-                    phase: "validate",
-                    scope: operation_scope.clone(),
-                    total_files: Some(total_files),
-                    processed_offset: index as u64,
-                },
-            );
-            if preview.cancelled {
-                validation_cancelled = true;
-                break;
-            }
-            checked = index as u64 + 1;
-            if !preview.success {
-                validation_message = preview.message;
-                break;
-            }
-            if !preview
-                .items
-                .iter()
-                .any(|item| item.depot_path.eq_ignore_ascii_case(&depot_path))
-            {
-                validation_message = Some(format!(
-                    "Reconcile preview is stale. Refresh the preview before applying {depot_path}."
-                ));
-                break;
+        let preview = run_reconcile_process(
+            preview_path,
+            preview_command,
+            &cancellation,
+            &cancelled,
+            ReconcileProcessContext {
+                app: app_for_run.clone(),
+                operation_id: id_for_run.clone(),
+                operation_kind: "reconcile",
+                phase: "validate",
+                scope: operation_scope.clone(),
+                total_files: Some(total_files),
+                processed_offset: 0,
+                started_at_ms,
+            },
+        );
+        let validation_cancelled = preview.cancelled;
+        let checked = preview.processed.min(total_files);
+        if !preview.success {
+            validation_message = preview.message;
+        } else {
+            match p4::reconcile_preview_snapshot(&input.connection, &preview_scope, preview.items) {
+                Ok(fresh) => {
+                    let fresh_token = fresh.first().map(|item| item.preview_token.as_str());
+                    let exact_selection = input.items.iter().all(|selected| {
+                        fresh
+                            .iter()
+                            .find(|item| item.stable_id == selected.stable_id)
+                            .is_some_and(|item| item == selected)
+                    });
+                    if fresh_token != Some(input.preview_token.as_str()) || !exact_selection {
+                        validation_message =
+                            Some("Reconcile preview is stale. Refresh the preview before applying any files.".to_owned());
+                    }
+                }
+                Err(error) => validation_message = Some(error.message),
             }
         }
         if validation_cancelled || validation_message.is_some() {
@@ -1568,18 +2414,25 @@ pub async fn start_reconcile(
                 OperationEvent {
                     operation_id: id_for_run.clone(),
                     operation_kind: "reconcile".to_owned(),
-                    kind,
+                    kind: kind.clone(),
                     processed: checked,
                     total_files: Some(total_files),
                     processed_bytes: 0,
                     total_bytes: None,
                     current_path: None,
-                    message: validation_message,
+                    message: validation_message.clone(),
                     scope: operation_scope,
                     scopes: None,
                     phase: Some("validate".to_owned()),
                     reconcile_items: None,
+                    diagnostics: bounded_operation_diagnostics(validation_message.as_deref()),
+                    read_back: OperationReadBack {
+                        status: OperationReadBackStatus::NotRequired,
+                        affected_state: vec!["reconcile_preview".to_owned()],
+                        message: validation_message.clone(),
+                    },
                     retryable: false,
+                    ..operation_event(&id_for_run, "reconcile", kind, started_at_ms)
                 },
             );
             registry_for_run.remove(&id_for_run);
@@ -1602,6 +2455,12 @@ pub async fn start_reconcile(
                 phase: Some("apply".to_owned()),
                 reconcile_items: None,
                 retryable: false,
+                ..operation_event(
+                    &id_for_run,
+                    "reconcile",
+                    OperationEventKind::Progress,
+                    started_at_ms,
+                )
             },
         );
         let applied = run_reconcile_process(
@@ -1617,21 +2476,48 @@ pub async fn start_reconcile(
                 scope: operation_scope.clone(),
                 total_files: Some(total_files),
                 processed_offset: 0,
+                started_at_ms,
             },
         );
-        let kind = if applied.cancelled {
+        let kind = if applied.cancelled && applied.processed > 0 {
+            OperationEventKind::Partial
+        } else if applied.cancelled {
             OperationEventKind::Cancelled
         } else if applied.success {
             OperationEventKind::Completed
+        } else if applied.processed > 0 {
+            OperationEventKind::Partial
         } else {
             OperationEventKind::Failed
         };
+        let item_results = applied
+            .items
+            .iter()
+            .map(|item| OperationItemResult {
+                item_id: item.depot_path.clone(),
+                path: item
+                    .local_path
+                    .clone()
+                    .or_else(|| Some(item.depot_path.clone())),
+                status: if applied.success {
+                    crate::models::OperationItemStatus::Succeeded
+                } else {
+                    crate::models::OperationItemStatus::Failed
+                },
+                reason: (!applied.success)
+                    .then(|| applied.message.clone())
+                    .flatten(),
+                compensation: crate::models::OperationCompensationStatus::NotRequired,
+                recovery_action_id: (!applied.success).then(|| "refresh_workspace".to_owned()),
+            })
+            .collect();
+        let diagnostics = bounded_operation_diagnostics(applied.message.as_deref());
         let _ = app_for_run.emit(
             "operation-event",
             OperationEvent {
                 operation_id: id_for_run.clone(),
                 operation_kind: "reconcile".to_owned(),
-                kind,
+                kind: kind.clone(),
                 processed: applied.processed,
                 total_files: Some(total_files),
                 processed_bytes: 0,
@@ -1642,7 +2528,20 @@ pub async fn start_reconcile(
                 scopes: None,
                 phase: Some("apply".to_owned()),
                 reconcile_items: None,
+                diagnostics,
+                item_results,
+                read_back: OperationReadBack {
+                    status: OperationReadBackStatus::Unknown,
+                    affected_state: vec![
+                        "workspace_files".to_owned(),
+                        "pending_changes".to_owned(),
+                    ],
+                    message: Some(
+                        "Refresh Workspace and My Changes before another mutation.".to_owned(),
+                    ),
+                },
                 retryable: false,
+                ..operation_event(&id_for_run, "reconcile", kind, started_at_ms)
             },
         );
         registry_for_run.remove(&id_for_run);
@@ -1789,28 +2688,6 @@ pub async fn diff_shelved_file(input: ShelfDiffInput) -> Result<FileDiff, AppErr
             input.against_local,
             &input.mode,
         )
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn submit_change(input: SubmitInput) -> Result<SubmitOutcome, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        match p4::submit_change(
-            &input.connection,
-            &input.change,
-            input.description.as_deref(),
-            &input.mode,
-        ) {
-            Ok(outcome) => Ok(outcome),
-            Err(mut error) => {
-                error
-                    .hints
-                    .push(p4::submit_readback_hint(&input.connection, &input.change));
-                Err(error)
-            }
-        }
     })
     .await
     .map_err(task_error)?
@@ -2053,10 +2930,13 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_sync_output_record, sync_operation_scope, sync_operation_succeeded,
-        validate_reveal_path, workspace_stream_view_paths,
+        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
+        parse_sync_output_record, submitted_change_from_record, sync_operation_scope,
+        sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
+        workspace_stream_view_paths,
     };
-    use std::fs;
+    use crate::models::{OpenedFile, OperationEventKind};
+    use std::{collections::BTreeSet, fs};
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -2079,6 +2959,56 @@ mod tests {
     }
 
     #[test]
+    fn integration_readback_uses_delta_or_command_output_and_detects_expansion() {
+        let expected =
+            BTreeSet::from(["//acme/dev/a.txt".to_owned(), "//acme/dev/b.txt".to_owned()]);
+        let baseline = BTreeSet::from(["//acme/dev/a.txt".to_owned()]);
+        let output = BTreeSet::from(["//acme/dev/a.txt".to_owned()]);
+        let opened = [
+            opened_file("//Acme/dev/a.txt"),
+            opened_file("//Acme/dev/b.txt"),
+            opened_file("//Acme/dev/unexpected.txt"),
+        ];
+
+        assert_eq!(
+            confirmed_integration_paths(&expected, &baseline, &output, &opened, "123"),
+            expected
+        );
+        assert_eq!(
+            unexpected_integration_paths(&expected, &baseline, &output, &opened, "123"),
+            BTreeSet::from(["//acme/dev/unexpected.txt".to_owned()])
+        );
+    }
+
+    #[test]
+    fn integration_readback_does_not_claim_an_unchanged_preopened_file() {
+        let path = "//acme/dev/a.txt".to_owned();
+        let expected = BTreeSet::from([path.clone()]);
+        let baseline = BTreeSet::from([path]);
+        assert!(
+            confirmed_integration_paths(
+                &expected,
+                &baseline,
+                &BTreeSet::new(),
+                &[opened_file("//Acme/dev/a.txt")],
+                "123",
+            )
+            .is_empty()
+        );
+    }
+
+    fn opened_file(path: &str) -> OpenedFile {
+        OpenedFile {
+            depot_path: path.to_owned(),
+            client_path: None,
+            action: "integrate".to_owned(),
+            change: "123".to_owned(),
+            revision: None,
+            file_type: None,
+        }
+    }
+
+    #[test]
     fn large_sync_operation_scope_stays_bounded() {
         let scopes = (0..87_246)
             .map(|index| format!("//Acme/main/{index}.bin#{index}"))
@@ -2086,6 +3016,44 @@ mod tests {
         assert_eq!(
             sync_operation_scope(&scopes),
             "//Acme/main/0.bin#0 (+87245 more)"
+        );
+    }
+
+    #[test]
+    fn operation_diagnostics_are_structured_and_bounded() {
+        let diagnostics = bounded_operation_diagnostics(Some(&"x".repeat(10_000)));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "p4_operation");
+        assert_eq!(diagnostics[0].message.chars().count(), 2048);
+        assert!(bounded_operation_diagnostics(None).is_empty());
+    }
+
+    #[test]
+    fn unknown_terminal_event_serializes_readback_and_disables_retry() {
+        let event = operation_event("op-7", "submit", OperationEventKind::Unknown, 42);
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["kind"], "unknown");
+        assert_eq!(value["startedAtMs"], 42);
+        assert_eq!(value["readBack"]["status"], "not_required");
+        assert_eq!(value["retryable"], false);
+    }
+
+    #[test]
+    fn submit_output_uses_only_the_server_returned_change_id() {
+        let string_record = serde_json::json!({ "submittedChange": "104" });
+        let number_record = serde_json::json!({ "submittedChange": 105 });
+        let unrelated = serde_json::json!({ "change": "106" });
+        assert_eq!(
+            submitted_change_from_record(string_record.as_object().unwrap()).as_deref(),
+            Some("104")
+        );
+        assert_eq!(
+            submitted_change_from_record(number_record.as_object().unwrap()).as_deref(),
+            Some("105")
+        );
+        assert_eq!(
+            submitted_change_from_record(unrelated.as_object().unwrap()),
+            None
         );
     }
 

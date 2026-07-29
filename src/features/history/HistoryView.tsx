@@ -195,6 +195,7 @@ export function HistoryView({ connection, info }: { connection: ConnectionInput;
     id="history-title"
     title={t("submittedHistory")}
     subtitle={t("submittedHistoryBody")}
+    busy={busy}
     error={error}
     notice={notice}
     operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}

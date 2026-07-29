@@ -8,9 +8,11 @@ import {
   normalizeAppError,
 } from "../../shared/api";
 import type { AppError, ConnectionInput, OpenedFile, PendingChange, ShelvedFile } from "../../shared/models";
+import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
 import { groupChanges, shouldRefreshOnFocus, visibleShelfFiles } from "./changes";
 
-export type ChangesLoadState = "loading" | "ready" | "error";
+export type ChangesLoadState = "loading" | "fresh" | "stale" | "offline" | "permission" | "partial" | "error";
+export type ShelfLoadState = "idle" | "loading" | "fresh" | "error";
 
 export function useChangesData(
   connection: ConnectionInput,
@@ -23,12 +25,14 @@ export function useChangesData(
   const [shelfFiles, setShelfFiles] = useState<Record<string, ShelvedFile[]>>({});
   const [state, setState] = useState<ChangesLoadState>("loading");
   const [shelfLoading, setShelfLoading] = useState(false);
+  const [shelfState, setShelfState] = useState<ShelfLoadState>("idle");
+  const [shelfFreshChange, setShelfFreshChange] = useState<string>();
   const [error, setError] = useState<AppError>();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const lastFocusRefresh = useRef(0);
+  const hasSuccessfulSnapshot = useRef(false);
 
   const refreshData = useCallback(() => {
-    setShelfFiles({});
     setRefreshVersion((value) => value + 1);
   }, []);
 
@@ -47,12 +51,14 @@ export function useChangesData(
         setShelvedChanges(nextShelves);
         setFiles(nextFiles);
         onFileCountChange(nextFiles.length);
-        setState("ready");
+        hasSuccessfulSnapshot.current = true;
+        setState("fresh");
       })
       .catch((reason) => {
         if (!active) return;
-        setError(normalizeAppError(reason));
-        setState("error");
+        const nextError = normalizeAppError(reason);
+        setError(nextError);
+        setState(resourceFailureFreshness(hasSuccessfulSnapshot.current, nextError));
       });
     return () => { active = false; };
   }, [connection, onFileCountChange, refreshVersion]);
@@ -70,15 +76,28 @@ export function useChangesData(
   useEffect(() => {
     if (!currentGroup.isShelved) {
       setShelfLoading(false);
+      setShelfState("idle");
+      setShelfFreshChange(undefined);
       return;
     }
     let active = true;
     setShelfLoading(true);
+    setShelfState("loading");
+    setShelfFreshChange(undefined);
     void listShelvedFiles(connection, currentGroup.id)
       .then((next) => {
-        if (active) setShelfFiles((current) => ({ ...current, [currentGroup.id]: next }));
+        if (active) {
+          setShelfFiles((current) => ({ ...current, [currentGroup.id]: next }));
+          setShelfState("fresh");
+          setShelfFreshChange(currentGroup.id);
+        }
       })
-      .catch((reason) => { if (active) setError(normalizeAppError(reason)); })
+      .catch((reason) => {
+        if (active) {
+          setShelfState("error");
+          setError(normalizeAppError(reason));
+        }
+      })
       .finally(() => { if (active) setShelfLoading(false); });
     return () => { active = false; };
   }, [connection, currentGroup.id, currentGroup.isShelved, refreshVersion]);
@@ -110,6 +129,8 @@ export function useChangesData(
     currentShelfFiles,
     state,
     shelfLoading,
+    shelfState,
+    shelfFreshChange,
     error,
     setError,
     refreshData,

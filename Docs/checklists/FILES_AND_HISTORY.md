@@ -14,13 +14,13 @@ Current status for Local Files, Depot Files, retrieval, file lifecycle, history,
 ## P0 gaps
 
 - [ ] Complete mapping, P4IGNORE, move-pair, case-only rename, collision, other-open, and lock classification before file mutations.
-- [ ] Reconcile groups add/edit/delete/move/ignored/unsafe consistently and rejects every stale preview.
-- [ ] Add server-backed mapping navigation and pagination for Depot; expose permission/maxresults as partial state.
+- [~] Reconcile groups add/edit/delete/move/ignored/unsafe and rejects action/mapping/ignore/move-pair/path/local-metadata races; opened/lock-state classification still needs end-to-end coverage before this is complete.
+- [~] Depot/client/local navigation uses bounded server-backed `where` with mapped/excluded/unmapped and partial diagnostics; Depot pagination and broader permission/maxresults coverage remain.
 - [ ] Add date-based retrieval and richer changelist/revision target selection without creating a second sync implementation.
 - [ ] Add server-side history filters and incremental cursors without a hidden global scan.
 - [ ] Compare folder/changelist states as added/changed/deleted/type-changed sets.
 - [ ] Follow rename and integration records without heuristic path joins.
-- [ ] Measure exceptional directories/lists and add virtualization only where incremental loading is insufficient.
+- [x] Measure exceptional directories/lists and add virtualization only where incremental loading is insufficient; current bounded and lazy paths remain below that threshold and expose partial limits instead.
 
 ## P1 content tools
 

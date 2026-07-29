@@ -36,6 +36,8 @@ All actions below are subject to server permission and race checks. Hide an acti
 | Jobs | attach/detach | use the Jobs workflow rather than duplicating an editor |
 | Resolve | yours, theirs, safe auto, merge | preview unresolved state; specialized merge UI must name the content chosen |
 
+Resolve preview is a typed contract, not display text parsing. Each item keeps depot/client/local identity, classifies text, binary, move/name, filetype/attribute, stream-spec, or unknown conflicts, and exposes only actions valid for that class. Text conflicts may enter the three-way editor: base, source, and workspace are immutable references, result is editable, and unresolved marker navigation is keyboard reachable. Saving is restricted to the server-returned file under the workspace root, uses an atomic replacement, marks the result with `resolve -ae`, and rereads server state. Binary, oversized, invalid UTF-8, and specialized conflicts never enter the generic text editor. Batch auto-safe may finish partially; every requested file is returned as `resolved`, `pending`, or `unknown` instead of treating process exit as proof.
+
 Revert always uses a server preview and warns when work is not protected by a shelf. For files opened for add, disk deletion is a separate persistent choice mapped to `p4 revert -w`; otherwise the local file remains.
 
 Unshelve preserves the source shelf. When the shelf belongs to another stream, derive a server-backed stream mapping to the current workspace and use `p4 unshelve -S/-P`; the same mapping applies to selected files and the whole shelf. If a shelved add collides with an untracked local file, preview all collisions together in the mapped target paths, default every item to Skip, and apply `-f` only to paths explicitly set to Overwrite. A partial normal/force batch reports what already succeeded.
@@ -63,7 +65,7 @@ An ordinary `submit -c` cannot proceed while shelved files remain, while direct 
 2. **Submit local work, delete shelf.** Warn that the old shelf is lost, delete it, then submit the local changelist.
 3. **Checkpoint and submit local work.** Replace the shelf with the complete local set, delete it, submit local work, and recreate that updated shelf if submit fails while files remain open.
 
-Default and local-only submit use their direct server paths. All modes reread pending, submitted, opened, and shelf state after success, failure, cancellation, or connection loss. Report `submitted`, `pending`, or `unknown`; never retry an unknown mutation automatically. Preparatory steps, compensation, and server diagnostics are reported separately from the submit result.
+All submit modes use the shared long-operation transport, and a same-workspace submit conflict is rejected before process launch. Submit terminal state is the typed `submitted`, `pending`, or `unknown` read-back result, never a substring parsed from diagnostics; `unknown` is not retryable and provides refresh/preflight recovery actions. Shelf-preserving modes keep their ordered compensation-safe command workflow inside that transport and return the same typed outcome plus completed steps and recovery IDs. All modes reread pending and submitted state after the command; refresh also reconciles opened and shelf state.
 
 Do not promise shelf submit from a task stream or the wrong distributed-server origin. Capability checks improve the explanation but never replace the server decision.
 

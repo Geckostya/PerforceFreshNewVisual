@@ -19,7 +19,6 @@ import type {
   Fix,
   ShelvedFile,
   SubmitMode,
-  SubmitOutcome,
   SubmitPreflightSummary,
   SubmittedChangeDetail,
   SubmittedFilterOptions,
@@ -35,15 +34,24 @@ import type {
   DepotFile,
   DepotSummary,
   TrustEntry,
+  TrustChallenge,
+  AuthStage,
   ThemeMode,
   SyncPreview,
   WorkspaceFile,
   WorkspaceLocalBatch,
+  WorkspaceMappingBatch,
+  ReconcileItem,
   ResolvePreviewItem,
+  ResolveApplyResult,
+  ResolveContent,
   RevertPreviewItem,
   ResolveMode,
   StreamLocalStrategy,
   StreamSummary,
+  StreamDetail,
+  StreamIntegrationInput,
+  StreamIntegrationPreview,
   CreateStreamInput,
   CreateStreamPreview,
   UiAgentCommand,
@@ -73,6 +81,18 @@ export async function login(input: ConnectionInput, password: string): Promise<v
   return invoke("login", { input, password });
 }
 
+export async function beginAuth(input: ConnectionInput): Promise<AuthStage> {
+  return invoke<AuthStage>("begin_auth", { input });
+}
+
+export async function selectAuthMethod(input: ConnectionInput, method: string): Promise<AuthStage> {
+  return invoke<AuthStage>("select_auth_method", { input, method });
+}
+
+export async function checkAuth(input: ConnectionInput, response: string | undefined, pollingAttempt: number): Promise<AuthStage> {
+  return invoke<AuthStage>("check_auth", { input, response, pollingAttempt });
+}
+
 export async function loginStatus(input: ConnectionInput): Promise<LoginStatus> {
   return invoke<LoginStatus>("login_status", { input });
 }
@@ -87,6 +107,14 @@ export async function revealPath(path: string): Promise<void> {
 
 export async function listTrust(input: ConnectionInput): Promise<TrustEntry[]> {
   return invoke<TrustEntry[]>("list_trust", { input });
+}
+
+export async function inspectTrust(input: ConnectionInput): Promise<TrustChallenge> {
+  return invoke<TrustChallenge>("inspect_trust", { input });
+}
+
+export async function confirmTrust(input: ConnectionInput, fingerprint: string): Promise<TrustEntry> {
+  return invoke<TrustEntry>("confirm_trust", { input, fingerprint });
 }
 
 export async function loadSettings(): Promise<AppSettings> {
@@ -143,6 +171,18 @@ export async function renameWorkspace(connection: ConnectionInput, from: string,
 
 export async function listStreams(input: ConnectionInput): Promise<StreamSummary[]> {
   return invoke<StreamSummary[]>("list_streams", { input });
+}
+
+export async function inspectStream(input: ConnectionInput, streamPath: string): Promise<StreamDetail> {
+  return invoke<StreamDetail>("inspect_stream", { input, streamPath });
+}
+
+export async function previewStreamIntegration(input: StreamIntegrationInput): Promise<StreamIntegrationPreview> {
+  return invoke<StreamIntegrationPreview>("preview_stream_integration", { input });
+}
+
+export async function startStreamIntegration(input: StreamIntegrationInput, previewIdentity: string): Promise<string> {
+  return invoke<string>("start_stream_integration", { input, previewIdentity });
 }
 
 export async function previewCreateStream(input: CreateStreamInput): Promise<CreateStreamPreview> {
@@ -245,6 +285,10 @@ export async function listWorkspaceFiles(input: ConnectionInput, scope?: string,
   return invoke<WorkspaceFile[]>("list_workspace_files", { input, scope, includeUntracked });
 }
 
+export async function mapWorkspacePaths(input: ConnectionInput, paths: string[]): Promise<WorkspaceMappingBatch> {
+  return invoke<WorkspaceMappingBatch>("map_workspace_paths", { input, paths });
+}
+
 export async function listLocalWorkspaceDirectory(input: ConnectionInput, directory: string): Promise<WorkspaceLocalBatch> {
   return invoke<WorkspaceLocalBatch>("list_local_workspace_directory", { input, directory });
 }
@@ -293,20 +337,30 @@ export async function unlockFiles(connection: ConnectionInput, change: string, d
   return invoke("unlock_files", { input: { connection, change, depotPaths } });
 }
 
-export async function resolveFiles(connection: ConnectionInput, depotPaths: string[], mode: ResolveMode): Promise<void> {
-  return invoke("resolve_files", { input: { connection, depotPaths, mode } });
+export async function resolveFiles(connection: ConnectionInput, depotPaths: string[], mode: ResolveMode): Promise<ResolveApplyResult> {
+  return invoke<ResolveApplyResult>("resolve_files", { input: { connection, depotPaths, mode } });
 }
 
 export async function previewResolve(connection: ConnectionInput, depotPaths: string[]): Promise<ResolvePreviewItem[]> {
   return invoke<ResolvePreviewItem[]>("preview_resolve", { input: connection, depotPaths });
 }
 
+export async function loadResolveContent(connection: ConnectionInput, depotPath: string): Promise<ResolveContent> {
+  return invoke<ResolveContent>("load_resolve_content", { input: connection, depotPath });
+}
+
+export async function saveResolveResult(connection: ConnectionInput, depotPath: string, localPath: string, previewToken: string, result: string): Promise<ResolveApplyResult> {
+  return invoke<ResolveApplyResult>("save_resolve_result", { input: { connection, depotPath, localPath, previewToken, result } });
+}
+
 export async function moveFile(connection: ConnectionInput, change: string, source: string, destination: string): Promise<void> {
   return invoke("move_file", { input: { connection, change, source, destination } });
 }
 
-export async function startReconcile(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<string> {
-  return invoke<string>("start_reconcile", { input: { connection, change, depotPaths } });
+export async function startReconcile(connection: ConnectionInput, change: string, previewScope: string, items: ReconcileItem[]): Promise<string> {
+  return invoke<string>("start_reconcile", {
+    input: { connection, change, previewScope, previewToken: items[0]?.previewToken || "", items },
+  });
 }
 
 export async function startReconcilePreview(input: ConnectionInput, scope?: string): Promise<string> {
@@ -378,15 +432,6 @@ export async function diffShelvedFile(
   return invoke<FileDiff>("diff_shelved_file", {
     input: { connection, change, depotPath, againstLocal, mode },
   });
-}
-
-export async function submitChange(
-  connection: ConnectionInput,
-  change: string,
-  description?: string,
-  mode: SubmitMode = "local",
-): Promise<SubmitOutcome> {
-  return invoke<SubmitOutcome>("submit_change", { input: { connection, change, description, mode } });
 }
 
 export async function startSubmit(

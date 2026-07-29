@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "../shared/i18n";
 import { filterPaletteCommands, type PaletteCommandId } from "./commands";
 
 type View = "changes" | "workspace" | "streams" | "history" | "depot" | "jobs" | "labels" | "shelves";
 
-export function CommandPalette({ onNavigate, onFocusGoTo }: { onNavigate: (view: View) => void; onFocusGoTo: () => void }) {
+export function CommandPalette({ onNavigate, onFocusGoTo, onShowShortcuts }: { onNavigate: (view: View) => void; onFocusGoTo: () => void; onShowShortcuts: () => void }) {
   const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const palette = useRef<HTMLElement>(null);
+  const paletteReturnFocus = useRef<HTMLElement | null>(null);
   const commands = useMemo(() => [
     { id: "workspace" as const, searchText: `${t("workspaceFiles")} workspace` },
     { id: "changes" as const, searchText: `${t("myChanges")} changes` },
@@ -19,6 +21,7 @@ export function CommandPalette({ onNavigate, onFocusGoTo }: { onNavigate: (view:
     { id: "labels" as const, searchText: `${t("labelsTitle")} labels` },
     { id: "shelves" as const, searchText: `${t("shelvesTitle")} shelves` },
     { id: "goTo" as const, searchText: `${t("globalGoTo")} go to` },
+    { id: "shortcuts" as const, searchText: `${t("keyboardShortcuts")} shortcuts keyboard` },
   ], [t]);
   const filtered = useMemo(() => filterPaletteCommands(commands, query), [commands, query]);
 
@@ -29,6 +32,7 @@ export function CommandPalette({ onNavigate, onFocusGoTo }: { onNavigate: (view:
         const editing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
         if (!editing || open) {
           event.preventDefault();
+          if (!open && document.activeElement instanceof HTMLElement) paletteReturnFocus.current = document.activeElement;
           setOpen((value) => !value);
         }
         return;
@@ -45,21 +49,40 @@ export function CommandPalette({ onNavigate, onFocusGoTo }: { onNavigate: (view:
 
   useEffect(() => { setActive(0); }, [query]);
 
+  useEffect(() => {
+    if (!open) return;
+    function trapTab(event: KeyboardEvent) {
+      if (event.key !== "Tab" || !palette.current) return;
+      const items = [...palette.current.querySelectorAll<HTMLElement>("input:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex='-1'])")];
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    document.addEventListener("keydown", trapTab, true);
+    return () => {
+      document.removeEventListener("keydown", trapTab, true);
+      if (paletteReturnFocus.current?.isConnected && paletteReturnFocus.current !== document.body) paletteReturnFocus.current.focus();
+    };
+  }, [open]);
+
   function execute(id: PaletteCommandId) {
     setOpen(false);
     setQuery("");
     if (id === "goTo") onFocusGoTo();
+    else if (id === "shortcuts") onShowShortcuts();
     else onNavigate(id);
   }
 
   function label(id: PaletteCommandId) {
-    const keys = { workspace: "filesTitle", changes: "myChanges", streams: "streamsTitle", history: "submittedHistory", depot: "depotBrowser", jobs: "jobsTitle", labels: "labelsTitle", shelves: "shelvesTitle", goTo: "globalGoTo" } as const;
+    const keys = { workspace: "filesTitle", changes: "myChanges", streams: "streamsTitle", history: "submittedHistory", depot: "depotBrowser", jobs: "jobsTitle", labels: "labelsTitle", shelves: "shelvesTitle", goTo: "globalGoTo", shortcuts: "keyboardShortcuts" } as const;
     return t(keys[id]);
   }
 
   if (!open) return null;
   return <div className="command-palette-layer" role="presentation" onMouseDown={() => setOpen(false)}>
-    <section className="command-palette" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" onMouseDown={(event) => event.stopPropagation()}>
+    <section ref={palette} className="command-palette" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" onMouseDown={(event) => event.stopPropagation()}>
       <h2 id="command-palette-title">{t("commandPalette")}</h2>
       <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("commandPalettePlaceholder")} aria-label={t("commandPalette")} />
       <div className="command-palette-list" role="listbox">

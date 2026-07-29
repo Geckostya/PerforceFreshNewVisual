@@ -1,11 +1,25 @@
-import { useState } from "react";
-import { revealPath } from "./api";
+import { useEffect, useState } from "react";
+import { mapWorkspacePaths, revealPath } from "./api";
 import { useLocale } from "./i18n";
+import type { ConnectionInput, WorkspaceMapping } from "./models";
 
-export function PathActions({ depotPath, localPath }: { depotPath: string; localPath?: string }) {
+export function PathActions({ depotPath, localPath, connection, onNavigateLocal }: { depotPath: string; localPath?: string; connection?: ConnectionInput; onNavigateLocal?: (mapping: WorkspaceMapping) => void }) {
   const { t } = useLocale();
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
+  const [mapping, setMapping] = useState<WorkspaceMapping>();
+
+  useEffect(() => {
+    let active = true;
+    setMapping(undefined);
+    if (!connection) return () => { active = false; };
+    void mapWorkspacePaths(connection, [depotPath])
+      .then((batch) => { if (active) setMapping(batch.mappings[0]); })
+      .catch(() => { if (active) setError(t("mappingLookupFailed")); });
+    return () => { active = false; };
+  }, [connection?.port, connection?.user, connection?.client, depotPath]);
+
+  const confirmedLocalPath = mapping?.state === "mapped" ? mapping.localPath : localPath;
 
   async function copy(path: string) {
     setError("");
@@ -19,11 +33,11 @@ export function PathActions({ depotPath, localPath }: { depotPath: string; local
   }
 
   async function reveal() {
-    if (!localPath) return;
+    if (!confirmedLocalPath) return;
     setError("");
-    try { await revealPath(localPath); }
+    try { await revealPath(confirmedLocalPath); }
     catch { setError(t("revealPathFailed")); }
   }
 
-  return <div className="path-actions"><button type="button" className="secondary-button" onClick={() => void copy(depotPath)}>{copied ? t("pathCopied") : t("copyDepotPath")}</button>{localPath && <><button type="button" className="secondary-button" onClick={() => void copy(localPath)}>{t("copyLocalPath")}</button><button type="button" className="secondary-button" onClick={() => void reveal()}>{t("revealInExplorer")}</button></>}{error && <small role="alert">{error}</small>}</div>;
+  return <div className="path-actions"><button type="button" className="secondary-button" onClick={() => void copy(mapping?.depotPath || depotPath)}>{copied ? t("pathCopied") : t("copyDepotPath")}</button>{mapping?.state === "mapped" && mapping.clientPath && <button type="button" className="secondary-button" onClick={() => void copy(mapping.clientPath!)}>{t("copyClientPath")}</button>}{confirmedLocalPath && <><button type="button" className="secondary-button" onClick={() => void copy(confirmedLocalPath)}>{t("copyLocalPath")}</button><button type="button" className="secondary-button" onClick={() => void reveal()}>{t("revealInExplorer")}</button></>}{mapping?.state === "mapped" && onNavigateLocal && <button data-agent-id="mapping-open-local" type="button" className="secondary-button" onClick={() => onNavigateLocal(mapping)}>{t("showInLocalFiles")}</button>}{mapping && mapping.state !== "mapped" && <small>{t(mapping.state === "excluded" ? "mappingExcluded" : "mappingUnmapped")}</small>}{error && <small role="alert">{error}</small>}</div>;
 }

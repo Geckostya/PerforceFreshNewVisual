@@ -81,13 +81,14 @@ export function formatDepotDate(value: string | undefined, language: string): st
     : value;
 }
 
-export function DepotOverview({ connection, refreshKey, initialScope, onDownload, onContextMenu, onBusyChange }: {
+export function DepotOverview({ connection, refreshKey, initialScope, onDownload, onContextMenu, onBusyChange, onNavigateLocal }: {
   connection: ConnectionInput;
   refreshKey: number;
   initialScope?: string;
   onDownload: (target: DepotOverviewMenuTarget) => void;
   onContextMenu: (target: DepotOverviewMenuTarget, position: MenuPosition) => void;
   onBusyChange?: (busy: boolean) => void;
+  onNavigateLocal?: (scope: string) => void;
 }) {
   const { language, t } = useLocale();
   const [depots, setDepots] = useState<DepotSummary[]>([]);
@@ -320,7 +321,7 @@ export function DepotOverview({ connection, refreshKey, initialScope, onDownload
         {!selected || !currentTarget ? <EmptyState title={t("depotInspectorTitle")} body={t("depotOverviewSelectBody")} /> : <>
           <div className="depot-overview-inspector-heading">
             <div><span>{selected.kind === "depot" ? t("depotOverviewDepot") : selected.kind === "file" ? t("depotOverviewFile") : t("depotOverviewFolder")}</span><h2>{selectedName}</h2><p title={selected.path}>{selected.path}</p></div>
-            <div className="depot-overview-inspector-actions"><PathActions depotPath={selected.path} /><button data-agent-id="depot-overview-download" className="primary-button" type="button" onClick={() => onDownload(currentTarget)}>{t("depotDownloadToWorkspace")}</button></div>
+            <div className="depot-overview-inspector-actions"><PathActions depotPath={selected.path} connection={connection} onNavigateLocal={(mapping) => mapping.depotPath && onNavigateLocal?.(mapping.depotPath)} /><button data-agent-id="depot-overview-download" className="primary-button" type="button" onClick={() => onDownload(currentTarget)}>{t("depotDownloadToWorkspace")}</button></div>
           </div>
 
           {selected.kind === "file" ? <>

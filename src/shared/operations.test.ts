@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationEvent } from "./models";
-import { isOperationActive, isOperationTerminal, operationProgress, reduceOperationSnapshots, startObservedOperation } from "./operations";
+import { isOperationActive, isOperationTerminal, operationAnnouncementPriority, operationConnectionKey, operationProgress, reduceOperationSnapshots, startObservedOperation } from "./operations";
 
 const eventApi = vi.hoisted(() => ({ listen: vi.fn(), unlisten: vi.fn() }));
 
@@ -16,6 +16,15 @@ const event = (operationId: string, kind: OperationEvent["kind"], processed = 0)
 });
 
 describe("operation snapshots", () => {
+  it("announces terminal problems assertively without repeating progress", () => {
+    expect(operationAnnouncementPriority("progress")).toBe("none");
+    expect(operationAnnouncementPriority("started")).toBe("polite");
+    expect(operationAnnouncementPriority("completed")).toBe("polite");
+    expect(operationAnnouncementPriority("failed")).toBe("assertive");
+    expect(operationAnnouncementPriority("partial")).toBe("assertive");
+    expect(operationAnnouncementPriority("unknown")).toBe("assertive");
+  });
+
   beforeEach(() => {
     eventApi.listen.mockReset();
     eventApi.unlisten.mockReset();
@@ -45,6 +54,49 @@ describe("operation snapshots", () => {
     expect(isOperationTerminal("progress")).toBe(false);
   });
 
+  it("does not regress a terminal result when late progress arrives", () => {
+    let state = reduceOperationSnapshots([], event("op-1", "started"));
+    state = reduceOperationSnapshots(state, event("op-1", "unknown", 2));
+    state = reduceOperationSnapshots(state, event("op-1", "progress", 3));
+
+    expect(state[0]).toMatchObject({ status: "unknown", processed: 2, retryable: false });
+  });
+
+  it("keeps cancel requested active until a terminal event arrives", () => {
+    let state = reduceOperationSnapshots([], event("op-1", "started"));
+    state = reduceOperationSnapshots(state, event("op-1", "cancel_requested"));
+    expect(isOperationActive(state[0].status)).toBe(true);
+    state = reduceOperationSnapshots(state, event("op-1", "cancelled"));
+    expect(isOperationTerminal(state[0].status)).toBe(true);
+  });
+
+  it("preserves bounded session history", () => {
+    let state = [] as ReturnType<typeof reduceOperationSnapshots>;
+    for (let index = 0; index < 35; index += 1) {
+      state = reduceOperationSnapshots(state, event(`op-${index}`, "completed"));
+    }
+    expect(state).toHaveLength(30);
+    expect(state[0].operationId).toBe("op-5");
+  });
+
+  it("carries item diagnostics, compensation, and read-back metadata", () => {
+    const state = reduceOperationSnapshots([], {
+      ...event("op-1", "partial"),
+      diagnostics: [{ code: "apply_failed", message: "bounded" }],
+      itemResults: [{
+        itemId: "//main/a",
+        path: "//main/a",
+        status: "failed",
+        reason: "locked",
+        compensation: "unknown",
+        recoveryActionId: "refresh_workspace",
+      }],
+      readBack: { status: "failed", affectedState: ["workspace_files"] },
+    });
+    expect(state[0].itemResults[0]).toMatchObject({ status: "failed", compensation: "unknown" });
+    expect(state[0].readBack?.status).toBe("failed");
+  });
+
   it("preserves bounded retry metadata", () => {
     let snapshots = reduceOperationSnapshots([], { ...event("op-sync", "started"), scope: "2 paths", scopes: ["//main/a", "//main/b"] });
     snapshots = reduceOperationSnapshots(snapshots, event("op-sync", "progress", 1));
@@ -52,6 +104,16 @@ describe("operation snapshots", () => {
     expect(snapshot.scope).toBe("2 paths");
     expect(snapshot.scopes).toEqual(["//main/a", "//main/b"]);
     expect(snapshot.retryable).toBe(true);
+  });
+
+  it("keeps the originating connection identity through a later terminal event", () => {
+    const connection = { port: "p4-a:1666", user: "alex", client: "main" };
+    const origin = operationConnectionKey(connection);
+    let snapshots = reduceOperationSnapshots([], event("op-sync", "started"), origin);
+    snapshots = reduceOperationSnapshots(snapshots, event("op-sync", "failed"), operationConnectionKey({ ...connection, client: "other" }));
+
+    expect(snapshots[0].connectionKey).toBe(origin);
+    expect(snapshots[0].connectionKey).not.toBe(operationConnectionKey({ ...connection, client: "other" }));
   });
 
   it("resets progress timing when reconcile changes phase", () => {
@@ -80,6 +142,30 @@ describe("operation snapshots", () => {
 
     expect(operationId).toBe("op-early");
     expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(eventApi.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("ignores early events from another operation of the same kind", async () => {
+    let emit: ((event: { payload: OperationEvent }) => void) | undefined;
+    eventApi.listen.mockImplementation(async (_name, callback) => {
+      emit = callback;
+      return eventApi.unlisten;
+    });
+    const onEvent = vi.fn();
+
+    const operationId = await startObservedOperation("sync", async () => {
+      emit?.({ payload: event("op-other", "started") });
+      emit?.({ payload: event("op-other", "completed", 1) });
+      emit?.({ payload: event("op-owned", "started") });
+      emit?.({ payload: event("op-owned", "completed", 2) });
+      return "op-owned";
+    }, onEvent);
+
+    expect(operationId).toBe("op-owned");
+    expect(onEvent.mock.calls.map(([payload]) => [payload.operationId, payload.kind])).toEqual([
+      ["op-owned", "started"],
+      ["op-owned", "completed"],
+    ]);
     expect(eventApi.unlisten).toHaveBeenCalledOnce();
   });
 

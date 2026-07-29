@@ -1,13 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Activity, X } from "lucide-react";
 import { cancelOperation, startSync } from "./api";
-import { useLocale } from "./i18n";
+import { useLocale, type TranslationKey } from "./i18n";
 import type { ConnectionInput, OperationEvent } from "./models";
-import { formatEta, isOperationActive, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
+import { formatEta, isOperationActive, operationAnnouncementPriority, operationConnectionKey, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
 import { ActionDialog } from "./View";
 
-export function OperationsCenter({ connection }: { connection: ConnectionInput }) {
+export function operationLabelKey(kind: string): TranslationKey {
+  if (kind === "submit") return "operationSubmit";
+  if (kind === "reconcile_preview") return "operationReconcilePreview";
+  if (kind === "reconcile") return "operationReconcile";
+  if (kind === "integrate") return "operationIntegrate";
+  return "operationSync";
+}
+
+export function OperationsCenter({ connection, onRecover }: {
+  connection: ConnectionInput;
+  onRecover: (actionId: string) => void;
+}) {
   const { t } = useLocale();
   const [items, setItems] = useState<OperationSnapshot[]>([]);
   const [open, setOpen] = useState(false);
@@ -16,15 +27,44 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   const [cancelling, setCancelling] = useState<string[]>([]);
   const [retryBusy, setRetryBusy] = useState(false);
   const [retryCandidate, setRetryCandidate] = useState<OperationSnapshot>();
+  const [politeAnnouncement, setPoliteAnnouncement] = useState("");
+  const [assertiveAnnouncement, setAssertiveAnnouncement] = useState("");
+  const connectionKey = operationConnectionKey(connection);
+  const connectionKeyRef = useRef(connectionKey);
+  connectionKeyRef.current = connectionKey;
   const activeCount = items.filter((item) => isOperationActive(item.status)).length;
+
+  useEffect(() => {
+    setRetryCandidate(undefined);
+    setRetryError(false);
+  }, [connectionKey]);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<OperationEvent>("operation-event", (event) => {
       if (!disposed) {
-        setItems((current) => reduceOperationSnapshots(current, event.payload));
+        setItems((current) => reduceOperationSnapshots(current, event.payload, connectionKeyRef.current));
+        if (event.payload.kind === "cancel_requested") {
+          setCancelling((current) => [...new Set([...current, event.payload.operationId])]);
+        }
         if (!isOperationActive(event.payload.kind)) setCancelling((current) => current.filter((id) => id !== event.payload.operationId));
+        const priority = operationAnnouncementPriority(event.payload.kind);
+        if (priority !== "none") {
+          const outcome = event.payload.kind === "started"
+            ? t("operationStarted")
+            : event.payload.kind === "cancel_requested"
+              ? t("operationCancelRequested")
+              : operationStatusLabel(event.payload.kind);
+          const announcement = `${operationLabel(event.payload.operationKind)}: ${outcome}`;
+          if (priority === "assertive") {
+            setPoliteAnnouncement("");
+            setAssertiveAnnouncement(announcement);
+          } else {
+            setAssertiveAnnouncement("");
+            setPoliteAnnouncement(announcement);
+          }
+        }
         setOpen(true);
       }
     }).then((stop) => {
@@ -46,7 +86,7 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   }
 
   async function retry(item: OperationSnapshot) {
-    if (!item.retryable || item.operationKind !== "sync") return;
+    if (!item.retryable || item.operationKind !== "sync" || item.connectionKey !== connectionKey) return;
     setRetryBusy(true);
     setRetryError(false);
     try {
@@ -58,10 +98,7 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   }
 
   function operationLabel(kind: string) {
-    if (kind === "submit") return t("operationSubmit");
-    if (kind === "reconcile_preview") return t("operationReconcilePreview");
-    if (kind === "reconcile") return t("operationReconcile");
-    return t("operationSync");
+    return t(operationLabelKey(kind));
   }
 
   function operationPhase(item: OperationSnapshot) {
@@ -69,6 +106,16 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
     if (item.phase === "validate") return t("reconcilePhaseValidate");
     if (item.phase === "apply") return t("reconcilePhaseApply");
     return undefined;
+  }
+
+  function operationStatusLabel(status: OperationEvent["kind"]) {
+    if (status === "completed") return t("operationCompleted");
+    if (status === "cancelled") return t("operationCancelled");
+    if (status === "cancel_requested") return t("operationCancelling");
+    if (status === "partial") return t("operationPartial");
+    if (status === "unknown") return t("operationUnknown");
+    if (status === "failed") return t("operationFailed");
+    return t("operationRunning");
   }
 
   function operationSummary(item: OperationSnapshot) {
@@ -89,20 +136,21 @@ export function OperationsCenter({ connection }: { connection: ConnectionInput }
   }
 
   if (items.length === 0) return null;
-  return <><div className={`operations-center${open ? " open" : ""}`}>
-    {open && <section className="operations-panel" aria-label={t("operationsCenter")}>
+  return <><div className="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div><div className="sr-only" aria-live="assertive" aria-atomic="true">{assertiveAnnouncement}</div><div className={`operations-center${open ? " open" : ""}`} data-focus-pane>
+    {open && <section data-agent-id="operations-panel" className="operations-panel" role="region" aria-label={t("operationsCenter")} aria-busy={activeCount > 0 || undefined} tabIndex={-1}>
       <header><div><strong>{t("operationsCenter")}</strong><span>{activeCount} {t("operationsActive")}</span></div><button type="button" onClick={() => setOpen(false)} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></header>
       <div className="operations-list">
         {retryError && <p className="error-banner" role="alert">{t("operationRetryFailed")}</p>}
         {cancelError && <p className="error-banner" role="alert">{t("operationCancelFailed")}</p>}
-        {[...items].reverse().slice(0, 12).map((item) => { const progress = operationProgress(item); return <article className={`operation-item operation-${item.status}`} key={item.operationId}>
-          <div><strong>{operationLabel(item.operationKind)}{cancelling.includes(item.operationId) ? <span className="operation-state">{t("operationCancelling")}</span> : item.status === "cancelled" ? <span className="operation-state">{t("operationCancelled")}</span> : item.status === "completed" ? <span className="operation-state">{t("operationCompleted")}</span> : null}</strong><small className="operation-summary">{operationSummary(item)}</small>{item.currentPath && <small className="operation-current-path" title={item.currentPath}>{item.currentPath}</small>}{progress.ratio !== undefined && <span className="operation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}{item.message && <span className="operation-message">{item.message}</span>}</div>
+        {[...items].reverse().slice(0, 12).map((item) => { const progress = operationProgress(item); const recovery = item.itemResults.find((result) => result.recoveryActionId)?.recoveryActionId; const succeeded = item.itemResults.filter((result) => result.status === "succeeded").length; const failed = item.itemResults.filter((result) => result.status === "failed").length; const skipped = item.itemResults.filter((result) => result.status === "skipped").length; return <article className={`operation-item operation-${item.status}`} key={item.operationId}>
+          <div><strong>{operationLabel(item.operationKind)}<span className="operation-state">{cancelling.includes(item.operationId) && isOperationActive(item.status) ? t("operationCancelling") : operationStatusLabel(item.status)}</span></strong><small className="operation-summary">{operationSummary(item)}</small>{item.currentPath && <small className="operation-current-path" title={item.currentPath}>{item.currentPath}</small>}{progress.ratio !== undefined && <span className="operation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}{item.message && <span className="operation-message">{item.message}</span>}{item.itemResults.length > 0 && <small className="operation-summary">{t("operationSucceeded")}: {succeeded} · {t("operationFailedItems")}: {failed} · {t("operationSkipped")}: {skipped}</small>}{item.readBack && item.readBack.status !== "succeeded" && item.readBack.status !== "not_required" && <small className="operation-message">{t("operationReadBack")}: {item.readBack.status}</small>}</div>
           {isOperationActive(item.status) && <button type="button" className="secondary-button" onClick={() => void cancel(item)} disabled={cancelling.includes(item.operationId)}>{cancelling.includes(item.operationId) ? t("operationCancelling") : t("cancelOperation")}</button>}
-          {(item.status === "failed" || item.status === "cancelled") && item.retryable && item.operationKind === "sync" && <button type="button" className="secondary-button" onClick={() => setRetryCandidate(item)}>{t("retryOperation")}</button>}
+          {(item.status === "failed" || item.status === "cancelled" || item.status === "partial") && item.retryable && item.operationKind === "sync" && item.connectionKey === connectionKey && <button type="button" className="secondary-button" onClick={() => setRetryCandidate(item)}>{t("retryOperation")}</button>}
+          {recovery && item.connectionKey === connectionKey && <button type="button" className="secondary-button" onClick={() => { onRecover(recovery); setOpen(false); }}>{t("operationRecoveryAction")}</button>}
         </article>; })}
       </div>
     </section>}
-    <button className={`operations-toggle${activeCount > 0 ? " active" : ""}`} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={t("operationsCenter")}>
+    <button data-agent-id="operations-toggle" data-pane-entry className={`operations-toggle${activeCount > 0 ? " active" : ""}`} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={t("operationsCenter")}>
       <Activity className="ui-icon" aria-hidden="true" />{activeCount > 0 ? `${activeCount} ${t("operationsActive")}` : t("operationsCenter")}
     </button>
   </div>{retryCandidate && <ActionDialog title={t("retryOperation")} confirmLabel={t("retryOperation")} busy={retryBusy} onClose={() => setRetryCandidate(undefined)} onConfirm={() => void retry(retryCandidate)}><p>{t("operationRetryConfirm")}</p>{retryCandidate.scope && <strong>{retryCandidate.scope}</strong>}</ActionDialog>}</>;
