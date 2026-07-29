@@ -1,25 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
-import { cancelOperation, createChange, listPendingChanges, normalizeAppError, previewStreamIntegration, startStreamIntegration } from "../../shared/api";
+import { useEffect, useState } from "react";
+import { createChange, listPendingChanges, normalizeAppError, previewStreamIntegration, startStreamIntegration } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
-import type { AppError, CapabilitySnapshot, ConnectionInput, OperationEvent, PendingChange, StreamIntegrationInput, StreamIntegrationPreview, StreamSummary } from "../../shared/models";
+import type { AppError, ConnectionInput, OperationEvent, PendingChange, StreamIntegrationInput, StreamIntegrationPreview } from "../../shared/models";
 import { isOperationTerminal, startObservedOperation } from "../../shared/operations";
 import { CompactEmpty, Modal } from "../../shared/View";
-import { streamIntegrationCandidates } from "./streams";
+import type { StreamIntegrationCandidate } from "./streams";
 
 interface Props {
   connection: ConnectionInput;
-  streams: StreamSummary[];
-  currentStream: string;
-  capabilities?: CapabilitySnapshot;
+  candidates: StreamIntegrationCandidate[];
   initialSource?: string;
   onClose: () => void;
   onResolve: (change: string, paths: string[]) => void;
   onReview: (change: string, openSubmit: boolean) => void;
 }
 
-export function StreamIntegrationDialog({ connection, streams, currentStream, capabilities, initialSource, onClose, onResolve, onReview }: Props) {
+export function StreamIntegrationDialog({ connection, candidates, initialSource, onClose, onResolve, onReview }: Props) {
   const { t } = useLocale();
-  const candidates = useMemo(() => streamIntegrationCandidates(streams, currentStream).filter((candidate) => capabilities?.commands[candidate.direction === "mergeDown" ? "integrate" : "copy"]?.state !== "unsupported"), [streams, currentStream, capabilities]);
   const preferred = candidates.findIndex((candidate) => candidate.sourceStream === initialSource);
   const [candidateIndex, setCandidateIndex] = useState(Math.max(0, preferred));
   const [changes, setChanges] = useState<PendingChange[]>([]);
@@ -118,12 +115,11 @@ export function StreamIntegrationDialog({ connection, streams, currentStream, ca
         {(preview.partial || preview.truncated || preview.warnings.length > 0) && <div className="notice-banner" role="status">{preview.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
         {preview.items.length === 0 ? <CompactEmpty text={t("streamIntegrationEmpty")} /> : <div className="file-selection-summary">{preview.items.slice(0, 200).map((item) => <span key={`${item.targetPath}-${item.action}`}><strong>{item.action}</strong> {item.sourcePath} → {item.targetPath}{item.sourceStartRevision || item.sourceEndRevision ? ` (${item.sourceStartRevision || "?"}..${item.sourceEndRevision || "?"})` : ""}</span>)}</div>}
       </section>}
-      {operation && <div className={`notice-banner${operation.kind === "failed" || operation.kind === "unknown" || operation.kind === "partial" ? " warning" : ""}`} role="status"><strong>{t(`operationStatus.${operation.kind}`)}</strong><span>{operation.message}</span><span>{operation.processed} / {operation.totalFiles ?? preview?.items.length ?? 0}</span></div>}
+      {operation && <div className={`notice-banner${operation.kind === "failed" || operation.kind === "unknown" || operation.kind === "partial" ? " warning" : ""}`}><strong>{t(`operationStatus.${operation.kind}`)}</strong><span>{operation.message}</span><span>{operation.processed} / {operation.totalFiles ?? preview?.items.length ?? 0}</span></div>}
     </div>
     <div className="dialog-actions">
       <button className="secondary-button" type="button" disabled={busy || operationActive} onClick={onClose}>{t("close")}</button>
       {!operationActive && succeededPaths.length > 0 && <><button type="button" onClick={() => onResolve(targetChange, succeededPaths)}>{t("streamIntegrationResolve")}</button><button type="button" onClick={() => onReview(targetChange, false)}>{t("streamIntegrationReview")}</button><button className="primary-button" type="button" onClick={() => onReview(targetChange, true)}>{t("streamIntegrationSubmit")}</button></>}
-      {operationActive && <button className="danger-button" type="button" onClick={() => void cancelOperation(operation!.operationId)}>{t("cancelOperation")}</button>}
       {!operation && !preview && <button className="primary-button" type="button" disabled={busy || !candidate} onClick={() => void runPreview()}>{t("preview")}</button>}
       {!operation && preview && <><button type="button" disabled={busy} onClick={() => void runPreview()}>{t("refreshPreview")}</button><button className="primary-button" type="button" disabled={busy || preview.partial || preview.truncated || preview.items.length === 0} onClick={() => void apply()}>{t("streamIntegrationApply")}</button></>}
     </div>
