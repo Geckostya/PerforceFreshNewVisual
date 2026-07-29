@@ -96,7 +96,7 @@ export function ResolveDialog({ connection, item, onClose, onResolved, onError }
     if (!content || conflicts.length) return;
     setBusy(true);
     try {
-      const readBack = await saveResolveResult(connection, item.depotPath, content.localPath, result);
+      const readBack = await saveResolveResult(connection, item.depotPath, content.localPath, content.previewToken, result);
       const state = readBack.items.find((entry) => entry.depotPath === item.depotPath)?.state;
       if (state !== "resolved") {
         throw { kind: "partial_result", message: t("resolveStillPending"), hints: [] } satisfies AppError;

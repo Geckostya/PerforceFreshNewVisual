@@ -63,17 +63,17 @@ pub(super) fn build(input: &ConnectionInput, info: &P4Info) -> CapabilitySnapsho
     facts.insert(
         "caseSensitiveMapping".to_owned(),
         match info.case_handling.as_deref().map(str::to_ascii_lowercase) {
-            Some(value) if value.contains("sensitive") && !value.contains("insensitive") => fact(
+            Some(value) if value == "sensitive" => fact(
                 CapabilityState::Supported,
                 "case_sensitive",
                 CapabilityEvidence::Server,
             ),
-            Some(_) => fact(
+            Some(value) if value == "insensitive" || value == "hybrid" => fact(
                 CapabilityState::Unsupported,
                 "case_insensitive",
                 CapabilityEvidence::Server,
             ),
-            None => fact(
+            _ => fact(
                 CapabilityState::Unknown,
                 "case_unknown",
                 CapabilityEvidence::Unavailable,
@@ -360,6 +360,16 @@ mod tests {
             "case_sensitive"
         );
         assert_eq!(snapshot.commands["login2"].reason, "probe_unavailable");
+
+        let unknown_info = P4Info {
+            case_handling: Some("future-mode".to_owned()),
+            ..P4Info::default()
+        };
+        let unknown = build(&input, &unknown_info);
+        assert_eq!(
+            unknown.facts["caseSensitiveMapping"].state,
+            CapabilityState::Unknown
+        );
     }
 
     #[test]

@@ -502,6 +502,7 @@ export interface ResolveContentSide { identifier: string; text?: string; binary:
 export interface ResolveContent {
   depotPath: string;
   localPath: string;
+  previewToken: string;
   base: ResolveContentSide;
   source: ResolveContentSide;
   workspace: ResolveContentSide;

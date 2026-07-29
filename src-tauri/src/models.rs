@@ -793,6 +793,7 @@ pub struct ResolveContentSide {
 pub struct ResolveContent {
     pub depot_path: String,
     pub local_path: String,
+    pub preview_token: String,
     pub base: ResolveContentSide,
     pub source: ResolveContentSide,
     pub workspace: ResolveContentSide,
@@ -1182,6 +1183,7 @@ pub struct ResolveResultInput {
     pub connection: ConnectionInput,
     pub depot_path: String,
     pub local_path: String,
+    pub preview_token: String,
     pub result: String,
 }
 

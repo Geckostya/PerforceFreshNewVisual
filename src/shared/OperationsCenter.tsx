@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Activity, X } from "lucide-react";
 import { cancelOperation, startSync } from "./api";
 import { useLocale } from "./i18n";
 import type { ConnectionInput, OperationEvent } from "./models";
-import { formatEta, isOperationActive, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
+import { formatEta, isOperationActive, operationConnectionKey, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
 import { ActionDialog } from "./View";
 
 export function OperationsCenter({ connection, onRecover }: {
@@ -20,14 +20,22 @@ export function OperationsCenter({ connection, onRecover }: {
   const [retryBusy, setRetryBusy] = useState(false);
   const [retryCandidate, setRetryCandidate] = useState<OperationSnapshot>();
   const [announcement, setAnnouncement] = useState("");
+  const connectionKey = operationConnectionKey(connection);
+  const connectionKeyRef = useRef(connectionKey);
+  connectionKeyRef.current = connectionKey;
   const activeCount = items.filter((item) => isOperationActive(item.status)).length;
+
+  useEffect(() => {
+    setRetryCandidate(undefined);
+    setRetryError(false);
+  }, [connectionKey]);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<OperationEvent>("operation-event", (event) => {
       if (!disposed) {
-        setItems((current) => reduceOperationSnapshots(current, event.payload));
+        setItems((current) => reduceOperationSnapshots(current, event.payload, connectionKeyRef.current));
         if (event.payload.kind === "cancel_requested") {
           setCancelling((current) => [...new Set([...current, event.payload.operationId])]);
         }
@@ -61,7 +69,7 @@ export function OperationsCenter({ connection, onRecover }: {
   }
 
   async function retry(item: OperationSnapshot) {
-    if (!item.retryable || item.operationKind !== "sync") return;
+    if (!item.retryable || item.operationKind !== "sync" || item.connectionKey !== connectionKey) return;
     setRetryBusy(true);
     setRetryError(false);
     try {
@@ -123,8 +131,8 @@ export function OperationsCenter({ connection, onRecover }: {
         {[...items].reverse().slice(0, 12).map((item) => { const progress = operationProgress(item); const recovery = item.itemResults.find((result) => result.recoveryActionId)?.recoveryActionId; const succeeded = item.itemResults.filter((result) => result.status === "succeeded").length; const failed = item.itemResults.filter((result) => result.status === "failed").length; const skipped = item.itemResults.filter((result) => result.status === "skipped").length; return <article className={`operation-item operation-${item.status}`} key={item.operationId}>
           <div><strong>{operationLabel(item.operationKind)}<span className="operation-state">{cancelling.includes(item.operationId) && isOperationActive(item.status) ? t("operationCancelling") : operationStatusLabel(item.status)}</span></strong><small className="operation-summary">{operationSummary(item)}</small>{item.currentPath && <small className="operation-current-path" title={item.currentPath}>{item.currentPath}</small>}{progress.ratio !== undefined && <span className="operation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.ratio * 100)}><span style={{ width: `${progress.ratio * 100}%` }} /></span>}{item.message && <span className="operation-message">{item.message}</span>}{item.itemResults.length > 0 && <small className="operation-summary">{t("operationSucceeded")}: {succeeded} · {t("operationFailedItems")}: {failed} · {t("operationSkipped")}: {skipped}</small>}{item.readBack && item.readBack.status !== "succeeded" && item.readBack.status !== "not_required" && <small className="operation-message">{t("operationReadBack")}: {item.readBack.status}</small>}</div>
           {isOperationActive(item.status) && <button type="button" className="secondary-button" onClick={() => void cancel(item)} disabled={cancelling.includes(item.operationId)}>{cancelling.includes(item.operationId) ? t("operationCancelling") : t("cancelOperation")}</button>}
-          {(item.status === "failed" || item.status === "cancelled" || item.status === "partial") && item.retryable && item.operationKind === "sync" && <button type="button" className="secondary-button" onClick={() => setRetryCandidate(item)}>{t("retryOperation")}</button>}
-          {recovery && <button type="button" className="secondary-button" onClick={() => { onRecover(recovery); setOpen(false); }}>{t("operationRecoveryAction")}</button>}
+          {(item.status === "failed" || item.status === "cancelled" || item.status === "partial") && item.retryable && item.operationKind === "sync" && item.connectionKey === connectionKey && <button type="button" className="secondary-button" onClick={() => setRetryCandidate(item)}>{t("retryOperation")}</button>}
+          {recovery && item.connectionKey === connectionKey && <button type="button" className="secondary-button" onClick={() => { onRecover(recovery); setOpen(false); }}>{t("operationRecoveryAction")}</button>}
         </article>; })}
       </div>
     </section>}

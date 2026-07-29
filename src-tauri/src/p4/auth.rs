@@ -240,11 +240,12 @@ fn parse_plain_methods(text: &str) -> Vec<String> {
 
 fn valid_method_label(value: &str) -> bool {
     let value = value.trim();
+    let normalized = value.to_ascii_lowercase();
     !value.is_empty()
         && value.len() <= 128
         && !value.contains(['\r', '\n', '\0'])
-        && !value.starts_with("http://")
-        && !value.starts_with("https://")
+        && !normalized.contains("http://")
+        && !normalized.contains("https://")
 }
 
 fn extract_http_url(text: &str) -> Option<String> {
@@ -336,7 +337,7 @@ mod tests {
     #[test]
     fn parses_bounded_server_methods_without_urls() {
         let methods = parse_methods(
-            "{\"method0\":\"Authenticator app\",\"method1\":\"Security key\"}\nMethod: Backup code\n1: Push approval\n- Hardware token\nMethod: https://secret.example/token",
+            "{\"method0\":\"Authenticator app\",\"method1\":\"Security key\"}\nMethod: Backup code\n1: Push approval\n- Hardware token\nMethod: https://secret.example/token\nMethod: HTTPS://secret.example/token\nMethod: Click http://secret.example/token",
         );
         assert_eq!(
             methods,

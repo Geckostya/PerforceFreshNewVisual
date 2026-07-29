@@ -1580,6 +1580,7 @@ pub async fn save_resolve_result(
             &root,
             &input.depot_path,
             &input.local_path,
+            &input.preview_token,
             &input.result,
         )
     })

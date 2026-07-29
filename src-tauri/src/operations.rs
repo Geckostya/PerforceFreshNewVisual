@@ -88,11 +88,13 @@ impl OperationRegistry {
             return None;
         };
         let handle = handles.get(id)?;
-        handle.cancelled.store(true, Ordering::Release);
-        handle.cancel.send(()).is_ok().then(|| CancelRequest {
-            kind: handle.kind,
-            workspace: handle.workspace.clone(),
-            started_at_ms: handle.started_at_ms,
+        handle.cancel.send(()).is_ok().then(|| {
+            handle.cancelled.store(true, Ordering::Release);
+            CancelRequest {
+                kind: handle.kind,
+                workspace: handle.workspace.clone(),
+                started_at_ms: handle.started_at_ms,
+            }
         })
     }
 }
@@ -125,6 +127,27 @@ mod tests {
     #[test]
     fn cancelling_unknown_operation_is_safe() {
         assert!(OperationRegistry::default().cancel("op-missing").is_none());
+    }
+
+    #[test]
+    fn rejected_cancellation_does_not_mark_the_operation_cancelled() {
+        let registry = OperationRegistry::default();
+        let (cancel, cancellation) = mpsc::channel();
+        drop(cancellation);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        assert!(registry.insert_if_kind_idle(
+            "op-1".to_owned(),
+            OperationHandle {
+                kind: "submit",
+                workspace: "server/alex/main".to_owned(),
+                started_at_ms: 42,
+                cancel,
+                cancelled: cancelled.clone(),
+            },
+        ));
+
+        assert!(registry.cancel("op-1").is_none());
+        assert!(!cancelled.load(Ordering::Acquire));
     }
 
     #[test]

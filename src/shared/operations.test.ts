@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationEvent } from "./models";
-import { isOperationActive, isOperationTerminal, operationProgress, reduceOperationSnapshots, startObservedOperation } from "./operations";
+import { isOperationActive, isOperationTerminal, operationConnectionKey, operationProgress, reduceOperationSnapshots, startObservedOperation } from "./operations";
 
 const eventApi = vi.hoisted(() => ({ listen: vi.fn(), unlisten: vi.fn() }));
 
@@ -97,6 +97,16 @@ describe("operation snapshots", () => {
     expect(snapshot.retryable).toBe(true);
   });
 
+  it("keeps the originating connection identity through a later terminal event", () => {
+    const connection = { port: "p4-a:1666", user: "alex", client: "main" };
+    const origin = operationConnectionKey(connection);
+    let snapshots = reduceOperationSnapshots([], event("op-sync", "started"), origin);
+    snapshots = reduceOperationSnapshots(snapshots, event("op-sync", "failed"), operationConnectionKey({ ...connection, client: "other" }));
+
+    expect(snapshots[0].connectionKey).toBe(origin);
+    expect(snapshots[0].connectionKey).not.toBe(operationConnectionKey({ ...connection, client: "other" }));
+  });
+
   it("resets progress timing when reconcile changes phase", () => {
     vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(4_000);
     let snapshots = reduceOperationSnapshots([], { ...event("op-reconcile", "started"), operationKind: "reconcile", phase: "validate", totalFiles: 4 });
@@ -123,6 +133,30 @@ describe("operation snapshots", () => {
 
     expect(operationId).toBe("op-early");
     expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(eventApi.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("ignores early events from another operation of the same kind", async () => {
+    let emit: ((event: { payload: OperationEvent }) => void) | undefined;
+    eventApi.listen.mockImplementation(async (_name, callback) => {
+      emit = callback;
+      return eventApi.unlisten;
+    });
+    const onEvent = vi.fn();
+
+    const operationId = await startObservedOperation("sync", async () => {
+      emit?.({ payload: event("op-other", "started") });
+      emit?.({ payload: event("op-other", "completed", 1) });
+      emit?.({ payload: event("op-owned", "started") });
+      emit?.({ payload: event("op-owned", "completed", 2) });
+      return "op-owned";
+    }, onEvent);
+
+    expect(operationId).toBe("op-owned");
+    expect(onEvent.mock.calls.map(([payload]) => [payload.operationId, payload.kind])).toEqual([
+      ["op-owned", "started"],
+      ["op-owned", "completed"],
+    ]);
     expect(eventApi.unlisten).toHaveBeenCalledOnce();
   });
 

@@ -2231,12 +2231,14 @@ pub fn load_resolve_content(
     let local_path = validated_recovery_target(&root, local_path)?;
     let workspace_bytes = fs::read(&local_path)
         .map_err(|error| local_file_error("Не удалось прочитать workspace-файл.", error))?;
+    let preview_token = resolve_editor_token(&preview, &workspace_bytes);
     let base = load_resolve_side(input, preview.base_identifier.as_deref(), "base")?;
     let source = load_resolve_side(input, preview.source_identifier.as_deref(), "source")?;
     let workspace = resolve_content_side(preview.workspace_identifier, workspace_bytes);
     Ok(ResolveContent {
         depot_path: preview.depot_path,
         local_path: local_path.to_string_lossy().into_owned(),
+        preview_token,
         base,
         source,
         workspace,
@@ -2280,11 +2282,25 @@ fn resolve_content_side(identifier: String, bytes: Vec<u8>) -> ResolveContentSid
     }
 }
 
+fn resolve_editor_token(preview: &ResolvePreviewItem, workspace_bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in serde_json::to_vec(preview)
+        .unwrap_or_default()
+        .into_iter()
+        .chain(workspace_bytes.iter().copied())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("resolve-v1-{hash:016x}")
+}
+
 pub fn save_resolve_result(
     input: &ConnectionInput,
     root: &Path,
     depot_path: &str,
     local_path: &str,
+    preview_token: &str,
     result: &str,
 ) -> Result<ResolveApplyResult, AppError> {
     required_client(input)?;
@@ -2310,6 +2326,17 @@ pub fn save_resolve_result(
     let root = fs::canonicalize(root)
         .map_err(|error| local_file_error("Не удалось проверить root workspace.", error))?;
     let target = validated_recovery_target(&root, local_path)?;
+    let current_workspace = fs::read(&target).map_err(|error| {
+        local_file_error("Не удалось повторно прочитать workspace-файл.", error)
+    })?;
+    if preview_token.is_empty()
+        || resolve_editor_token(&preview, &current_workspace) != preview_token
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Resolve preview или workspace-файл изменился; откройте редактор заново.",
+        ));
+    }
     let temporary = recovery_temporary_path(&target)?;
     fs::write(&temporary, result.as_bytes()).map_err(|error| {
         local_file_error("Не удалось записать временный resolve result.", error)
@@ -3657,7 +3684,30 @@ pub fn map_workspace_paths(
     queries: &[String],
 ) -> Result<WorkspaceMappingBatch, AppError> {
     required_client(input)?;
-    validate_mapping_queries(queries)?;
+    if queries.is_empty() {
+        validate_mapping_queries(queries)?;
+    }
+    let mut mappings = Vec::with_capacity(queries.len());
+    let mut diagnostics = Vec::new();
+    let mut partial = false;
+    for chunk in queries.chunks(256) {
+        validate_mapping_queries(chunk)?;
+        let batch = map_workspace_paths_chunk(input, chunk)?;
+        mappings.extend(batch.mappings);
+        diagnostics.extend(batch.diagnostics);
+        partial |= batch.partial;
+    }
+    Ok(WorkspaceMappingBatch {
+        mappings,
+        partial,
+        diagnostics,
+    })
+}
+
+fn map_workspace_paths_chunk(
+    input: &ConnectionInput,
+    queries: &[String],
+) -> Result<WorkspaceMappingBatch, AppError> {
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "where"]);
     command.args(queries);
@@ -3690,13 +3740,12 @@ fn parse_workspace_mapping_batch(
 ) -> WorkspaceMappingBatch {
     let mappings = queries
         .iter()
-        .enumerate()
-        .map(|(index, query)| {
-            let Some(record) = records.get(index).filter(|record| {
-                record.contains_key("depotFile")
-                    || record.contains_key("clientFile")
-                    || record.contains_key("path")
-            }) else {
+        .map(|query| {
+            let candidates = records
+                .iter()
+                .filter(|record| mapping_record_matches_query(record, query))
+                .collect::<Vec<_>>();
+            let Some(record) = candidates.last() else {
                 return WorkspaceMapping {
                     query: query.clone(),
                     state: WorkspaceMappingState::Unmapped,
@@ -3719,6 +3768,12 @@ fn parse_workspace_mapping_batch(
             };
             let mapped = matches!(state, WorkspaceMappingState::Mapped);
             let mut item_diagnostics = Vec::new();
+            if candidates.len() > 1 {
+                item_diagnostics.push(
+                    "Server returned multiple client-view mappings; the final effective mapping was selected."
+                        .to_owned(),
+                );
+            }
             if marker == Some('+') {
                 item_diagnostics.push("Server selected an overlay mapping.".to_owned());
             } else if marker == Some('&') {
@@ -3739,6 +3794,17 @@ fn parse_workspace_mapping_batch(
         partial,
         diagnostics,
     }
+}
+
+fn mapping_record_matches_query(record: &Map<String, Value>, query: &str) -> bool {
+    ["depotFile", "clientFile", "path"]
+        .iter()
+        .any(|field_name| {
+            field(record, &[*field_name]).is_some_and(|value| {
+                let (value, _) = mapping_path(Some(value));
+                value.is_some_and(|value| value.eq_ignore_ascii_case(query))
+            })
+        })
 }
 
 fn probe_workspace_paths(
@@ -5289,6 +5355,40 @@ mod tests {
     }
 
     #[test]
+    fn mapping_batch_selects_the_final_effective_record_per_query() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"-//Acme/main/a.txt","clientFile":"-//alex-main/a.txt","path":"-C:\\old\\a.txt"}
+{"depotFile":"//Acme/main/a.txt","clientFile":"//alex-main/a.txt","path":"C:\\work\\a.txt"}
+{"depotFile":"//Acme/main/b.txt","clientFile":"//alex-main/b.txt","path":"C:\\work\\b.txt"}"#,
+        )
+        .unwrap();
+        let batch = parse_workspace_mapping_batch(
+            &[
+                "//Acme/main/a.txt".to_owned(),
+                "//Acme/main/b.txt".to_owned(),
+            ],
+            &records,
+            Vec::new(),
+            false,
+        );
+
+        assert_eq!(batch.mappings[0].state, WorkspaceMappingState::Mapped);
+        assert_eq!(
+            batch.mappings[0].local_path.as_deref(),
+            Some("C:\\work\\a.txt")
+        );
+        assert_eq!(
+            batch.mappings[1].depot_path.as_deref(),
+            Some("//Acme/main/b.txt")
+        );
+        assert_eq!(
+            batch.mappings[1].local_path.as_deref(),
+            Some("C:\\work\\b.txt")
+        );
+        assert_eq!(batch.mappings[0].diagnostics.len(), 1);
+    }
+
+    #[test]
     fn reconcile_token_changes_with_action_mapping_or_local_metadata() {
         let mut item = test_reconcile_item("//Acme/main/a.txt", "edit", Some("C:\\work\\a.txt"));
         item.mapping_state = WorkspaceMappingState::Mapped;
@@ -5831,6 +5931,26 @@ mod tests {
         assert_eq!(items[1].action, "copy");
         assert_eq!(items[1].conflict_kind, ResolveConflictKind::Unknown);
         assert!(!items[1].allowed_actions.contains(&ResolveMode::AutoMerge));
+    }
+
+    #[test]
+    fn resolve_editor_token_rejects_changed_preview_or_workspace_content() {
+        let mut preview = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/a.txt","path":"C:/ws/a.txt","type":"text","baseFile":"//Acme/main/a.txt#7","fromFile":"//Acme/main/a.txt#8"}"#,
+            )
+            .unwrap(),
+        )
+        .remove(0);
+        let original = resolve_editor_token(&preview, b"workspace");
+
+        preview.source_identifier = Some("//Acme/main/a.txt#9".to_owned());
+        assert_ne!(resolve_editor_token(&preview, b"workspace"), original);
+        preview.source_identifier = Some("//Acme/main/a.txt#8".to_owned());
+        assert_ne!(
+            resolve_editor_token(&preview, b"changed workspace"),
+            original
+        );
     }
 
     #[test]

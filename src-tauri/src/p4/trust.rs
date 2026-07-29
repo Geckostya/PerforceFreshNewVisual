@@ -124,22 +124,22 @@ fn validate_fingerprint(value: &str) -> Result<&str, AppError> {
 }
 
 fn is_valid_fingerprint(value: &str) -> bool {
-    let bytes = value
-        .split_once(':')
-        .filter(|(prefix, _)| {
-            prefix.eq_ignore_ascii_case("sha256")
-                || prefix.eq_ignore_ascii_case("sha1")
-                || prefix.eq_ignore_ascii_case("md5")
-        })
-        .map_or(value, |(_, bytes)| bytes);
+    let (bytes, expected_segments) = match value.split_once(':') {
+        Some((prefix, bytes)) if prefix.eq_ignore_ascii_case("sha256") => (bytes, Some(32)),
+        Some((prefix, bytes)) if prefix.eq_ignore_ascii_case("sha1") => (bytes, Some(20)),
+        Some((prefix, bytes)) if prefix.eq_ignore_ascii_case("md5") => (bytes, Some(16)),
+        Some(_) => return false,
+        None => (value, None),
+    };
     let segments = bytes.split(':').collect::<Vec<_>>();
-    segments.len() >= 16
-        && segments.iter().all(|segment| {
-            segment.len() == 2
-                && segment
-                    .chars()
-                    .all(|character| character.is_ascii_hexdigit())
-        })
+    expected_segments.map_or(matches!(segments.len(), 16 | 20 | 32), |expected| {
+        segments.len() == expected
+    }) && segments.iter().all(|segment| {
+        segment.len() == 2
+            && segment
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+    })
 }
 
 fn extract_fingerprint(text: &str) -> Option<String> {
@@ -207,6 +207,15 @@ mod tests {
             Some(SHA256.to_owned())
         );
         assert!(!is_valid_fingerprint("SHA256:AA:BB"));
+        assert!(!is_valid_fingerprint(
+            "SHA256:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+        ));
+        assert!(is_valid_fingerprint(
+            "SHA1:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD"
+        ));
+        assert!(is_valid_fingerprint(
+            "MD5:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+        ));
     }
 
     #[test]

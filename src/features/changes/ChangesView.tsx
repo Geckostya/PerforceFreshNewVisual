@@ -119,6 +119,8 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     currentShelfFiles,
     state,
     shelfLoading,
+    shelfState,
+    shelfFreshChange,
     error,
     setError,
     refreshData,
@@ -166,8 +168,15 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     state === "fresh",
   );
   const canSubmit = currentGroup.files.length > 0 || currentGroup.isShelved;
-  const mutationsBlocked = state !== "fresh";
+  const mutationsBlocked = state !== "fresh"
+    || (currentGroup.isShelved && (shelfState !== "fresh" || shelfFreshChange !== currentGroup.id));
   const safeSync = useSafeSync(connection, { refresh: refreshData, setNotice, setError });
+
+  useEffect(() => {
+    if (!mutationsBlocked) return;
+    setDialog(undefined);
+    setConflictMenu(undefined);
+  }, [mutationsBlocked]);
 
   useEffect(() => {
     void loadSettings()
@@ -210,6 +219,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   async function execute(task: () => Promise<void>, success: string, after?: () => void) {
+    if (mutationsBlocked) return;
     setActionRunning(true);
     setError(undefined);
     setNotice("");
@@ -242,6 +252,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   async function openRevertUnchanged() {
+    if (mutationsBlocked) return;
     setActionRunning(true);
     setError(undefined);
     try {
@@ -255,6 +266,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   async function openRevertAll() {
+    if (mutationsBlocked) return;
     setActionRunning(true);
     setError(undefined);
     try {
@@ -268,7 +280,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   async function openRevertSelected(paths: string[]) {
-    if (paths.length === 0) return;
+    if (mutationsBlocked || paths.length === 0) return;
     setActionRunning(true);
     setError(undefined);
     try {
@@ -299,6 +311,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   async function handleDrop(event: DragEvent, target: ChangeDropTarget) {
+    if (mutationsBlocked) return;
     const action = dragDrop.takeDrop(event, target);
     if (!action) return;
     if (action.kind === "move") {
@@ -328,6 +341,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   function openSubmit() {
+    if (mutationsBlocked) return;
     setSubmitDescription(currentGroup.isDefault ? "" : currentGroup.description);
     setSubmitPreflightIssues([]);
     setSubmitPreflightSummary({ issues: [], jobs: [], totalSize: 0 });
@@ -336,6 +350,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   async function confirmSubmit(mode: SubmitMode) {
+    if (mutationsBlocked) return;
     setActionRunning(true);
     setError(undefined);
     try {
@@ -385,6 +400,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   function openUnshelve(paths: string[] = []) {
+    if (mutationsBlocked) return;
     setUnshelvePaths(paths);
     setUnshelveTarget(currentGroup.id);
     setDialog("unshelve");
@@ -395,6 +411,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     paths = unshelvePaths,
     destination = unshelveTarget,
   ) {
+    if (mutationsBlocked) return;
     setActionRunning(true);
     setError(undefined);
     try {
@@ -421,6 +438,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   }
 
   async function continueUnshelve() {
+    if (mutationsBlocked) return;
     const conflictPaths = new Set(unshelveConflicts.map((conflict) => conflict.depotPath));
     const normal = unshelvePaths.filter((path) => !conflictPaths.has(path));
     if (normal.length === 0 && overwriteConflicts.length === 0) {
@@ -651,7 +669,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
                     {groups.map((group) => <option value={group.id} key={group.id}>{changeOptionLabel(group, t("defaultChangelist"), t("noDescription"))}</option>)}
                   </select>
                 </label>
-                <button className="secondary-button" type="button" disabled={actionRunning || targetChange === currentOpened.change} onClick={() => void moveOpened(openedSelection, targetChange)}>
+                <button className="secondary-button" type="button" disabled={mutationsBlocked || actionRunning || targetChange === currentOpened.change} onClick={() => void moveOpened(openedSelection, targetChange)}>
                   {actionRunning ? t("moving") : t("moveFile")}
                 </button>
               </div>}
@@ -671,40 +689,40 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
 
       {menu && changeMenu.menu && <ContextMenu x={changeMenu.menu.x} y={changeMenu.menu.y} onSelect={changeMenu.close}>
         {menu.kind === "change" && contextGroup && <>
-          {contextGroup.id !== "default" && <MenuButton onClick={() => { setDescription(contextGroup.description); setDialog("edit"); }}>{t("editChangelist")}</MenuButton>}
+          {contextGroup.id !== "default" && <MenuButton disabled={mutationsBlocked} onClick={() => { setDescription(contextGroup.description); setDialog("edit"); }}>{t("editChangelist")}</MenuButton>}
           {contextGroup.id !== "default" && <MenuButton onClick={() => toggleUnactual(contextGroup.id)}>{archivedChanges.includes(contextGroup.id) ? t("restoreFromUnactual") : t("moveToUnactual")}</MenuButton>}
-          {contextGroup.files.length > 0 && contextGroup.id !== "default" && <MenuButton onClick={() => setDialog("replace-shelf")}>{contextGroup.isShelved ? t("updateShelf") : t("shelveAll")}</MenuButton>}
-          {contextGroup.isShelved && <MenuButton onClick={() => openUnshelve()}>{t("unshelveAll")}</MenuButton>}
-          {contextGroup.isShelved && <MenuButton danger onClick={() => setDialog("delete-shelf")}>{t("deleteShelf")}</MenuButton>}
-          {contextGroup.id !== "default" && contextGroup.files.length === 0 && !contextGroup.isShelved && <MenuButton danger onClick={() => setDialog("delete-change")}>{t("deleteChangelist")}</MenuButton>}
-          {(contextGroup.files.length > 0 || contextGroup.isShelved) && <MenuButton onClick={openSubmit}>{t("submitChange")}</MenuButton>}
+          {contextGroup.files.length > 0 && contextGroup.id !== "default" && <MenuButton disabled={mutationsBlocked} onClick={() => setDialog("replace-shelf")}>{contextGroup.isShelved ? t("updateShelf") : t("shelveAll")}</MenuButton>}
+          {contextGroup.isShelved && <MenuButton disabled={mutationsBlocked} onClick={() => openUnshelve()}>{t("unshelveAll")}</MenuButton>}
+          {contextGroup.isShelved && <MenuButton disabled={mutationsBlocked} danger onClick={() => setDialog("delete-shelf")}>{t("deleteShelf")}</MenuButton>}
+          {contextGroup.id !== "default" && contextGroup.files.length === 0 && !contextGroup.isShelved && <MenuButton disabled={mutationsBlocked} danger onClick={() => setDialog("delete-change")}>{t("deleteChangelist")}</MenuButton>}
+          {(contextGroup.files.length > 0 || contextGroup.isShelved) && <MenuButton disabled={mutationsBlocked} onClick={openSubmit}>{t("submitChange")}</MenuButton>}
         </>}
         {menu.kind === "section" && menu.section === "opened" && currentGroup.files.length > 0 && <>
           <MenuButton onClick={() => fileSelection.setOpened(currentGroup.files.map((file) => file.depotPath))}>{t("selectAllFiles")}</MenuButton>
-          <MenuButton onClick={() => void execute(() => lockFiles(connection, currentGroup.id, currentGroup.files.map((file) => file.depotPath)), t("filesLocked"))}>{t("lockFiles")}</MenuButton>
-          <MenuButton onClick={() => void execute(() => unlockFiles(connection, currentGroup.id, currentGroup.files.map((file) => file.depotPath)), t("filesUnlocked"))}>{t("unlockFiles")}</MenuButton>
-          <MenuButton onClick={() => { setDialogFiles(currentGroup.files.map((file) => file.depotPath)); setTargetChange(currentGroup.id); setDialog("move-files"); }}>{t("moveAllFiles")}</MenuButton>
-          {!currentGroup.isDefault && <MenuButton onClick={() => { setDialogFiles(currentGroup.files.map((file) => file.depotPath)); setDialog("shelve-file"); }}>{t("shelveAll")}</MenuButton>}
-          <MenuButton danger onClick={() => void openRevertAll()}>{t("revertAllFiles")}</MenuButton>
-          <MenuButton danger onClick={() => void openRevertUnchanged()}>{t("revertUnchanged")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} onClick={() => void execute(() => lockFiles(connection, currentGroup.id, currentGroup.files.map((file) => file.depotPath)), t("filesLocked"))}>{t("lockFiles")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} onClick={() => void execute(() => unlockFiles(connection, currentGroup.id, currentGroup.files.map((file) => file.depotPath)), t("filesUnlocked"))}>{t("unlockFiles")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} onClick={() => { setDialogFiles(currentGroup.files.map((file) => file.depotPath)); setTargetChange(currentGroup.id); setDialog("move-files"); }}>{t("moveAllFiles")}</MenuButton>
+          {!currentGroup.isDefault && <MenuButton disabled={mutationsBlocked} onClick={() => { setDialogFiles(currentGroup.files.map((file) => file.depotPath)); setDialog("shelve-file"); }}>{t("shelveAll")}</MenuButton>}
+          <MenuButton disabled={mutationsBlocked} danger onClick={() => void openRevertAll()}>{t("revertAllFiles")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} danger onClick={() => void openRevertUnchanged()}>{t("revertUnchanged")}</MenuButton>
         </>}
         {menu.kind === "section" && menu.section === "shelved" && currentShelfFiles.length > 0 && <>
           <MenuButton onClick={() => fileSelection.setShelved(currentShelfFiles.map((file) => file.depotPath))}>{t("selectAllFiles")}</MenuButton>
-          <MenuButton onClick={() => openUnshelve()}>{t("unshelveAll")}</MenuButton>
-          <MenuButton danger onClick={() => setDialog("delete-shelf")}>{t("deleteShelf")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} onClick={() => openUnshelve()}>{t("unshelveAll")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} danger onClick={() => setDialog("delete-shelf")}>{t("deleteShelf")}</MenuButton>
         </>}
         {menu.kind === "opened" && contextOpened && <>
           {openedSelection.length === 1 && <MenuButton onClick={() => void showDiff("opened", contextOpened.depotPath)}>{t("viewDiff")}</MenuButton>}
-          {contextOpened.change !== "default" && <MenuButton onClick={() => { setDialogFiles(openedSelection); setDialog("shelve-file"); }}>{openedSelection.length > 1 ? t("shelveSelected") : t("shelveFile")}</MenuButton>}
-          <MenuButton onClick={() => void execute(() => lockFiles(connection, contextOpened.change, openedSelection), t("filesLocked"))}>{t("lockFiles")}</MenuButton>
-          <MenuButton onClick={() => void execute(() => unlockFiles(connection, contextOpened.change, openedSelection), t("filesUnlocked"))}>{t("unlockFiles")}</MenuButton>
-          <MenuButton danger onClick={() => void openRevertSelected(openedSelection)}>{openedSelection.length > 1 ? t("revertSelected") : t("revertFile")}</MenuButton>
+          {contextOpened.change !== "default" && <MenuButton disabled={mutationsBlocked} onClick={() => { setDialogFiles(openedSelection); setDialog("shelve-file"); }}>{openedSelection.length > 1 ? t("shelveSelected") : t("shelveFile")}</MenuButton>}
+          <MenuButton disabled={mutationsBlocked} onClick={() => void execute(() => lockFiles(connection, contextOpened.change, openedSelection), t("filesLocked"))}>{t("lockFiles")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} onClick={() => void execute(() => unlockFiles(connection, contextOpened.change, openedSelection), t("filesUnlocked"))}>{t("unlockFiles")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} danger onClick={() => void openRevertSelected(openedSelection)}>{openedSelection.length > 1 ? t("revertSelected") : t("revertFile")}</MenuButton>
         </>}
         {menu.kind === "shelved" && <>
           {shelvedSelection.length === 1 && <MenuButton onClick={() => void showDiff("shelved", menu.depotPath)}>{t("viewShelfDiff")}</MenuButton>}
           {shelvedSelection.length === 1 && files.some((file) => file.depotPath === menu.depotPath) && <MenuButton onClick={() => void showDiff("shelved", menu.depotPath, true)}>{t("compareLocalShelf")}</MenuButton>}
-          <MenuButton onClick={() => openUnshelve(shelvedSelection)}>{shelvedSelection.length > 1 ? t("unshelveSelected") : t("unshelveFile")}</MenuButton>
-          <MenuButton danger onClick={() => { setDialogFiles(shelvedSelection); setDialog("delete-shelf-file"); }}>{shelvedSelection.length > 1 ? t("deleteSelectedFromShelf") : t("deleteShelfFile")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} onClick={() => openUnshelve(shelvedSelection)}>{shelvedSelection.length > 1 ? t("unshelveSelected") : t("unshelveFile")}</MenuButton>
+          <MenuButton disabled={mutationsBlocked} danger onClick={() => { setDialogFiles(shelvedSelection); setDialog("delete-shelf-file"); }}>{shelvedSelection.length > 1 ? t("deleteSelectedFromShelf") : t("deleteShelfFile")}</MenuButton>
         </>}
       </ContextMenu>}
       {conflictMenu && <ContextMenu x={conflictMenu.x} y={conflictMenu.y} onSelect={() => setConflictMenu(undefined)}>

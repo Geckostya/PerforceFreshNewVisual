@@ -334,8 +334,8 @@ export async function loadResolveContent(connection: ConnectionInput, depotPath:
   return invoke<ResolveContent>("load_resolve_content", { input: connection, depotPath });
 }
 
-export async function saveResolveResult(connection: ConnectionInput, depotPath: string, localPath: string, result: string): Promise<ResolveApplyResult> {
-  return invoke<ResolveApplyResult>("save_resolve_result", { input: { connection, depotPath, localPath, result } });
+export async function saveResolveResult(connection: ConnectionInput, depotPath: string, localPath: string, previewToken: string, result: string): Promise<ResolveApplyResult> {
+  return invoke<ResolveApplyResult>("save_resolve_result", { input: { connection, depotPath, localPath, previewToken, result } });
 }
 
 export async function moveFile(connection: ConnectionInput, change: string, source: string, destination: string): Promise<void> {

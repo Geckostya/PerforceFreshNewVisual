@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
 import type {
+  ConnectionInput,
   OperationDiagnostic,
   OperationEvent,
   OperationEventKind,
@@ -27,9 +28,22 @@ export interface OperationSnapshot {
   itemResults: OperationItemResult[];
   readBack?: OperationReadBack;
   retryable: boolean;
+  connectionKey?: string;
 }
 
-export function reduceOperationSnapshots(current: OperationSnapshot[], event: OperationEvent): OperationSnapshot[] {
+export function operationConnectionKey(connection: ConnectionInput): string {
+  return JSON.stringify([
+    connection.p4Path || "",
+    connection.port,
+    connection.user,
+    connection.client || "",
+    connection.charset || "",
+    connection.p4Config || "",
+    connection.p4Enviro || "",
+  ]);
+}
+
+export function reduceOperationSnapshots(current: OperationSnapshot[], event: OperationEvent, connectionKey?: string): OperationSnapshot[] {
   const next = [...current];
   const index = next.findIndex((item) => item.operationId === event.operationId);
   const previous = index < 0 ? undefined : next[index];
@@ -59,6 +73,7 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
     itemResults: event.itemResults ?? previous?.itemResults ?? [],
     readBack: event.readBack ?? previous?.readBack,
     retryable,
+    connectionKey: previous?.connectionKey ?? connectionKey,
   };
   if (index < 0) next.push(snapshot);
   else next[index] = { ...next[index], ...snapshot };
@@ -112,18 +127,32 @@ export function useActiveOperation(operationKind: string): OperationSnapshot | u
 
 export async function startObservedOperation(operationKind: string, start: () => Promise<string>, onEvent: (event: OperationEvent) => void): Promise<string> {
   let operationId = "";
+  let pendingEvents: OperationEvent[] = [];
   let unlisten: () => void = () => undefined;
   unlisten = await listen<OperationEvent>("operation-event", ({ payload }) => {
     if (payload.operationKind !== operationKind) return;
-    if (!operationId) operationId = payload.operationId;
+    if (!operationId) {
+      pendingEvents.push(payload);
+      return;
+    }
     if (payload.operationId !== operationId) return;
     onEvent(payload);
     if (isOperationTerminal(payload.kind)) void unlisten();
   });
   try {
     operationId = await start();
+    for (const event of pendingEvents) {
+      if (event.operationId !== operationId) continue;
+      onEvent(event);
+      if (isOperationTerminal(event.kind)) {
+        void unlisten();
+        break;
+      }
+    }
+    pendingEvents = [];
     return operationId;
   } catch (error) {
+    pendingEvents = [];
     await unlisten();
     throw error;
   }
