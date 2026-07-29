@@ -7,6 +7,7 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 - [x] P0 Default/numbered changelists with separate local and shelf sections, filtering, multi-select, context menus, and DnD equivalents.
 - [x] P0 Create/edit/delete empty changes and batch move opened files.
 - [x] P0 Shelve selected/all, unshelve selected/all with safe add-collision choices, delete shelf/files, reshelve selected files, and single-file shelf export.
+- [x] P0 Bounded all-user Shelves catalog grouped by owner, with search, owner/workspace/stream/age filters, and lazy selected-shelf details.
 - [x] P0 Revert selected, unchanged, or a whole changelist from a server preview; opened-for-add disk deletion is explicit.
 - [x] P0 Submit local-only, shelf-only, and all local+shelf strategies with recovery/compensation.
 - [x] P0 Submit preflight shows missing, unresolved, out-of-date, other-open/lock, jobs, stream spec, size, and server warnings.

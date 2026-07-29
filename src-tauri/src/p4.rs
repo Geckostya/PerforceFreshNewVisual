@@ -594,14 +594,25 @@ fn enrich_submitted_streams(
     input: &ConnectionInput,
     changes: &mut [PendingChange],
 ) -> Result<(), AppError> {
+    enrich_change_streams(input, changes, false)
+}
+
+fn enrich_change_streams(
+    input: &ConnectionInput,
+    changes: &mut [PendingChange],
+    shelved: bool,
+) -> Result<(), AppError> {
     let (path, mut command) = configured_command(input)?;
     let mut arguments = ["-ztag", "-Mj", "describe", "-s", "-m", "1"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    if shelved {
+        arguments.push("-S".to_owned());
+    }
     arguments.extend(changes.iter().map(|change| change.id.clone()));
     command.args(arguments);
-    let first_paths = first_submitted_paths(&run_json(&path, &mut command)?);
+    let first_paths = first_change_paths(&run_json(&path, &mut command)?);
     let streams = list_streams(input)?;
     for change in changes {
         change.stream = first_paths
@@ -612,7 +623,7 @@ fn enrich_submitted_streams(
     Ok(())
 }
 
-fn first_submitted_paths(records: &[Map<String, Value>]) -> BTreeMap<String, String> {
+fn first_change_paths(records: &[Map<String, Value>]) -> BTreeMap<String, String> {
     records
         .iter()
         .filter(|record| !is_message_record(record))
@@ -898,23 +909,31 @@ fn cherry_pick_arguments(
 }
 
 pub fn list_shelved_changes(input: &ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
-    let client = required_client(input)?;
+    required_client(input)?;
     let (path, mut command) = configured_command(input)?;
-    command.args([
+    command.args(shelved_change_arguments());
+    let mut changes = parse_pending_changes(&run_json(&path, &mut command)?)?;
+    if !changes.is_empty() {
+        enrich_change_streams(input, &mut changes, true)?;
+    }
+    Ok(changes)
+}
+
+fn shelved_change_arguments() -> Vec<String> {
+    [
         "-ztag",
         "-Mj",
         "changes",
         "-s",
         "shelved",
-        "-c",
-        client,
-        "-u",
-        input.user.trim(),
         "-l",
+        "-t",
         "-m",
         MAX_RECORDS,
-    ]);
-    parse_pending_changes(&run_json(&path, &mut command)?)
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 pub fn list_opened_files(input: &ConnectionInput) -> Result<Vec<OpenedFile>, AppError> {
@@ -5182,7 +5201,7 @@ mod tests {
 {"change":"102","depotFile":"//Acme/main/b.txt"}"#,
         )
         .unwrap();
-        let paths = first_submitted_paths(&records);
+        let paths = first_change_paths(&records);
         assert_eq!(
             paths.get("101").map(String::as_str),
             Some("//Acme/dev/tools/a.txt")
@@ -5212,6 +5231,24 @@ mod tests {
             stream_for_depot_path(paths.get("101").unwrap(), &streams)
                 .map(|stream| stream.path.as_str()),
             Some("//Acme/dev/tools")
+        );
+    }
+
+    #[test]
+    fn lists_all_accessible_shelves_without_user_or_workspace_scope() {
+        assert_eq!(
+            shelved_change_arguments(),
+            vec![
+                "-ztag",
+                "-Mj",
+                "changes",
+                "-s",
+                "shelved",
+                "-l",
+                "-t",
+                "-m",
+                MAX_RECORDS,
+            ]
         );
     }
 
