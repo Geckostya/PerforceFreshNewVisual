@@ -3127,10 +3127,6 @@ pub fn submit_readback(input: &ConnectionInput, change: &str) -> SubmitReadBack 
     }
 }
 
-pub fn submit_readback_hint(input: &ConnectionInput, change: &str) -> String {
-    submit_readback(input, change).message
-}
-
 fn submit_outcome(
     input: &ConnectionInput,
     change: &str,

@@ -19,7 +19,6 @@ import type {
   Fix,
   ShelvedFile,
   SubmitMode,
-  SubmitOutcome,
   SubmitPreflightSummary,
   SubmittedChangeDetail,
   SubmittedFilterOptions,
@@ -418,15 +417,6 @@ export async function diffShelvedFile(
   return invoke<FileDiff>("diff_shelved_file", {
     input: { connection, change, depotPath, againstLocal, mode },
   });
-}
-
-export async function submitChange(
-  connection: ConnectionInput,
-  change: string,
-  description?: string,
-  mode: SubmitMode = "local",
-): Promise<SubmitOutcome> {
-  return invoke<SubmitOutcome>("submit_change", { input: { connection, change, description, mode } });
 }
 
 export async function startSubmit(

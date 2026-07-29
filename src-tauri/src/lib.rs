@@ -96,7 +96,6 @@ pub fn run() {
             commands::diff_revision_workspace,
             commands::annotate_file,
             commands::diff_shelved_file,
-            commands::submit_change,
             commands::submit_preflight,
             commands::shelve_file,
             commands::preview_unshelve,

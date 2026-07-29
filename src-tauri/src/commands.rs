@@ -8,16 +8,14 @@ use crate::{
         FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationDiagnostic,
         OperationEvent, OperationEventKind, OperationItemResult, OperationReadBack,
         OperationReadBackStatus, P4Detection, P4Info, PendingChange, PreviewUnshelveInput,
-        ReconcileItem, ReopenInput, ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput,
-        ResolveResultInput, RevertInput, RevertPreviewItem,
-        SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput,
-        ShelveInput, ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
-        SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail,
-        SubmittedFilterOptions, SwitchStreamInput,
-        SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput,
-        UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
-        WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary,
-        WorkspaceUpdateInput,
+        ReconcileItem, ReopenInput, ReshelveInput, ResolveApplyResult, ResolveContent,
+        ResolveInput, ResolveResultInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput,
+        SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
+        ShelvedFile, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
+        SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFilterOptions,
+        SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem,
+        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
+        WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -2336,28 +2334,6 @@ pub async fn diff_shelved_file(input: ShelfDiffInput) -> Result<FileDiff, AppErr
             input.against_local,
             &input.mode,
         )
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn submit_change(input: SubmitInput) -> Result<SubmitOutcome, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        match p4::submit_change(
-            &input.connection,
-            &input.change,
-            input.description.as_deref(),
-            &input.mode,
-        ) {
-            Ok(outcome) => Ok(outcome),
-            Err(mut error) => {
-                error
-                    .hints
-                    .push(p4::submit_readback_hint(&input.connection, &input.change));
-                Err(error)
-            }
-        }
     })
     .await
     .map_err(task_error)?
