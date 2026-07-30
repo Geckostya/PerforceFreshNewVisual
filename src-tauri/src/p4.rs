@@ -26,8 +26,8 @@ use crate::models::{
     SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
     UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
-    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSearchResult,
-    WorkspaceSpec, WorkspaceSummary,
+    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceScanPartialReason,
+    WorkspaceScanRoot, WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
 };
 
 mod auth;
@@ -53,6 +53,8 @@ use validation::*;
 
 const MAX_RECORDS: &str = "200";
 const MAX_WORKSPACE_SEARCH_RESULTS: usize = 200;
+pub const MAX_WORKSPACE_SCAN_ROOTS: usize = 32;
+pub const MAX_WORKSPACE_SCAN_CANDIDATES: usize = 2_000;
 const MAX_INTEGRATION_PREVIEW_ITEMS: usize = 200;
 const MAX_HISTORY_RECORDS: &str = "5000";
 const MAX_SUBMITTED_DETAIL_PREVIEW_FILES: u32 = 1000;
@@ -4255,6 +4257,209 @@ fn workspace_where_command(
     Ok((path, command))
 }
 
+pub struct WorkspaceScanConfiguration {
+    pub roots: Vec<WorkspaceScanRoot>,
+    pub exclusions: Vec<String>,
+    pub partial_reasons: Vec<WorkspaceScanPartialReason>,
+}
+
+pub fn configure_workspace_scan(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    requested_roots: &[String],
+    requested_exclusions: &[String],
+) -> Result<WorkspaceScanConfiguration, AppError> {
+    let roots = workspace_scan_directories(requested_roots, "корней сканирования")?;
+    let queries = roots
+        .iter()
+        .map(|root| workspace_cli_path(&root.join("...").to_string_lossy()))
+        .collect::<Vec<_>>();
+    let mappings = map_workspace_paths(input, &queries)?;
+    let mut scan_roots = mapped_workspace_scan_roots(&roots, &mappings)?;
+    let exclusions = workspace_scan_exclusions(requested_exclusions, &roots)?;
+    let mut partial_reasons = Vec::new();
+    for root in &mut scan_roots {
+        match workspace_scan_ignore_sources(input, workspace_root, Path::new(&root.local_path)) {
+            Ok(sources) => root.ignore_sources = sources,
+            Err(_) => {
+                if !partial_reasons.contains(&WorkspaceScanPartialReason::IgnoreRulesUnavailable) {
+                    partial_reasons.push(WorkspaceScanPartialReason::IgnoreRulesUnavailable);
+                }
+            }
+        }
+    }
+    Ok(WorkspaceScanConfiguration {
+        roots: scan_roots,
+        exclusions,
+        partial_reasons,
+    })
+}
+
+fn workspace_scan_directories(
+    directories: &[String],
+    label: &str,
+) -> Result<Vec<PathBuf>, AppError> {
+    if directories.is_empty() || directories.len() > MAX_WORKSPACE_SCAN_ROOTS {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            format!("Допустимо от 1 до {MAX_WORKSPACE_SCAN_ROOTS} {label}."),
+        ));
+    }
+    let mut result = Vec::with_capacity(directories.len());
+    let mut seen = BTreeSet::new();
+    for directory in directories {
+        let path = Path::new(directory.trim());
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                format!("Папка сканирования не существует: {directory}"),
+            ));
+        }
+        let path = fs::canonicalize(path)
+            .map_err(|error| local_file_error("Не удалось прочитать папку сканирования.", error))?;
+        let key = workspace_path_key(&path.to_string_lossy());
+        if seen.insert(key) {
+            result.push(path);
+        }
+    }
+    Ok(result)
+}
+
+fn mapped_workspace_scan_roots(
+    local_roots: &[PathBuf],
+    batch: &WorkspaceMappingBatch,
+) -> Result<Vec<WorkspaceScanRoot>, AppError> {
+    if batch.partial {
+        return Err(AppError::new(
+            ErrorKind::PartialResult,
+            "Perforce вернул неполный результат проверки корней сканирования.",
+        )
+        .with_diagnostics(batch.diagnostics.join("\n")));
+    }
+    if batch.mappings.len() != local_roots.len() {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "Perforce вернул неожиданный набор корней сканирования.",
+        ));
+    }
+    local_roots
+        .iter()
+        .zip(&batch.mappings)
+        .map(|(local_root, mapping)| {
+            if mapping.state != WorkspaceMappingState::Mapped {
+                return Err(AppError::new(
+                    ErrorKind::Conflict,
+                    "Папка сканирования не входит в client view текущего workspace.",
+                )
+                .with_diagnostics(mapping.diagnostics.join("\n")));
+            }
+            let depot_scope = mapping.depot_path.clone().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "Не получен depot scope корня сканирования.",
+                )
+            })?;
+            let client_scope = mapping.client_path.clone().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "Не получен client scope корня сканирования.",
+                )
+            })?;
+            let local_scope = mapping.local_path.clone().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "Не получен local scope корня сканирования.",
+                )
+            })?;
+            Ok(WorkspaceScanRoot {
+                local_path: workspace_cli_path(&local_root.to_string_lossy()),
+                local_scope,
+                client_scope,
+                depot_scope,
+                ignore_sources: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+fn workspace_scan_exclusions(
+    requested: &[String],
+    roots: &[PathBuf],
+) -> Result<Vec<String>, AppError> {
+    if requested.len() > MAX_WORKSPACE_SCAN_ROOTS {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            format!("Допустимо не более {MAX_WORKSPACE_SCAN_ROOTS} исключений сканера."),
+        ));
+    }
+    let mut exclusions = Vec::with_capacity(requested.len());
+    let mut seen = BTreeSet::new();
+    for exclusion in requested {
+        let path = Path::new(exclusion.trim());
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                format!("Папка исключения не существует: {exclusion}"),
+            ));
+        }
+        let path = fs::canonicalize(path)
+            .map_err(|error| local_file_error("Не удалось прочитать исключение сканера.", error))?;
+        if !roots.iter().any(|root| path.starts_with(root)) {
+            return Err(AppError::new(
+                ErrorKind::Conflict,
+                "Исключение сканера находится вне выбранных корней.",
+            ));
+        }
+        let display = workspace_cli_path(&path.to_string_lossy());
+        if seen.insert(workspace_path_key(&display)) {
+            exclusions.push(display);
+        }
+    }
+    Ok(exclusions)
+}
+
+fn workspace_scan_ignore_sources(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    scan_root: &Path,
+) -> Result<Vec<String>, AppError> {
+    let (path, mut command) = workspace_scan_ignore_command(input, workspace_root, scan_root)?;
+    let output = run_binary(&path, &mut command)?;
+    Ok(parse_workspace_scan_ignore_sources(
+        &String::from_utf8_lossy(&output),
+    ))
+}
+
+fn workspace_scan_ignore_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    scan_root: &Path,
+) -> Result<(PathBuf, Command), AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.current_dir(scan_root);
+    if let Some(ignore_file) = workspace_ignore_file(workspace_root) {
+        command.env("P4IGNORE", ignore_file);
+    }
+    command.args(workspace_scan_ignore_arguments());
+    Ok((path, command))
+}
+
+fn workspace_scan_ignore_arguments() -> [&'static str; 2] {
+    ["ignores", "-v"]
+}
+
+fn parse_workspace_scan_ignore_sources(output: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("#FILE"))
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .filter(|source| seen.insert((*source).to_owned()))
+        .map(str::to_owned)
+        .collect()
+}
+
 pub fn map_workspace_paths(
     input: &ConnectionInput,
     queries: &[String],
@@ -6127,6 +6332,116 @@ mod tests {
             mapped_reconcile_scope(&excluded).unwrap_err().kind,
             ErrorKind::Conflict
         );
+    }
+
+    #[test]
+    fn workspace_scan_roots_require_complete_mapped_scopes() {
+        let local_root = PathBuf::from(r"C:\work\Source");
+        let mapping = WorkspaceMapping {
+            query: r"C:\work\Source\...".to_owned(),
+            state: WorkspaceMappingState::Mapped,
+            depot_path: Some("//Acme/main/Source/...".to_owned()),
+            client_path: Some("//alex-main/Source/...".to_owned()),
+            local_path: Some(r"C:\work\Source\...".to_owned()),
+            diagnostics: Vec::new(),
+        };
+        let batch = WorkspaceMappingBatch {
+            mappings: vec![mapping],
+            partial: false,
+            diagnostics: Vec::new(),
+        };
+        let roots = mapped_workspace_scan_roots(&[local_root], &batch).unwrap();
+        assert_eq!(roots[0].depot_scope, "//Acme/main/Source/...");
+        assert_eq!(roots[0].client_scope, "//alex-main/Source/...");
+
+        let mut partial = batch.clone();
+        partial.partial = true;
+        assert_eq!(
+            mapped_workspace_scan_roots(&[PathBuf::from(r"C:\work\Source")], &partial)
+                .unwrap_err()
+                .kind,
+            ErrorKind::PartialResult
+        );
+
+        let mut unmapped = batch;
+        unmapped.mappings[0].state = WorkspaceMappingState::Unmapped;
+        assert_eq!(
+            mapped_workspace_scan_roots(&[PathBuf::from(r"C:\work\Source")], &unmapped)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn workspace_scan_ignore_probe_uses_p4ignore_without_disabling_ignores() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-scan-ignore-{}", std::process::id()));
+        let scan_root = fixture.join("Source");
+        fs::create_dir_all(&scan_root).unwrap();
+        let ignore_file = fixture.join(".p4ignore");
+        fs::write(&ignore_file, b"Generated/\n").unwrap();
+        let input = ConnectionInput {
+            p4_path: Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+
+        let (_, command) = workspace_scan_ignore_command(&input, &fixture, &scan_root).unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(arguments, ["ignores", "-v"]);
+        assert!(!arguments.iter().any(|argument| argument == "-I"));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "P4IGNORE"
+                && value.is_some_and(|value| Path::new(value) == ignore_file.as_path())
+        }));
+        assert_eq!(
+            parse_workspace_scan_ignore_sources(
+                "#FILE - defaults\n#FILE C:\\work\\.p4ignore\n#FILE C:\\work\\.p4ignore\n"
+            ),
+            ["- defaults", r"C:\work\.p4ignore"]
+        );
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn workspace_scan_exclusions_stay_inside_explicit_roots() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-scan-exclusions-{}", std::process::id()));
+        let root = fixture.join("workspace");
+        let excluded = root.join("Generated");
+        let outside = fixture.join("outside");
+        fs::create_dir_all(&excluded).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let roots = workspace_scan_directories(
+            &[root.to_string_lossy().into_owned()],
+            "корней сканирования",
+        )
+        .unwrap();
+        assert_eq!(
+            workspace_scan_exclusions(&[excluded.to_string_lossy().into_owned()], &roots)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            workspace_scan_exclusions(&[outside.to_string_lossy().into_owned()], &roots).is_err()
+        );
+
+        fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]

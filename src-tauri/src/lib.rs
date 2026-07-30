@@ -13,6 +13,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(operations::OperationRegistry::default())
         .manage(commands::WorkspaceRootRegistry::default())
+        .manage(commands::WorkspaceScanRegistry::default())
         .invoke_handler(tauri::generate_handler![
             commands::detect_p4,
             commands::test_connection,
@@ -68,6 +69,8 @@ pub fn run() {
             commands::list_workspace_files,
             commands::search_workspace_files,
             commands::map_workspace_paths,
+            commands::configure_workspace_scan,
+            commands::get_workspace_scan_snapshot,
             commands::list_local_workspace_directory,
             commands::ignore_local_file,
             commands::delete_local_file,

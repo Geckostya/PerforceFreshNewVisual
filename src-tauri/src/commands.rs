@@ -17,7 +17,10 @@ use crate::{
         SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
         TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
         WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
-        WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        WorkspaceScanCandidate, WorkspaceScanCoverage, WorkspaceScanCoverageState,
+        WorkspaceScanIdentity, WorkspaceScanPartialReason, WorkspaceScanRoot,
+        WorkspaceScanSnapshot, WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
+        WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -27,6 +30,7 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -40,6 +44,231 @@ use tauri_plugin_opener::OpenerExt;
 #[derive(Default)]
 pub struct WorkspaceRootRegistry {
     roots: Mutex<BTreeMap<String, PathBuf>>,
+}
+
+#[derive(Default)]
+pub struct WorkspaceScanRegistry {
+    snapshot: Mutex<Option<WorkspaceScanSnapshot>>,
+}
+
+impl WorkspaceScanRegistry {
+    fn reset(&self, input: &ConnectionInput, info: &P4Info) -> Result<(), AppError> {
+        let workspace = info
+            .client_name
+            .as_deref()
+            .or(input.client.as_deref())
+            .map(str::trim)
+            .filter(|workspace| !workspace.is_empty())
+            .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не выбран workspace."))?;
+        let identity = WorkspaceScanIdentity {
+            server: input.port.clone(),
+            user: input.user.clone(),
+            workspace: workspace.to_owned(),
+            stream: info.client_stream.clone(),
+        };
+        self.replace(empty_workspace_scan_snapshot(identity))
+    }
+
+    fn reset_stream(&self, input: &ConnectionInput, stream: &str) -> Result<(), AppError> {
+        let workspace = input
+            .client
+            .as_deref()
+            .map(str::trim)
+            .filter(|workspace| !workspace.is_empty())
+            .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не выбран workspace."))?;
+        let identity = WorkspaceScanIdentity {
+            server: input.port.clone(),
+            user: input.user.clone(),
+            workspace: workspace.to_owned(),
+            stream: Some(stream.to_owned()),
+        };
+        let mut snapshot = empty_workspace_scan_snapshot(identity);
+        snapshot.coverage.state = WorkspaceScanCoverageState::Stale;
+        self.replace(snapshot)
+    }
+
+    fn identity(&self, input: &ConnectionInput) -> Result<WorkspaceScanIdentity, AppError> {
+        let snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let snapshot = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if !workspace_scan_connection_matches(&snapshot.identity, input) {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Состояние сканера относится к другому workspace.",
+            ));
+        }
+        Ok(snapshot.identity.clone())
+    }
+
+    fn configure(
+        &self,
+        expected_identity: &WorkspaceScanIdentity,
+        roots: Vec<WorkspaceScanRoot>,
+        exclusions: Vec<String>,
+        partial_reasons: Vec<WorkspaceScanPartialReason>,
+    ) -> Result<WorkspaceScanSnapshot, AppError> {
+        let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let current = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if &current.identity != expected_identity {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Workspace изменился во время настройки сканера.",
+            ));
+        }
+        let state = if partial_reasons.is_empty() {
+            WorkspaceScanCoverageState::NotStarted
+        } else {
+            WorkspaceScanCoverageState::Partial
+        };
+        let configured = WorkspaceScanSnapshot {
+            scope_id: workspace_scan_scope_id(expected_identity, &roots, &exclusions),
+            identity: expected_identity.clone(),
+            coverage: WorkspaceScanCoverage {
+                state,
+                completed_roots: 0,
+                total_roots: roots.len(),
+                candidate_count: 0,
+                candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
+                partial_reasons,
+            },
+            roots,
+            exclusions,
+            candidates: Vec::new(),
+            generated_at_ms: operation_started_at_ms(),
+        };
+        *snapshot = Some(configured.clone());
+        Ok(configured)
+    }
+
+    fn get(&self, input: &ConnectionInput) -> Result<WorkspaceScanSnapshot, AppError> {
+        let snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let snapshot = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if !workspace_scan_connection_matches(&snapshot.identity, input) {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Состояние сканера относится к другому workspace.",
+            ));
+        }
+        Ok(snapshot.clone())
+    }
+
+    #[allow(dead_code)]
+    pub fn publish_results(
+        &self,
+        expected_scope_id: &str,
+        mut candidates: Vec<WorkspaceScanCandidate>,
+        completed_roots: usize,
+        failed_roots: usize,
+    ) -> Result<WorkspaceScanSnapshot, AppError> {
+        let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let current = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if current.scope_id != expected_scope_id {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Результат сканирования относится к устаревшему scope.",
+            ));
+        }
+        let mut partial_reasons = current.coverage.partial_reasons.clone();
+        if candidates.len() > p4::MAX_WORKSPACE_SCAN_CANDIDATES {
+            candidates.truncate(p4::MAX_WORKSPACE_SCAN_CANDIDATES);
+            if !partial_reasons.contains(&WorkspaceScanPartialReason::CandidateLimit) {
+                partial_reasons.push(WorkspaceScanPartialReason::CandidateLimit);
+            }
+        }
+        let total_roots = current.roots.len();
+        if (failed_roots > 0 || completed_roots.saturating_add(failed_roots) < total_roots)
+            && !partial_reasons.contains(&WorkspaceScanPartialReason::RootError)
+        {
+            partial_reasons.push(WorkspaceScanPartialReason::RootError);
+        }
+        let mut published = current.clone();
+        published.coverage = WorkspaceScanCoverage {
+            state: if partial_reasons.is_empty() && completed_roots >= total_roots {
+                WorkspaceScanCoverageState::Complete
+            } else {
+                WorkspaceScanCoverageState::Partial
+            },
+            completed_roots: completed_roots.min(total_roots),
+            total_roots,
+            candidate_count: candidates.len(),
+            candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
+            partial_reasons,
+        };
+        published.candidates = candidates;
+        published.generated_at_ms = operation_started_at_ms();
+        *snapshot = Some(published.clone());
+        Ok(published)
+    }
+
+    fn replace(&self, replacement: WorkspaceScanSnapshot) -> Result<(), AppError> {
+        *self.snapshot.lock().map_err(workspace_scan_lock_error)? = Some(replacement);
+        Ok(())
+    }
+}
+
+fn empty_workspace_scan_snapshot(identity: WorkspaceScanIdentity) -> WorkspaceScanSnapshot {
+    WorkspaceScanSnapshot {
+        scope_id: workspace_scan_scope_id(&identity, &[], &[]),
+        identity,
+        roots: Vec::new(),
+        exclusions: Vec::new(),
+        candidates: Vec::new(),
+        coverage: WorkspaceScanCoverage {
+            state: WorkspaceScanCoverageState::NotStarted,
+            completed_roots: 0,
+            total_roots: 0,
+            candidate_count: 0,
+            candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
+            partial_reasons: Vec::new(),
+        },
+        generated_at_ms: operation_started_at_ms(),
+    }
+}
+
+fn workspace_scan_scope_id(
+    identity: &WorkspaceScanIdentity,
+    roots: &[WorkspaceScanRoot],
+    exclusions: &[String],
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    identity.server.hash(&mut hasher);
+    identity.user.hash(&mut hasher);
+    identity.workspace.hash(&mut hasher);
+    identity.stream.hash(&mut hasher);
+    for root in roots {
+        root.local_scope.hash(&mut hasher);
+        root.client_scope.hash(&mut hasher);
+        root.depot_scope.hash(&mut hasher);
+    }
+    exclusions.hash(&mut hasher);
+    format!("workspace-scan-{:016x}", hasher.finish())
+}
+
+fn workspace_scan_connection_matches(
+    identity: &WorkspaceScanIdentity,
+    input: &ConnectionInput,
+) -> bool {
+    identity.server.eq_ignore_ascii_case(input.port.trim())
+        && identity.user.eq_ignore_ascii_case(input.user.trim())
+        && input
+            .client
+            .as_deref()
+            .is_some_and(|client| identity.workspace.eq_ignore_ascii_case(client.trim()))
+}
+
+fn workspace_scan_not_open() -> AppError {
+    AppError::new(
+        ErrorKind::CommandFailed,
+        "Workspace для сканирования ещё не открыт.",
+    )
+    .with_hint("Переоткройте workspace и повторите операцию.")
+}
+
+fn workspace_scan_lock_error(error: impl std::fmt::Display) -> AppError {
+    AppError::new(
+        ErrorKind::CommandFailed,
+        "Не удалось прочитать состояние сканера workspace.",
+    )
+    .with_diagnostics(error.to_string())
 }
 
 impl WorkspaceRootRegistry {
@@ -146,12 +375,14 @@ pub async fn test_connection(input: ConnectionInput) -> Result<P4Info, AppError>
 pub async fn open_workspace(
     input: ConnectionInput,
     roots: State<'_, WorkspaceRootRegistry>,
+    scans: State<'_, WorkspaceScanRegistry>,
 ) -> Result<P4Info, AppError> {
     let registry_input = input.clone();
     let info = tauri::async_runtime::spawn_blocking(move || p4::open_workspace(&input))
         .await
         .map_err(task_error)??;
     roots.remember(&registry_input, &info)?;
+    scans.reset(&registry_input, &info)?;
     Ok(info)
 }
 
@@ -490,12 +721,18 @@ fn workspace_stream_view_paths(
 }
 
 #[tauri::command]
-pub async fn switch_stream(input: SwitchStreamInput) -> Result<(), AppError> {
+pub async fn switch_stream(
+    input: SwitchStreamInput,
+    scans: State<'_, WorkspaceScanRegistry>,
+) -> Result<(), AppError> {
+    let registry_input = input.connection.clone();
+    let stream = input.stream.clone();
     tauri::async_runtime::spawn_blocking(move || {
         p4::switch_stream(&input.connection, &input.stream, &input.local_strategy)
     })
     .await
-    .map_err(task_error)?
+    .map_err(task_error)??;
+    scans.reset_stream(&registry_input, &stream)
 }
 
 #[tauri::command]
@@ -742,6 +979,38 @@ pub async fn map_workspace_paths(
     tauri::async_runtime::spawn_blocking(move || p4::map_workspace_paths(&input, &paths))
         .await
         .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn configure_workspace_scan(
+    input: ConnectionInput,
+    roots: Vec<String>,
+    exclusions: Vec<String>,
+    workspace_roots: State<'_, WorkspaceRootRegistry>,
+    scans: State<'_, WorkspaceScanRegistry>,
+) -> Result<WorkspaceScanSnapshot, AppError> {
+    let workspace_root = workspace_roots.root(&input)?;
+    let identity = scans.identity(&input)?;
+    let scan_input = input.clone();
+    let configuration = tauri::async_runtime::spawn_blocking(move || {
+        p4::configure_workspace_scan(&scan_input, &workspace_root, &roots, &exclusions)
+    })
+    .await
+    .map_err(task_error)??;
+    scans.configure(
+        &identity,
+        configuration.roots,
+        configuration.exclusions,
+        configuration.partial_reasons,
+    )
+}
+
+#[tauri::command]
+pub fn get_workspace_scan_snapshot(
+    input: ConnectionInput,
+    scans: State<'_, WorkspaceScanRegistry>,
+) -> Result<WorkspaceScanSnapshot, AppError> {
+    scans.get(&input)
 }
 
 #[tauri::command]
@@ -2944,12 +3213,15 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
-        parse_sync_output_record, submitted_change_from_record, sync_operation_scope,
-        sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
-        workspace_stream_view_paths,
+        WorkspaceScanRegistry, bounded_operation_diagnostics, confirmed_integration_paths,
+        operation_event, parse_sync_output_record, submitted_change_from_record,
+        sync_operation_scope, sync_operation_succeeded, unexpected_integration_paths,
+        validate_reveal_path, workspace_stream_view_paths,
     };
-    use crate::models::{OpenedFile, OperationEventKind};
+    use crate::models::{
+        ConnectionInput, OpenedFile, OperationEventKind, P4Info, WorkspaceScanCandidate,
+        WorkspaceScanCoverageState, WorkspaceScanPartialReason, WorkspaceScanRoot,
+    };
     use std::{collections::BTreeSet, fs};
 
     #[test]
@@ -3105,5 +3377,110 @@ mod tests {
         );
 
         fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn workspace_scan_reports_partial_coverage_and_resets_on_stream_change() {
+        let input = ConnectionInput {
+            p4_path: None,
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let registry = WorkspaceScanRegistry::default();
+        registry
+            .reset(
+                &input,
+                &P4Info {
+                    client_name: Some("alex-main".to_owned()),
+                    client_stream: Some("//Acme/main".to_owned()),
+                    ..P4Info::default()
+                },
+            )
+            .unwrap();
+        let identity = registry.identity(&input).unwrap();
+        let configured = registry
+            .configure(
+                &identity,
+                vec![WorkspaceScanRoot {
+                    local_path: r"C:\work\Source".to_owned(),
+                    local_scope: r"C:\work\Source\...".to_owned(),
+                    client_scope: "//alex-main/Source/...".to_owned(),
+                    depot_scope: "//Acme/main/Source/...".to_owned(),
+                    ignore_sources: Vec::new(),
+                }],
+                Vec::new(),
+                vec![WorkspaceScanPartialReason::IgnoreRulesUnavailable],
+            )
+            .unwrap();
+        assert_eq!(
+            configured.coverage.state,
+            WorkspaceScanCoverageState::Partial
+        );
+        assert_eq!(configured.coverage.total_roots, 1);
+        assert!(configured.candidates.is_empty());
+
+        let limited = registry
+            .publish_results(
+                &configured.scope_id,
+                (0..=crate::p4::MAX_WORKSPACE_SCAN_CANDIDATES)
+                    .map(|index| WorkspaceScanCandidate {
+                        action: "add".to_owned(),
+                        depot_path: None,
+                        client_path: None,
+                        local_path: format!(r"C:\work\Source\{index}.txt"),
+                    })
+                    .collect(),
+                0,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            limited.candidates.len(),
+            crate::p4::MAX_WORKSPACE_SCAN_CANDIDATES
+        );
+        assert!(
+            limited
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::CandidateLimit)
+        );
+        assert!(
+            limited
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::RootError)
+        );
+
+        registry.reset_stream(&input, "//Acme/dev").unwrap();
+        let reset = registry.get(&input).unwrap();
+        assert_eq!(reset.identity.stream.as_deref(), Some("//Acme/dev"));
+        assert_eq!(reset.coverage.state, WorkspaceScanCoverageState::Stale);
+        assert!(reset.roots.is_empty());
+        assert!(reset.candidates.is_empty());
+        assert_ne!(reset.scope_id, configured.scope_id);
+
+        let mut other_workspace = input;
+        other_workspace.client = Some("alex-release".to_owned());
+        registry
+            .reset(
+                &other_workspace,
+                &P4Info {
+                    client_name: Some("alex-release".to_owned()),
+                    client_stream: Some("//Acme/release".to_owned()),
+                    ..P4Info::default()
+                },
+            )
+            .unwrap();
+        let workspace_reset = registry.get(&other_workspace).unwrap();
+        assert_eq!(workspace_reset.identity.workspace, "alex-release");
+        assert_eq!(
+            workspace_reset.coverage.state,
+            WorkspaceScanCoverageState::NotStarted
+        );
+        assert!(workspace_reset.roots.is_empty());
     }
 }

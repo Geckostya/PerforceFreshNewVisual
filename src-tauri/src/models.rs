@@ -768,6 +768,79 @@ pub struct WorkspaceMappingBatch {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanIdentity {
+    pub server: String,
+    pub user: String,
+    pub workspace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanRoot {
+    pub local_path: String,
+    pub local_scope: String,
+    pub client_scope: String,
+    pub depot_scope: String,
+    pub ignore_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum WorkspaceScanCoverageState {
+    NotStarted,
+    Complete,
+    Partial,
+    Stale,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum WorkspaceScanPartialReason {
+    CandidateLimit,
+    IgnoreRulesUnavailable,
+    RootError,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanCoverage {
+    pub state: WorkspaceScanCoverageState,
+    pub completed_roots: usize,
+    pub total_roots: usize,
+    pub candidate_count: usize,
+    pub candidate_limit: usize,
+    pub partial_reasons: Vec<WorkspaceScanPartialReason>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanCandidate {
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depot_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_path: Option<String>,
+    pub local_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanSnapshot {
+    pub scope_id: String,
+    pub identity: WorkspaceScanIdentity,
+    pub roots: Vec<WorkspaceScanRoot>,
+    pub exclusions: Vec<String>,
+    pub candidates: Vec<WorkspaceScanCandidate>,
+    pub coverage: WorkspaceScanCoverage,
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncPreviewItem {
     pub depot_path: String,
     pub action: String,

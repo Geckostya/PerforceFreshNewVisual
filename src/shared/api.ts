@@ -41,6 +41,7 @@ import type {
   WorkspaceFile,
   WorkspaceLocalBatch,
   WorkspaceMappingBatch,
+  WorkspaceScanSnapshot,
   WorkspaceSearchResult,
   ReconcileItem,
   ResolvePreviewItem,
@@ -292,6 +293,14 @@ export async function searchWorkspaceFiles(input: ConnectionInput, scope: string
 
 export async function mapWorkspacePaths(input: ConnectionInput, paths: string[]): Promise<WorkspaceMappingBatch> {
   return invoke<WorkspaceMappingBatch>("map_workspace_paths", { input, paths });
+}
+
+export async function configureWorkspaceScan(input: ConnectionInput, roots: string[], exclusions: string[]): Promise<WorkspaceScanSnapshot> {
+  return invoke<WorkspaceScanSnapshot>("configure_workspace_scan", { input, roots, exclusions });
+}
+
+export async function getWorkspaceScanSnapshot(input: ConnectionInput): Promise<WorkspaceScanSnapshot> {
+  return invoke<WorkspaceScanSnapshot>("get_workspace_scan_snapshot", { input });
 }
 
 export async function listLocalWorkspaceDirectory(input: ConnectionInput, directory: string): Promise<WorkspaceLocalBatch> {

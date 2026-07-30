@@ -434,6 +434,50 @@ export interface WorkspaceMappingBatch {
   diagnostics: string[];
 }
 
+export interface WorkspaceScanIdentity {
+  server: string;
+  user: string;
+  workspace: string;
+  stream?: string;
+}
+
+export interface WorkspaceScanRoot {
+  localPath: string;
+  localScope: string;
+  clientScope: string;
+  depotScope: string;
+  ignoreSources: string[];
+}
+
+export type WorkspaceScanCoverageState = "not_started" | "complete" | "partial" | "stale";
+export type WorkspaceScanPartialReason = "candidate_limit" | "ignore_rules_unavailable" | "root_error";
+
+export interface WorkspaceScanCoverage {
+  state: WorkspaceScanCoverageState;
+  completedRoots: number;
+  totalRoots: number;
+  candidateCount: number;
+  candidateLimit: number;
+  partialReasons: WorkspaceScanPartialReason[];
+}
+
+export interface WorkspaceScanCandidate {
+  action: string;
+  depotPath?: string;
+  clientPath?: string;
+  localPath: string;
+}
+
+export interface WorkspaceScanSnapshot {
+  scopeId: string;
+  identity: WorkspaceScanIdentity;
+  roots: WorkspaceScanRoot[];
+  exclusions: string[];
+  candidates: WorkspaceScanCandidate[];
+  coverage: WorkspaceScanCoverage;
+  generatedAtMs: number;
+}
+
 export interface UiControlSnapshot {
   index: number;
   tag: string;
