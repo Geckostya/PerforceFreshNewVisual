@@ -19,8 +19,13 @@ if (-not (Test-Path (Join-Path $toolchainRoot "node"))) {
 $env:CARGO_HOME = Join-Path $toolchainRoot "cargo"
 $env:RUSTUP_HOME = Join-Path $toolchainRoot "rustup"
 $env:npm_config_cache = Join-Path $toolchainRoot "npm-cache"
+$rustToolchainBin = Get-ChildItem (Join-Path $env:RUSTUP_HOME "toolchains") -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object { Join-Path $_.FullName "bin" } |
+    Where-Object { Test-Path (Join-Path $_ "rustc.exe") } |
+    Select-Object -First 1
 $env:PATH = @(
     (Join-Path $toolchainRoot "node")
+    $rustToolchainBin
     (Join-Path $env:CARGO_HOME "bin")
     $env:PATH
 ) -join ";"
