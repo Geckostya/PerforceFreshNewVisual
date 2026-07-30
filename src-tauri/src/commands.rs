@@ -2975,9 +2975,9 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 mod tests {
     use super::{
         bounded_operation_diagnostics, confirmed_integration_paths, failed_submit_item_results,
-        operation_event, parse_sync_output_record, submit_item_results, submitted_change_from_record,
-        sync_operation_scope, sync_operation_succeeded, unexpected_integration_paths,
-        validate_reveal_path, workspace_stream_view_paths,
+        operation_event, parse_sync_output_record, submit_item_results,
+        submitted_change_from_record, sync_operation_scope, sync_operation_succeeded,
+        unexpected_integration_paths, validate_reveal_path, workspace_stream_view_paths,
     };
     use crate::models::{
         AppError, ErrorKind, OpenedFile, OperationCompensationStatus, OperationEventKind,
@@ -3112,8 +3112,14 @@ mod tests {
             &AppError::new(ErrorKind::CommandFailed, "submit failed"),
         );
         assert_eq!(failure[0].status, OperationItemStatus::Failed);
-        assert_eq!(failure[0].compensation, OperationCompensationStatus::Unknown);
-        assert_eq!(failure[0].recovery_action_id.as_deref(), Some("refresh_changes"));
+        assert_eq!(
+            failure[0].compensation,
+            OperationCompensationStatus::Unknown
+        );
+        assert_eq!(
+            failure[0].recovery_action_id.as_deref(),
+            Some("refresh_changes")
+        );
     }
 
     #[test]
