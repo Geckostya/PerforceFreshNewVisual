@@ -1,6 +1,6 @@
 use std::{
     env,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{
@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 use crate::models::{AppError, CliLogEntry, CliLogLevel, ConnectionInput, ErrorKind};
 
 const MAX_CLI_LOG_ENTRIES: usize = 500;
+const MAX_BOUNDED_STDERR_BYTES: usize = 64 * 1024;
 type JsonDiagnosticOutput = (Vec<Map<String, Value>>, Vec<String>, bool);
 static CLI_LOG: OnceLock<Mutex<Vec<CliLogEntry>>> = OnceLock::new();
 static CLI_LOG_ID: AtomicU64 = AtomicU64::new(1);
@@ -180,6 +181,77 @@ pub(super) fn run_binary(path: &Path, command: &mut Command) -> Result<Vec<u8>, 
         return Err(command_error(&output));
     }
     Ok(output.stdout)
+}
+
+/// Runs a text-producing command without retaining an unbounded response in memory.
+///
+/// Both pipes are drained to let the child finish normally, while only the requested stdout
+/// prefix and a bounded diagnostic prefix are retained.
+pub(super) fn run_bounded_output(
+    path: &Path,
+    command: &mut Command,
+    max_stdout_bytes: usize,
+) -> Result<(Output, bool), AppError> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| launch_error(path, error))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не удалось открыть stdout p4."))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не удалось открыть stderr p4."))?;
+    let stderr_reader = thread::spawn(move || read_bounded(stderr, MAX_BOUNDED_STDERR_BYTES));
+    let (stdout, stdout_truncated) =
+        read_bounded(&mut stdout, max_stdout_bytes).map_err(|error| {
+            AppError::new(ErrorKind::CommandFailed, "Не удалось прочитать вывод p4.")
+                .with_diagnostics(error.to_string())
+        })?;
+    let status = child.wait().map_err(|error| {
+        AppError::new(ErrorKind::CommandFailed, "Не удалось дождаться ответа p4.")
+            .with_diagnostics(error.to_string())
+    })?;
+    let (stderr, stderr_truncated) = stderr_reader
+        .join()
+        .map_err(|_| AppError::new(ErrorKind::CommandFailed, "Чтение диагностики p4 прервано."))?
+        .map_err(|error| {
+            AppError::new(
+                ErrorKind::CommandFailed,
+                "Не удалось прочитать диагностику p4.",
+            )
+            .with_diagnostics(error.to_string())
+        })?;
+    let mut output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    if stderr_truncated {
+        output
+            .stderr
+            .extend_from_slice(b"\n[diagnostics truncated]");
+    }
+    Ok((output, stdout_truncated))
+}
+
+fn read_bounded(mut reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut kept = Vec::with_capacity(limit);
+    let mut buffer = [0_u8; 32 * 1024];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok((kept, truncated));
+        }
+        let available = limit.saturating_sub(kept.len());
+        let retained = read.min(available);
+        kept.extend_from_slice(&buffer[..retained]);
+        truncated |= retained < read;
+    }
 }
 
 pub(super) fn run_output_with_stdin(
@@ -526,7 +598,9 @@ pub(super) fn combined_output(output: &Output) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_error_message, is_empty_match_record, parse_json_lines};
+    use std::io::Cursor;
+
+    use super::{classify_error_message, is_empty_match_record, parse_json_lines, read_bounded};
     use crate::models::ErrorKind;
 
     #[test]
@@ -565,5 +639,15 @@ mod tests {
         assert!(is_empty_match_record(&records[0]));
         assert!(is_empty_match_record(&records[1]));
         assert!(!is_empty_match_record(&records[2]));
+    }
+
+    #[test]
+    fn bounded_reader_drains_large_output_without_retaining_it() {
+        let input = vec![b'x'; 96 * 1024];
+        let (kept, truncated) = read_bounded(Cursor::new(input), 1024).unwrap();
+
+        assert!(truncated);
+        assert_eq!(kept.len(), 1024);
+        assert!(kept.iter().all(|byte| *byte == b'x'));
     }
 }
