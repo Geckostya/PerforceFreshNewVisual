@@ -8,6 +8,7 @@ import type {
   AnnotationLine,
   DiffMode,
   FileRevision,
+  HistoryPage,
   LocaleCatalog,
   OpenedFile,
   P4Detection,
@@ -249,6 +250,10 @@ export async function listSubmittedChanges(input: ConnectionInput, scope: string
   });
 }
 
+export async function listSubmittedHistoryPage(input: ConnectionInput, scope: string, limit = 100, cursor?: string, job?: string, user?: string, client?: string, includeStreams = false): Promise<HistoryPage<PendingChange>> {
+  return invoke<HistoryPage<PendingChange>>("list_submitted_history_page", { request: { connection: input, scope, limit, cursor, job: job?.trim() || undefined, user: user?.trim() || undefined, client: client?.trim() || undefined, includeStreams } });
+}
+
 export async function listSubmittedFilterOptions(input: ConnectionInput): Promise<SubmittedFilterOptions> {
   return invoke<SubmittedFilterOptions>("list_submitted_filter_options", { input });
 }
@@ -392,6 +397,10 @@ export async function diffFile(
 
 export async function fileHistory(connection: ConnectionInput, depotPath: string, limit = 100): Promise<FileRevision[]> {
   return invoke<FileRevision[]>("file_history", { input: connection, depotPath, limit });
+}
+
+export async function fileHistoryPage(connection: ConnectionInput, depotPath: string, limit = 100, cursor?: string): Promise<HistoryPage<FileRevision>> {
+  return invoke<HistoryPage<FileRevision>>("file_history_page", { input: connection, depotPath, limit, cursor });
 }
 
 export async function printRevision(connection: ConnectionInput, depotPath: string, revision: string): Promise<FileDiff> {

@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { fileHistory, listSubmittedChanges, normalizeAppError, previewSync } from "../../shared/api";
+import { fileHistoryPage, listSubmittedHistoryPage, normalizeAppError, previewSync } from "../../shared/api";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { SelectableSurface } from "../../shared/ItemList";
@@ -11,7 +11,7 @@ import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../sh
 import { isContextMenuShortcut } from "../../shared/selection";
 import { CompactEmpty, ContextMenu, ErrorBanner, MenuButton, Modal, View } from "../../shared/View";
 import { useContextMenu } from "../../shared/useContextMenu";
-import { changeScope, DEPOT_HISTORY_LIMIT, DEPOT_HISTORY_PAGE_SIZE, directoryScope, hasNextHistoryPage, historyPageItems, historyPageLimit, revisionScope } from "./depot";
+import { changeScope, DEPOT_HISTORY_PAGE_SIZE, directoryScope, revisionScope } from "./depot";
 import { DepotOverview, type DepotOverviewMenuTarget } from "./DepotOverview";
 
 type DepotResourceTarget = {
@@ -24,6 +24,8 @@ type FullHistoryState = {
   kind: "file" | "folder";
   path: string;
   page: number;
+  pageCursors: (string | undefined)[];
+  nextCursor?: string;
   revisions: FileRevision[];
   changes: PendingChange[];
   complete: boolean;
@@ -71,35 +73,31 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
     await loadFullHistoryPage(target, 0, true);
   }
 
-  async function loadFullHistoryPage(target: DepotResourceTarget, page: number, reset = false) {
-    const limit = historyPageLimit(page);
+  async function loadFullHistoryPage(target: DepotResourceTarget, page: number, reset = false, cursor?: string, pageCursors: (string | undefined)[] = [undefined]) {
     setFullHistory((current) => !reset && current?.kind === target.kind && current.path === target.path
       ? { ...current, busy: true, error: undefined }
-      : { kind: target.kind, path: target.path, page: 0, revisions: [], changes: [], complete: false, busy: true });
+      : { kind: target.kind, path: target.path, page, pageCursors, revisions: [], changes: [], complete: false, busy: true });
     try {
       if (target.kind === "file") {
-        const revisions = await fileHistory(connection, target.path, limit);
-        setFullHistory({ kind: target.kind, path: target.path, page, revisions, changes: [], complete: revisions.length < limit || limit === DEPOT_HISTORY_LIMIT, busy: false });
+        const result = await fileHistoryPage(connection, target.path, DEPOT_HISTORY_PAGE_SIZE, cursor);
+        setFullHistory({ kind: target.kind, path: target.path, page, pageCursors, nextCursor: result.nextCursor, revisions: result.items, changes: [], complete: !result.partial, busy: false });
       } else {
-        const changes = await listSubmittedChanges(connection, directoryScope(target.path), limit);
-        setFullHistory({ kind: target.kind, path: target.path, page, revisions: [], changes, complete: changes.length < limit || limit === DEPOT_HISTORY_LIMIT, busy: false });
+        const result = await listSubmittedHistoryPage(connection, directoryScope(target.path), DEPOT_HISTORY_PAGE_SIZE, cursor);
+        setFullHistory({ kind: target.kind, path: target.path, page, pageCursors, nextCursor: result.nextCursor, revisions: [], changes: result.items, complete: !result.partial, busy: false });
       }
     } catch (reason) {
       setFullHistory((current) => current?.kind === target.kind && current.path === target.path
         ? { ...current, busy: false, error: normalizeAppError(reason) }
-        : { kind: target.kind, path: target.path, page: 0, revisions: [], changes: [], complete: false, busy: false, error: normalizeAppError(reason) });
+        : { kind: target.kind, path: target.path, page: 0, pageCursors: [undefined], revisions: [], changes: [], complete: false, busy: false, error: normalizeAppError(reason) });
     }
   }
 
   function goToHistoryPage(page: number) {
     if (!fullHistory || page < 0) return;
-    const itemCount = fullHistory.kind === "file" ? fullHistory.revisions.length : fullHistory.changes.length;
-    const cachedThrough = Math.min((page + 1) * DEPOT_HISTORY_PAGE_SIZE + 1, DEPOT_HISTORY_LIMIT);
-    if (page < fullHistory.page || itemCount >= cachedThrough || (fullHistory.complete && itemCount > page * DEPOT_HISTORY_PAGE_SIZE)) {
-      setFullHistory({ ...fullHistory, page, error: undefined });
-      return;
-    }
-    void loadFullHistoryPage({ kind: fullHistory.kind, path: fullHistory.path, syncScope: fullHistory.path }, page);
+    const cursor = page === fullHistory.page + 1 ? fullHistory.nextCursor : fullHistory.pageCursors[page];
+    if (!cursor && page !== 0) return;
+    const pageCursors = page === fullHistory.page + 1 ? [...fullHistory.pageCursors, cursor] : fullHistory.pageCursors;
+    void loadFullHistoryPage({ kind: fullHistory.kind, path: fullHistory.path, syncScope: fullHistory.path }, page, false, cursor, pageCursors);
   }
 
   function openPointerMenu(event: ReactMouseEvent<HTMLElement>, target: DepotResourceTarget) {
@@ -118,13 +116,12 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
     return { kind: "folder", path: target.path, syncScope: target.change ? changeScope(target.path, target.change) : directoryScope(target.path) };
   }
 
-  const historyItemCount = fullHistory?.kind === "file" ? fullHistory.revisions.length : fullHistory?.changes.length || 0;
-  const visibleRevisions = fullHistory?.kind === "file" ? historyPageItems(fullHistory.revisions, fullHistory.page) : [];
-  const visibleChanges = fullHistory?.kind === "folder" ? historyPageItems(fullHistory.changes, fullHistory.page) : [];
+  const visibleRevisions = fullHistory?.kind === "file" ? fullHistory.revisions : [];
+  const visibleChanges = fullHistory?.kind === "folder" ? fullHistory.changes : [];
   const visibleHistoryCount = visibleRevisions.length + visibleChanges.length;
   const pageStart = fullHistory && visibleHistoryCount ? fullHistory.page * DEPOT_HISTORY_PAGE_SIZE + 1 : 0;
   const pageEnd = pageStart ? pageStart + visibleHistoryCount - 1 : 0;
-  const canShowNext = fullHistory ? hasNextHistoryPage(historyItemCount, fullHistory.page) : false;
+  const canShowNext = Boolean(fullHistory?.nextCursor);
   const menu = depotMenu.menu?.target;
 
   return <View

@@ -349,6 +349,12 @@ export interface PendingChange {
   stream?: string;
 }
 
+export interface HistoryPage<T> {
+  items: T[];
+  nextCursor?: string;
+  partial: boolean;
+}
+
 export interface Job {
   id: string;
   status?: string;

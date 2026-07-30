@@ -10,24 +10,25 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::models::{
     AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
     CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
-    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
-    ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide,
-    ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile,
-    StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
-    StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
-    StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
-    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
-    SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
-    SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
-    UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
-    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSpec,
-    WorkspaceSummary,
+    FileRevision, HistoryPage, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange,
+    ReconcileItem, ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent,
+    ResolveContentSide, ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem,
+    ShelvedFile, StreamDetail, StreamHistoryEntry, StreamIntegrationDirection,
+    StreamIntegrationHint, StreamIntegrationInput, StreamIntegrationPreview,
+    StreamIntegrationPreviewItem, StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode,
+    SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
+    SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
+    SubmittedFilterOptions, SubmittedHistoryPageInput, SyncPreview, SyncPreviewItem,
+    TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
+    WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState,
+    WorkspaceSpec, WorkspaceSummary,
 };
 
 mod auth;
@@ -1112,6 +1113,146 @@ pub fn list_submitted_changes(
         enrich_submitted_streams(input, &mut changes)?;
     }
     Ok(changes)
+}
+
+const HISTORY_PAGE_LIMIT: u32 = 100;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryCursor {
+    kind: String,
+    scope: String,
+    boundary: String,
+    user: Option<String>,
+    client: Option<String>,
+    job: Option<String>,
+}
+
+fn encode_history_cursor(cursor: &HistoryCursor) -> Result<String, AppError> {
+    Ok(serde_json::to_vec(cursor)
+        .map_err(|error| {
+            AppError::new(ErrorKind::InvalidOutput, "Unable to create history cursor.")
+                .with_diagnostics(error.to_string())
+        })?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn decode_history_cursor(
+    cursor: Option<&str>,
+    expected: &HistoryCursor,
+) -> Result<Option<String>, AppError> {
+    let Some(cursor) = cursor.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if cursor.len() > 2048
+        || cursor.len() % 2 != 0
+        || !cursor.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The history cursor is invalid.",
+        ));
+    }
+    let bytes = (0..cursor.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&cursor[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| AppError::new(ErrorKind::InvalidOutput, "The history cursor is invalid."))?;
+    let decoded: HistoryCursor = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::new(ErrorKind::InvalidOutput, "The history cursor is invalid."))?;
+    if decoded.kind != expected.kind
+        || decoded.scope != expected.scope
+        || decoded.user != expected.user
+        || decoded.client != expected.client
+        || decoded.job != expected.job
+        || !decoded.boundary.chars().all(|value| value.is_ascii_digit())
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The history cursor does not match this request.",
+        ));
+    }
+    Ok(Some(decoded.boundary))
+}
+
+pub fn list_submitted_history_page(
+    request: SubmittedHistoryPageInput,
+) -> Result<HistoryPage<PendingChange>, AppError> {
+    let SubmittedHistoryPageInput {
+        connection: input,
+        scope,
+        limit,
+        cursor,
+        job,
+        user,
+        client,
+        include_streams,
+    } = request;
+    required_client(&input)?;
+    validate_depot_path(&scope)?;
+    if !(1..=HISTORY_PAGE_LIMIT).contains(&limit) {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "History page limit must be between 1 and 100.",
+        ));
+    }
+    let clean = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let expected = HistoryCursor {
+        kind: "submitted".to_owned(),
+        scope: scope.to_owned(),
+        boundary: String::new(),
+        user: clean(user.as_deref()),
+        client: clean(client.as_deref()),
+        job: clean(job.as_deref()),
+    };
+    let boundary = decode_history_cursor(cursor.as_deref(), &expected)?;
+    let query_scope = boundary
+        .as_ref()
+        .map_or_else(|| scope.to_owned(), |value| format!("{scope}@{value}"));
+    let (path, mut command) = configured_command(&input)?;
+    let mut arguments = submitted_change_arguments(
+        &query_scope,
+        &(limit + 1).to_string(),
+        user.as_deref(),
+        client.as_deref(),
+    )?;
+    if let Some(job) = expected.job.as_deref() {
+        arguments.splice(
+            9..9,
+            ["-j".to_owned(), validate_form_value(job, "job")?.to_owned()],
+        );
+    }
+    command.args(arguments);
+    let mut items = parse_pending_changes(&run_json(&path, &mut command)?)?;
+    if let Some(boundary) = boundary {
+        items.retain(|item| item.id != boundary);
+    }
+    let partial = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    if include_streams && !items.is_empty() {
+        enrich_submitted_streams(&input, &mut items)?;
+    }
+    let next_cursor = if partial {
+        encode_history_cursor(&HistoryCursor {
+            boundary: items.last().map(|item| item.id.clone()).unwrap_or_default(),
+            ..expected
+        })?
+        .into()
+    } else {
+        None
+    };
+    Ok(HistoryPage {
+        items,
+        next_cursor,
+        partial,
+    })
 }
 
 fn enrich_submitted_streams(
@@ -3035,6 +3176,69 @@ pub fn file_history(
         "-ztag", "-Mj", "filelog", "-i", "-l", "-t", "-m", &limit, depot_path,
     ]);
     parse_file_history(&run_json_allowing_empty_match(&path, &mut command)?)
+}
+
+pub fn file_history_page(
+    input: &ConnectionInput,
+    depot_path: &str,
+    limit: u32,
+    cursor: Option<&str>,
+) -> Result<HistoryPage<FileRevision>, AppError> {
+    required_client(input)?;
+    validate_depot_path(depot_path)?;
+    if !(1..=HISTORY_PAGE_LIMIT).contains(&limit) {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "History page limit must be between 1 and 100.",
+        ));
+    }
+    let expected = HistoryCursor {
+        kind: "file".to_owned(),
+        scope: depot_path.to_owned(),
+        boundary: String::new(),
+        user: None,
+        client: None,
+        job: None,
+    };
+    let boundary = decode_history_cursor(cursor, &expected)?;
+    let spec = boundary.as_ref().map_or_else(
+        || depot_path.to_owned(),
+        |value| format!("{depot_path}#{value}"),
+    );
+    let (path, mut command) = configured_command(input)?;
+    command.args([
+        "-ztag",
+        "-Mj",
+        "filelog",
+        "-i",
+        "-l",
+        "-t",
+        "-m",
+        &(limit + 1).to_string(),
+        &spec,
+    ]);
+    let mut items = parse_file_history(&run_json_allowing_empty_match(&path, &mut command)?)?;
+    if let Some(boundary) = boundary {
+        items.retain(|item| item.revision != boundary);
+    }
+    let partial = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    let next_cursor = if partial {
+        Some(encode_history_cursor(&HistoryCursor {
+            boundary: items
+                .last()
+                .map(|item| item.revision.clone())
+                .unwrap_or_default(),
+            ..expected
+        })?)
+    } else {
+        None
+    };
+    Ok(HistoryPage {
+        items,
+        next_cursor,
+        partial,
+    })
 }
 
 pub fn print_revision(

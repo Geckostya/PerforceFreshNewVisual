@@ -644,6 +644,28 @@ pub struct PendingChange {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct HistoryPage<T> {
+    pub items: Vec<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub partial: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmittedHistoryPageInput {
+    pub connection: ConnectionInput,
+    pub scope: String,
+    pub limit: u32,
+    pub cursor: Option<String>,
+    pub job: Option<String>,
+    pub user: Option<String>,
+    pub client: Option<String>,
+    pub include_streams: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Job {
     pub id: String,
     pub status: Option<String>,

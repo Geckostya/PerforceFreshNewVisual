@@ -5,7 +5,7 @@ use crate::{
         CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
         CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
         DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        FileRevision, Fix, HistoryPage, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
         OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
         OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
         P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
@@ -14,10 +14,10 @@ use crate::{
         ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
         StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
         SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
-        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
-        TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
-        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
-        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        SubmittedChangeDetail, SubmittedFilterOptions, SubmittedHistoryPageInput,
+        SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem,
+        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
+        WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -607,6 +607,15 @@ pub async fn list_submitted_changes(
     })
     .await
     .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn list_submitted_history_page(
+    request: SubmittedHistoryPageInput,
+) -> Result<HistoryPage<PendingChange>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::list_submitted_history_page(request))
+        .await
+        .map_err(task_error)?
 }
 
 #[tauri::command]
@@ -2584,6 +2593,20 @@ pub async fn file_history(
 ) -> Result<Vec<FileRevision>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::file_history(&input, &depot_path, limit.unwrap_or(100))
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn file_history_page(
+    input: ConnectionInput,
+    depot_path: String,
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<HistoryPage<FileRevision>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::file_history_page(&input, &depot_path, limit, cursor.as_deref())
     })
     .await
     .map_err(task_error)?
