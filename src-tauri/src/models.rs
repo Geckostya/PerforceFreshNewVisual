@@ -715,6 +715,16 @@ pub struct WorkspaceFile {
     pub file_size: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchResult {
+    pub files: Vec<WorkspaceFile>,
+    pub partial: bool,
+    pub limit: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceLocalBatch {

@@ -41,6 +41,7 @@ import type {
   WorkspaceFile,
   WorkspaceLocalBatch,
   WorkspaceMappingBatch,
+  WorkspaceSearchResult,
   ReconcileItem,
   ResolvePreviewItem,
   ResolveApplyResult,
@@ -283,6 +284,10 @@ export async function listOpenedFiles(input: ConnectionInput): Promise<OpenedFil
 
 export async function listWorkspaceFiles(input: ConnectionInput, scope?: string, includeUntracked = false): Promise<WorkspaceFile[]> {
   return invoke<WorkspaceFile[]>("list_workspace_files", { input, scope, includeUntracked });
+}
+
+export async function searchWorkspaceFiles(input: ConnectionInput, scope: string, query: string): Promise<WorkspaceSearchResult> {
+  return invoke<WorkspaceSearchResult>("search_workspace_files", { input, scope, query });
 }
 
 export async function mapWorkspacePaths(input: ConnectionInput, paths: string[]): Promise<WorkspaceMappingBatch> {

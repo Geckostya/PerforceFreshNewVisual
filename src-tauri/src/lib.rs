@@ -66,6 +66,7 @@ pub fn run() {
             commands::list_shelved_changes,
             commands::list_opened_files,
             commands::list_workspace_files,
+            commands::search_workspace_files,
             commands::map_workspace_paths,
             commands::list_local_workspace_directory,
             commands::ignore_local_file,

@@ -403,6 +403,13 @@ export interface WorkspaceFile {
   statusPending?: boolean;
 }
 
+export interface WorkspaceSearchResult {
+  files: WorkspaceFile[];
+  partial: boolean;
+  limit: number;
+  diagnostics: string[];
+}
+
 export interface WorkspaceLocalBatch {
   directories: string[];
   ignoredDirectories: string[];

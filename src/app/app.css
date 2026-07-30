@@ -2136,6 +2136,9 @@
 .workspace-toolbar-select > svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--text-tertiary); }
 .workspace-toolbar-input input,
 .workspace-toolbar-select select { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--font-body); }
+.workspace-search-summary,
+.workspace-search-diagnostics { margin: 0; padding: 8px 12px; color: var(--text-secondary); font-size: var(--font-caption); }
+.workspace-search-diagnostics { color: var(--warning-text); overflow-wrap: anywhere; }
 .workspace-view-toggle { padding: 2px; display: flex; align-items: center; gap: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
 .workspace-view-toggle button { min-height: var(--control-compact); padding: 0 9px; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; font: inherit; font-size: var(--font-caption); }
 .workspace-view-toggle button:hover { background: var(--surface-muted); color: var(--text); }

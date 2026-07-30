@@ -26,8 +26,8 @@ use crate::models::{
     SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
     UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
-    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSpec,
-    WorkspaceSummary,
+    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSearchResult,
+    WorkspaceSpec, WorkspaceSummary,
 };
 
 mod auth;
@@ -52,6 +52,7 @@ use trust::parse_trust_entries;
 use validation::*;
 
 const MAX_RECORDS: &str = "200";
+const MAX_WORKSPACE_SEARCH_RESULTS: usize = 200;
 const MAX_INTEGRATION_PREVIEW_ITEMS: usize = 200;
 const MAX_HISTORY_RECORDS: &str = "5000";
 const MAX_SUBMITTED_DETAIL_PREVIEW_FILES: u32 = 1000;
@@ -1503,6 +1504,32 @@ pub fn list_workspace_files(
     Ok(files)
 }
 
+pub fn search_workspace_files(
+    input: &ConnectionInput,
+    scope: &str,
+    query: &str,
+) -> Result<WorkspaceSearchResult, AppError> {
+    required_client(input)?;
+    let arguments = workspace_search_arguments(scope, query)?;
+    let (path, mut command) = configured_command(input)?;
+    command.args(arguments);
+    let (records, diagnostics, server_partial) =
+        run_json_collecting_diagnostics_allowing_empty_match(&path, &mut command)?;
+    let result = workspace_search_result(&records, diagnostics, server_partial)?;
+    if result.partial && result.files.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            result
+                .diagnostics
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Workspace search did not complete.".to_owned()),
+        )
+        .with_hint("Narrow the scope or search text and try again."));
+    }
+    Ok(result)
+}
+
 pub fn list_local_workspace_directory(
     input: &ConnectionInput,
     root: &Path,
@@ -1749,6 +1776,75 @@ fn workspace_fstat_arguments(scope: &str) -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect()
+}
+
+fn workspace_search_arguments(scope: &str, query: &str) -> Result<Vec<String>, AppError> {
+    let scope = scope.trim();
+    validate_depot_path(scope)?;
+    let query = query.trim();
+    if query.is_empty()
+        || query.len() > 128
+        || query.contains(['\r', '\n', '\0'])
+        || query.chars().any(|character| character.is_control())
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Workspace search text must contain between 1 and 128 visible characters.",
+        ));
+    }
+    let filter = query
+        .split_whitespace()
+        .map(|term| {
+            let escaped = escape_fstat_filter_term(term);
+            format!("(depotFile~=*{escaped}* | clientFile~=*{escaped}*)")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(vec![
+        "-ztag".to_owned(),
+        "-Mj".to_owned(),
+        "fstat".to_owned(),
+        "-Rc".to_owned(),
+        "-Ol".to_owned(),
+        "-m".to_owned(),
+        (MAX_WORKSPACE_SEARCH_RESULTS + 1).to_string(),
+        "-F".to_owned(),
+        filter,
+        "-T".to_owned(),
+        "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,otherLock,resolveStatus".to_owned(),
+        scope.to_owned(),
+    ])
+}
+
+fn escape_fstat_filter_term(term: &str) -> String {
+    let term = term.replace('\\', "\\\\").replace("...", "\\...");
+    let mut escaped = String::with_capacity(term.len());
+    for character in term.chars() {
+        if matches!(
+            character,
+            '&' | '|' | '(' | ')' | '=' | '<' | '>' | '^' | '*' | '"'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+fn workspace_search_result(
+    records: &[Map<String, Value>],
+    diagnostics: Vec<String>,
+    server_partial: bool,
+) -> Result<WorkspaceSearchResult, AppError> {
+    let mut files = parse_workspace_files(records)?;
+    let partial = server_partial || files.len() > MAX_WORKSPACE_SEARCH_RESULTS;
+    files.truncate(MAX_WORKSPACE_SEARCH_RESULTS);
+    Ok(WorkspaceSearchResult {
+        files,
+        partial,
+        limit: MAX_WORKSPACE_SEARCH_RESULTS,
+        diagnostics,
+    })
 }
 
 fn merge_untracked_workspace_files(
@@ -6166,6 +6262,48 @@ mod tests {
         let arguments = workspace_fstat_arguments("//...");
         assert!(arguments.iter().any(|argument| argument == "-Rc"));
         assert!(!arguments.iter().any(|argument| argument == "-Ro"));
+    }
+
+    #[test]
+    fn workspace_search_is_server_filtered_and_hard_bounded() {
+        let arguments = workspace_search_arguments("//Acme/main/...", "Source *.rs").unwrap();
+        let max_index = arguments
+            .iter()
+            .position(|argument| argument == "-m")
+            .unwrap();
+        let filter_index = arguments
+            .iter()
+            .position(|argument| argument == "-F")
+            .unwrap();
+        assert_eq!(arguments[max_index + 1], "201");
+        assert_eq!(
+            arguments[filter_index + 1],
+            "(depotFile~=*Source* | clientFile~=*Source*) (depotFile~=*\\*.rs* | clientFile~=*\\*.rs*)"
+        );
+        assert_eq!(arguments.last().unwrap(), "//Acme/main/...");
+        assert!(workspace_search_arguments("//Acme/main/...", "  ").is_err());
+    }
+
+    #[test]
+    fn workspace_search_reports_partial_results_without_exposing_the_probe_record() {
+        let records = (0..=MAX_WORKSPACE_SEARCH_RESULTS)
+            .map(|index| {
+                let mut record = Map::new();
+                record.insert(
+                    "depotFile".to_owned(),
+                    Value::String(format!("//Acme/main/{index}.txt")),
+                );
+                record
+            })
+            .collect::<Vec<_>>();
+        let result = workspace_search_result(&records, Vec::new(), false).unwrap();
+        assert_eq!(result.files.len(), MAX_WORKSPACE_SEARCH_RESULTS);
+        assert_eq!(result.limit, MAX_WORKSPACE_SEARCH_RESULTS);
+        assert!(result.partial);
+        assert_eq!(
+            result.files.last().unwrap().depot_path,
+            "//Acme/main/199.txt"
+        );
     }
 
     #[test]

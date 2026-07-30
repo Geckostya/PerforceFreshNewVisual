@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Activity, Ban, CheckCircle2, CircleAlert, Download, FileCode2, FileImage, Files, FileText, Filter, Folder, GitCommitHorizontal, HardDrive, History, List, ListTree, LoaderCircle, LockKeyhole, Minus, Pencil, Plus, ScanSearch, Search, Settings2, SlidersHorizontal, Users, type LucideIcon } from "lucide-react";
-import { addFiles, createWorkspace, deleteFiles, deleteLocalFile, deleteWorkspace, editFiles, fileHistory, ignoreLocalFile, inspectWorkspace, listLocalWorkspaceDirectory, listOpenedFiles, listPendingChanges, listSubmittedChanges, listWorkspaceFiles, lockFiles, moveFile, normalizeAppError, previewResolve, previewRevertSelected, renameWorkspace, resolveFiles, revealPath, revertFiles, startReconcile, startReconcilePreview, unlockFiles, updateWorkspace } from "../../shared/api";
+import { addFiles, createWorkspace, deleteFiles, deleteLocalFile, deleteWorkspace, editFiles, fileHistory, ignoreLocalFile, inspectWorkspace, listLocalWorkspaceDirectory, listOpenedFiles, listPendingChanges, listSubmittedChanges, listWorkspaceFiles, lockFiles, moveFile, normalizeAppError, previewResolve, previewRevertSelected, renameWorkspace, resolveFiles, revealPath, revertFiles, searchWorkspaceFiles, startReconcile, startReconcilePreview, unlockFiles, updateWorkspace } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
-import type { AppError, ConnectionInput, FileRevision, OperationEvent, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem, WorkspaceFile, WorkspaceSpec } from "../../shared/models";
+import type { AppError, ConnectionInput, FileRevision, OperationEvent, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem, WorkspaceFile, WorkspaceSearchResult, WorkspaceSpec } from "../../shared/models";
 import { isOperationTerminal, startObservedOperation } from "../../shared/operations";
 import { SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
 import { RefreshButton } from "../../shared/RefreshButton";
@@ -10,11 +10,11 @@ import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { ItemRowCopy, SelectableRow, SelectableSurface, TreeItemRow } from "../../shared/ItemList";
 import { isContextMenuShortcut, retainAvailableSelection, selectionMode, updateSelection } from "../../shared/selection";
-import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
+import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
 import { ResolveDialog } from "./ResolveDialog";
-import { buildWorkspaceTree, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, toggleReconcileSelection, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
+import { buildWorkspaceTree, cancelWorkspaceSearchRequest, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, toggleReconcileSelection, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSearchCompletionFocus, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
 type WorkspaceDialog = "details" | "create" | "edit" | "rename" | "delete";
 type WorkspaceDraft = { name: string; root: string; stream: string; description: string };
@@ -62,10 +62,15 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   const [filter, setFilter] = useState<WorkspaceFilter>("all");
   const [viewMode, setViewMode] = useState<"list" | "tree">("tree");
   const [query, setQuery] = useState("");
+  const [searchResult, setSearchResult] = useState<{ query: string; result: WorkspaceSearchResult }>();
+  const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError>();
   const [notice, setNotice] = useState("");
   const loadSequence = useRef(0);
+  const searchSequence = useRef(0);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const searchResults = useRef<HTMLDivElement>(null);
   const lazyRoot = useRef<string | undefined>(undefined);
   const directorySnapshots = useRef(new Map<string, WorkspaceDirectorySnapshot>());
   const loadedDirectories = useRef(new Set<string>());
@@ -73,6 +78,57 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   const directoryRequests = useRef(new Map<string, Promise<void>>());
   const statusVersionRequest = useRef<Promise<string | undefined>>(Promise.resolve(undefined));
   const safeSync = useSafeSync(connection, { refresh: refreshLoadedDirectories, setNotice, setError });
+
+  function focusWorkspaceSearch(target: "input" | "results") {
+    requestAnimationFrame(() => {
+      if (target === "input") {
+        searchInput.current?.focus();
+        return;
+      }
+      searchResults.current?.querySelector<HTMLElement>("[data-keyboard-item]")?.focus({ preventScroll: true });
+    });
+  }
+
+  function clearWorkspaceSearch(restoreFocus = true) {
+    const cancelled = cancelWorkspaceSearchRequest(searchSequence.current);
+    searchSequence.current = cancelled.request;
+    setSearching(false);
+    setSearchResult(undefined);
+    setSelected([]);
+    setSelectedFolders([]);
+    selectionAnchor.current = undefined;
+    if (restoreFocus) focusWorkspaceSearch(cancelled.focus);
+  }
+
+  async function runWorkspaceSearch() {
+    const nextQuery = query.trim();
+    if (!nextQuery) {
+      if (searching || searchResult) clearWorkspaceSearch();
+      else focusWorkspaceSearch("input");
+      return;
+    }
+    const request = searchSequence.current + 1;
+    searchSequence.current = request;
+    setSearching(true);
+    setSearchResult(undefined);
+    setSelected([]);
+    setSelectedFolders([]);
+    selectionAnchor.current = undefined;
+    setError(undefined);
+    try {
+      const result = await searchWorkspaceFiles(connection, scope, nextQuery);
+      const focus = workspaceSearchCompletionFocus(request, searchSequence.current, result.files.length);
+      if (focus === "ignore") return;
+      setSearchResult({ query: nextQuery, result });
+      focusWorkspaceSearch(focus);
+    } catch (reason) {
+      if (request !== searchSequence.current) return;
+      setError(normalizeAppError(reason));
+      focusWorkspaceSearch("input");
+    } finally {
+      if (request === searchSequence.current) setSearching(false);
+    }
+  }
 
   function statusVersion(root: string): Promise<string | undefined> {
     return Promise.all([
@@ -276,12 +332,14 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   }
 
   async function load(nextScope = scope, preserveSelection = false) {
+    if (searching || searchResult) clearWorkspaceSearch(false);
     const nextRoot = workspaceLazyRoot(connection, nextScope);
     if (nextRoot) await loadLazy(nextRoot);
     else await loadEager(nextScope, preserveSelection);
   }
 
   async function refreshLoadedDirectories() {
+    if (searchResult) return runWorkspaceSearch();
     const root = lazyRoot.current;
     if (!root) return load(scope, true);
     setBusy(true);
@@ -295,7 +353,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   }
 
   useEffect(() => { void load(); }, [connection.port, connection.user, connection.client, info.clientRoot, info.clientStream]);
-  useEffect(() => () => { loadSequence.current += 1; }, []);
+  useEffect(() => () => { loadSequence.current += 1; searchSequence.current += 1; }, []);
   useEffect(() => {
     const nextScope = initialScope?.trim();
     if (!nextScope || nextScope === scope) return;
@@ -503,7 +561,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   }
 
   async function openRevert(paths: string[]) {
-    const candidates = files.filter((file) => paths.includes(file.depotPath));
+    const candidates = activeFiles.filter((file) => paths.includes(file.depotPath));
     const changeId = candidates[0]?.change || "default";
     if (!candidates.length || candidates.some((file) => !file.action || (file.change || "default") !== changeId)) return;
     setBusy(true);
@@ -515,7 +573,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
 
   async function applyRevert() {
     if (!revertPreviewItems?.length) return;
-    const changeId = files.find((file) => file.depotPath === revertPreviewItems[0].depotPath)?.change || "default";
+    const changeId = activeFiles.find((file) => file.depotPath === revertPreviewItems[0].depotPath)?.change || "default";
     const paths = revertPreviewItems.map((item) => item.depotPath);
     setRevertPreviewItems(undefined);
     await run(() => revertFiles(connection, changeId, paths, false), t("filesReverted"));
@@ -528,7 +586,9 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     workspaceMenu.open(event, { file, paths });
   }
 
-  const selectedFiles = files.filter((file) => selected.includes(file.depotPath));
+  const activeFiles = searchResult?.result.files ?? files;
+  const effectiveViewMode = searching || searchResult ? "list" : viewMode;
+  const selectedFiles = activeFiles.filter((file) => selected.includes(file.depotPath));
   const paths = selectedFiles.map((file) => file.depotPath);
   const defaultSelectedSyncScopes = [...selectedFolders.map((folder) => `${folder.replace(/\/+$/, "")}/...`), ...paths];
   const selectedFile = selectedFiles.length === 1 && selectedFolders.length === 0 ? selectedFiles[0] : undefined;
@@ -536,27 +596,27 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   const selectedSyncScopes = workspaceHistorySyncScopes(selectedFile, selectedFolder, historySelection, defaultSelectedSyncScopes);
   const selectedHistoryPath = workspaceFileHistoryPath(selectedFile);
   const selectedUnresolvedPaths = selectedFiles.filter((file) => file.unresolved).map((file) => file.depotPath);
-  const visibleFiles = useMemo(() => filterWorkspaceFiles(files, filter, query), [files, filter, query]);
-  const visibleDirectories = useMemo(() => filter === "all" && !query.trim() ? directoryPaths : [], [directoryPaths, filter, query]);
+  const visibleFiles = useMemo(() => filterWorkspaceFiles(activeFiles, filter, ""), [activeFiles, filter]);
+  const visibleDirectories = useMemo(() => filter === "all" && !searchResult ? directoryPaths : [], [directoryPaths, filter, searchResult]);
   const tree = useMemo(() => buildWorkspaceTree(visibleFiles, visibleDirectories, loadingDirectoryPaths, lazyRoot.current ? loadedDirectoryPaths : undefined, ignoredDirectoryPaths), [visibleFiles, visibleDirectories, loadingDirectoryPaths, loadedDirectoryPaths, ignoredDirectoryPaths]);
   const filtersActive = scope.trim() !== "//..." || query.trim() !== "" || filter !== "all" || viewMode !== "tree";
 
   useEffect(() => {
-    const ordered = viewMode === "tree"
+    const ordered = effectiveViewMode === "tree"
       ? workspaceSelectionOrder(tree, collapsedFolders)
       : visibleFiles.map((file) => `file:${file.depotPath}`);
     if (selectionAnchor.current && !ordered.includes(selectionAnchor.current)) {
       const current = [...selectedFolders.map((path) => `folder:${path}`), ...selected.map((path) => `file:${path}`)];
       selectionAnchor.current = current.reverse().find((item) => ordered.includes(item));
     }
-  }, [collapsedFolders, selected, selectedFolders, tree, viewMode, visibleFiles]);
+  }, [collapsedFolders, effectiveViewMode, selected, selectedFolders, tree, visibleFiles]);
 
   function applyTreeSelection(target: string, event: React.MouseEvent) {
     const current = [
       ...selectedFolders.map((path) => `folder:${path}`),
       ...selected.map((path) => `file:${path}`),
     ];
-    const ordered = viewMode === "tree"
+    const ordered = effectiveViewMode === "tree"
       ? workspaceSelectionOrder(tree, collapsedFolders)
       : visibleFiles.map((file) => `file:${file.depotPath}`);
     const next = updateSelection(ordered, current, target, selectionAnchor.current, selectionMode(event));
@@ -659,7 +719,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   }, [connection, selectedFile, selectedFolder, selectedHistoryPath]);
 
   const menu = workspaceMenu.menu?.target;
-  const menuFiles = menu ? files.filter((file) => menu.paths.includes(file.depotPath)) : [];
+  const menuFiles = menu ? activeFiles.filter((file) => menu.paths.includes(file.depotPath)) : [];
   const menuChange = menuFiles[0]?.change || "default";
   const menuCanRevert = menuFiles.length > 0 && menuFiles.every((file) => Boolean(file.action) && (file.change || "default") === menuChange);
   const menuCanResolve = menuFiles.length > 0 && menuFiles.every((file) => file.unresolved);
@@ -710,18 +770,23 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
       <div className="workspace-overview-toolbar">
         <label className="workspace-toolbar-input" title={t("fileScopeHelp")}><HardDrive aria-hidden="true" /><span className="sr-only">{t("fileScope")}</span><input aria-label={t("fileScope")} value={scope} placeholder={t("fileScopePlaceholder")} onChange={(event) => setScope(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void load(scope); }} /></label>
         <button className="secondary-button button-with-icon" type="button" onClick={() => void load(scope)} disabled={busy}><Search className="ui-icon" aria-hidden="true" />{t("applyScope")}</button>
-        <label className="workspace-toolbar-input workspace-search-input" title={t("workspaceSearchHelp")}><Search aria-hidden="true" /><span className="sr-only">{t("workspaceSearch")}</span><input aria-label={t("workspaceSearch")} value={query} placeholder={t("workspaceSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} /></label>
+        <label className="workspace-toolbar-input workspace-search-input" title={t("workspaceSearchHelp")}><Search aria-hidden="true" /><span className="sr-only">{t("workspaceSearch")}</span><input ref={searchInput} aria-label={t("workspaceSearch")} value={query} placeholder={t("workspaceSearchPlaceholder")} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void runWorkspaceSearch(); } else if (event.key === "Escape" && (searching || searchResult)) { event.preventDefault(); clearWorkspaceSearch(); } }} /></label>
+        <button data-agent-id="workspace-search" className="secondary-button button-with-icon" type="button" onClick={() => searching ? clearWorkspaceSearch() : void runWorkspaceSearch()} disabled={busy || (!searching && !query.trim())}>{searching ? <Ban className="ui-icon" aria-hidden="true" /> : <Search className="ui-icon" aria-hidden="true" />}{t(searching ? "workspaceSearchCancel" : "workspaceSearchRun")}</button>
+        {searchResult && !searching && <button className="secondary-button" type="button" onClick={() => { setQuery(""); clearWorkspaceSearch(); }}>{t("workspaceSearchClear")}</button>}
         <label className="workspace-toolbar-select"><Filter aria-hidden="true" /><span className="sr-only">{t("workspaceFilter")}</span><select aria-label={t("workspaceFilter")} value={filter} onChange={(event) => setFilter(event.target.value as WorkspaceFilter)}><option value="all">{t("workspaceFilterAll")}</option><option value="opened">{t("workspaceFilterOpened")}</option><option value="outdated">{t("workspaceFilterOutdated")}</option><option value="unresolved">{t("workspaceFilterUnresolved")}</option><option value="otherOpen">{t("workspaceFilterOtherOpen")}</option><option value="locked">{t("workspaceFilterLocked")}</option><option value="unmapped">{t("workspaceFilterUnmapped")}</option><option value="untracked">{t("workspaceFilterUntracked")}</option></select></label>
         <div className="workspace-view-toggle" role="group" aria-label={t("workspaceViewMode")}>
-          <button type="button" className={viewMode === "list" ? "active" : ""} aria-pressed={viewMode === "list"} onClick={() => { setViewMode("list"); setSelectedFolders([]); }}><List aria-hidden="true" /><span>{t("workspaceViewList")}</span></button>
-          <button type="button" className={viewMode === "tree" ? "active" : ""} aria-pressed={viewMode === "tree"} onClick={() => setViewMode("tree")}><ListTree aria-hidden="true" /><span>{t("workspaceViewTree")}</span></button>
+          <button type="button" className={effectiveViewMode === "list" ? "active" : ""} aria-pressed={effectiveViewMode === "list"} onClick={() => { setViewMode("list"); setSelectedFolders([]); }} disabled={searching || Boolean(searchResult)}><List aria-hidden="true" /><span>{t("workspaceViewList")}</span></button>
+          <button type="button" className={effectiveViewMode === "tree" ? "active" : ""} aria-pressed={effectiveViewMode === "tree"} onClick={() => setViewMode("tree")} disabled={searching || Boolean(searchResult)}><ListTree aria-hidden="true" /><span>{t("workspaceViewTree")}</span></button>
         </div>
       </div>
     </details>
     <div className="resource-workbench workspace-workbench">
-      <div className="resource-list workspace-resource-list" role="list">
+      <div ref={searchResults} className="resource-list workspace-resource-list" role="list">
         <div className="column-heading"><strong>{t("workspaceFiles")}</strong><span>{selected.length > 0 ? `${selected.length} / ` : ""}{visibleFiles.length}</span></div>
-        {viewMode === "tree" && tree.length > 0 ? <div className="workspace-file-tree" role="tree">{renderTree(tree)}</div> : busy && files.length === 0 ? <CompactEmpty text={t("loadingFiles")} /> : files.length === 0 ? <CompactEmpty text={t("workspaceNoFiles")} /> : visibleFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFilterMatches")} /> : visibleFiles.map((file) => renderFile(file))}
+        {searchResult && <p className="workspace-search-summary" role="status">{t("workspaceSearchResults")} {searchResult.result.files.length} · “{searchResult.query}”</p>}
+        {searchResult?.result.partial && <BoundedListNotice count={searchResult.result.files.length} />}
+        {searchResult?.result.diagnostics.length ? <p className="workspace-search-diagnostics">{searchResult.result.diagnostics.join(" · ")}</p> : null}
+        {searching ? <CompactEmpty text={t("workspaceSearching")} /> : effectiveViewMode === "tree" && tree.length > 0 ? <div className="workspace-file-tree" role="tree">{renderTree(tree)}</div> : busy && activeFiles.length === 0 ? <CompactEmpty text={t("loadingFiles")} /> : searchResult && activeFiles.length === 0 ? <CompactEmpty text={t("workspaceSearchNoMatches")} /> : activeFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFiles")} /> : visibleFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFilterMatches")} /> : visibleFiles.map((file) => renderFile(file))}
       </div>
       <aside className="resource-inspector workspace-inspector">
         {!selectedCount ? <EmptyState title={t("selectWorkspaceFile")} body={t("selectWorkspaceFileBody")} /> : <div className="workspace-inspector-content">

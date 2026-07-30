@@ -81,6 +81,21 @@ pub(super) fn run_json_collecting_diagnostics(
     path: &Path,
     command: &mut Command,
 ) -> Result<JsonDiagnosticOutput, AppError> {
+    run_json_collecting_diagnostics_with_policy(path, command, false)
+}
+
+pub(super) fn run_json_collecting_diagnostics_allowing_empty_match(
+    path: &Path,
+    command: &mut Command,
+) -> Result<JsonDiagnosticOutput, AppError> {
+    run_json_collecting_diagnostics_with_policy(path, command, true)
+}
+
+fn run_json_collecting_diagnostics_with_policy(
+    path: &Path,
+    command: &mut Command,
+    allow_empty_match: bool,
+) -> Result<JsonDiagnosticOutput, AppError> {
     let output = command
         .output()
         .map_err(|error| launch_error(path, error))?;
@@ -88,6 +103,7 @@ pub(super) fn run_json_collecting_diagnostics(
     log_record_messages(&records, true);
     let diagnostics = records
         .iter()
+        .filter(|record| !(allow_empty_match && is_empty_match_record(record)))
         .filter(|record| {
             record
                 .get("severity")
@@ -113,7 +129,18 @@ pub(super) fn run_json_collecting_diagnostics(
         )
         .filter(|message| !message.is_empty())
         .collect::<Vec<_>>();
-    let partial = !output.status.success()
+    let partial = json_output_is_partial(output.status.success(), &records, allow_empty_match);
+    Ok((records, diagnostics, partial))
+}
+
+fn json_output_is_partial(
+    status_success: bool,
+    records: &[Map<String, Value>],
+    allow_empty_match: bool,
+) -> bool {
+    let empty_match_only =
+        allow_empty_match && !records.is_empty() && records.iter().all(is_empty_match_record);
+    (!status_success && !empty_match_only)
         || records.iter().any(|record| {
             record
                 .get("severity")
@@ -123,8 +150,7 @@ pub(super) fn run_json_collecting_diagnostics(
                     .get("code")
                     .and_then(Value::as_str)
                     .is_some_and(|code| code.eq_ignore_ascii_case("error"))
-        });
-    Ok((records, diagnostics, partial))
+        })
 }
 
 pub(super) fn run_json_with_stdin_allowing_empty_match(
@@ -526,7 +552,9 @@ pub(super) fn combined_output(output: &Output) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_error_message, is_empty_match_record, parse_json_lines};
+    use super::{
+        classify_error_message, is_empty_match_record, json_output_is_partial, parse_json_lines,
+    };
     use crate::models::ErrorKind;
 
     #[test]
@@ -558,12 +586,15 @@ mod tests {
         let records = parse_json_lines(
             r#"{"data":"//alex-main/Campfire/* - no such file(s).\n","generic":17,"severity":2}
 {"data":"//alex-main/.p4config - file(s) not on client.\n","generic":17,"severity":2}
-{"code":"warning","data":"A real warning.","severity":2}"#,
+{"code":"error","data":"A real error.","severity":3}"#,
         )
         .unwrap();
 
         assert!(is_empty_match_record(&records[0]));
         assert!(is_empty_match_record(&records[1]));
         assert!(!is_empty_match_record(&records[2]));
+        assert!(!json_output_is_partial(false, &records[..2], true));
+        assert!(json_output_is_partial(false, &records[..2], false));
+        assert!(json_output_is_partial(true, &records[2..], true));
     }
 }

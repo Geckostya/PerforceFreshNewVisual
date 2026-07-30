@@ -20,7 +20,7 @@ Current status for connection, authentication, client specs, mapping, and worksp
 - [~] Client-spec inspection represents AltRoots, options, ChangeView, workspace type, and server binding, and save returns an authoritative server read-back; native verification of the expanded details dialog remains.
 - [~] Navigate Depot ↔ client ↔ local through bounded server `where` results without inventing unmapped local paths; native matrix coverage is still required.
 - [ ] Provide a safe visual mapping editor for include/exclude/overlay/ditto entries without reimplementing server mapping semantics.
-- [ ] Add bounded workspace search/filter beyond the current list limit.
+- [~] Bounded server-side workspace search returns at most 200 mapped files, exposes partial results, and discards cancelled/stale responses; native focus and cancellation verification remains.
 
 The disposable standard server verifies password fallback and capability collection. SSL new/changed certificates, a configured MFA/SSO provider, commit-edge topology, and alternate Unicode/case-mode servers still require environment-matrix live runs; unit and fake-output tests cover their parsing, exact arguments, redaction, and unknown-state behavior.
 

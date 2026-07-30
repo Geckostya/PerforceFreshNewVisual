@@ -17,7 +17,7 @@ use crate::{
         SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
         TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
         WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
-        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -721,6 +721,17 @@ pub async fn list_workspace_files(
     })
     .await
     .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn search_workspace_files(
+    input: ConnectionInput,
+    scope: String,
+    query: String,
+) -> Result<WorkspaceSearchResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::search_workspace_files(&input, &scope, &query))
+        .await
+        .map_err(task_error)?
 }
 
 #[tauri::command]
