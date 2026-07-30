@@ -92,19 +92,54 @@ export interface CapabilityFact {
   evidence: CapabilityEvidence;
 }
 
+export type CapabilityCommand = "login2" | "topology" | "trust" | "integrate" | "copy" | "istat" | "streamlog";
+export type CapabilityFlag =
+  | "login2State"
+  | "topologyFields"
+  | "trustInstall"
+  | "integrateStream"
+  | "integrateParent"
+  | "integrateForceBranch"
+  | "integrateReverse"
+  | "copyStream"
+  | "copyForceBranch"
+  | "istatForceBranch"
+  | "istatReverse"
+  | "streamlogLimit";
+export type CapabilityName =
+  | "cliVersion"
+  | "serverVersion"
+  | "serverServices"
+  | "topology"
+  | "depots"
+  | "unicodeServer"
+  | "streamWorkspace"
+  | "caseSensitiveMapping"
+  | "taskStreamSubmit"
+  | "promotedShelves"
+  | "globalLocks";
+
+export interface TopologyService {
+  serverId?: string;
+  serverAddress?: string;
+  services?: string;
+  serverType?: string;
+}
+
 export interface CapabilitySnapshot {
   cliVersion?: string;
   serverVersion?: string;
   serverServices?: string;
   serverId?: string;
-  topology?: string;
+  topology: TopologyService[];
   unicode?: string;
   caseHandling?: string;
   security?: string;
   workspaceKind: "stream" | "classic" | "unknown";
   depotModes: string[];
-  commands: Record<string, CapabilityFact>;
-  facts: Record<string, CapabilityFact>;
+  commands: Record<CapabilityCommand, CapabilityFact>;
+  flags: Record<CapabilityFlag, CapabilityFact>;
+  facts: Record<CapabilityName, CapabilityFact>;
 }
 
 export interface LoginStatus {
