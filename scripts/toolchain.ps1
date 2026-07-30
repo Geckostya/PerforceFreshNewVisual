@@ -1,5 +1,9 @@
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$toolchainRoot = Join-Path $projectRoot ".toolchain"
+$toolchainRoot = if ($env:P4FNV_TOOLCHAIN_ROOT) {
+    $env:P4FNV_TOOLCHAIN_ROOT
+} else {
+    Join-Path $projectRoot ".toolchain"
+}
 
 if (-not (Test-Path (Join-Path $toolchainRoot "node"))) {
     $gitCommonDirectory = & git -C $projectRoot rev-parse --path-format=absolute --git-common-dir 2>$null
