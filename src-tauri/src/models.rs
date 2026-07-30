@@ -788,7 +788,6 @@ pub struct WorkspaceScanRoot {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum WorkspaceScanCoverageState {
     NotStarted,
     Complete,
@@ -799,7 +798,6 @@ pub enum WorkspaceScanCoverageState {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum WorkspaceScanPartialReason {
     CandidateLimit,
     BudgetExceeded,

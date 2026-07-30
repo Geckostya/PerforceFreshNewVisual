@@ -4270,7 +4270,7 @@ pub fn configure_workspace_scan(
     requested_roots: &[String],
     requested_exclusions: &[String],
 ) -> Result<WorkspaceScanConfiguration, AppError> {
-    let roots = workspace_scan_directories(requested_roots, "корней сканирования")?;
+    let roots = workspace_scan_directories(requested_roots)?;
     let queries = roots
         .iter()
         .map(|root| workspace_cli_path(&root.join("...").to_string_lossy()))
@@ -4296,14 +4296,11 @@ pub fn configure_workspace_scan(
     })
 }
 
-fn workspace_scan_directories(
-    directories: &[String],
-    label: &str,
-) -> Result<Vec<PathBuf>, AppError> {
+fn workspace_scan_directories(directories: &[String]) -> Result<Vec<PathBuf>, AppError> {
     if directories.is_empty() || directories.len() > MAX_WORKSPACE_SCAN_ROOTS {
         return Err(AppError::new(
             ErrorKind::CommandFailed,
-            format!("Допустимо от 1 до {MAX_WORKSPACE_SCAN_ROOTS} {label}."),
+            format!("Допустимо от 1 до {MAX_WORKSPACE_SCAN_ROOTS} корней сканирования."),
         ));
     }
     let mut result = Vec::with_capacity(directories.len());
@@ -4467,24 +4464,23 @@ pub fn workspace_scan_command(
     root: &WorkspaceScanRoot,
 ) -> Result<(PathBuf, Command), AppError> {
     validate_depot_path(&root.depot_scope)?;
-    let scan_root = Path::new(&root.local_path);
-    if !scan_root.is_absolute() || !scan_root.is_dir() {
-        return Err(AppError::new(
-            ErrorKind::Stale,
-            "Корень фонового сканирования больше недоступен.",
-        ));
-    }
-    let (path, mut command) = configured_command(input)?;
-    command.current_dir(scan_root);
-    if let Some(ignore_file) = workspace_ignore_file(workspace_root) {
-        command.env("P4IGNORE", ignore_file);
-    }
+    let (path, mut command) = workspace_scan_base_command(input, workspace_root, root)?;
     command.args(workspace_scan_arguments(&root.depot_scope));
-    set_low_process_priority(&mut command);
     Ok((path, command))
 }
 
 pub fn workspace_scan_add_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+) -> Result<(PathBuf, Command), AppError> {
+    let local_scope = workspace_cli_path(&Path::new(&root.local_path).join("*").to_string_lossy());
+    let (path, mut command) = workspace_scan_base_command(input, workspace_root, root)?;
+    command.args(workspace_scan_add_arguments(&local_scope));
+    Ok((path, command))
+}
+
+fn workspace_scan_base_command(
     input: &ConnectionInput,
     workspace_root: &Path,
     root: &WorkspaceScanRoot,
@@ -4496,13 +4492,11 @@ pub fn workspace_scan_add_command(
             "Корень фонового сканирования больше недоступен.",
         ));
     }
-    let local_scope = workspace_cli_path(&scan_root.join("*").to_string_lossy());
     let (path, mut command) = configured_command(input)?;
     command.current_dir(scan_root);
     if let Some(ignore_file) = workspace_ignore_file(workspace_root) {
         command.env("P4IGNORE", ignore_file);
     }
-    command.args(workspace_scan_add_arguments(&local_scope));
     set_low_process_priority(&mut command);
     Ok((path, command))
 }
@@ -6674,11 +6668,7 @@ mod tests {
         let outside = fixture.join("outside");
         fs::create_dir_all(&excluded).unwrap();
         fs::create_dir_all(&outside).unwrap();
-        let roots = workspace_scan_directories(
-            &[root.to_string_lossy().into_owned()],
-            "корней сканирования",
-        )
-        .unwrap();
+        let roots = workspace_scan_directories(&[root.to_string_lossy().into_owned()]).unwrap();
         assert_eq!(
             workspace_scan_exclusions(&[excluded.to_string_lossy().into_owned()], &roots)
                 .unwrap()

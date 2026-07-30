@@ -151,8 +151,7 @@ impl WorkspaceScanRegistry {
         Ok(snapshot.clone())
     }
 
-    #[allow(dead_code)]
-    pub fn publish_results(
+    fn publish_results(
         &self,
         expected_scope_id: &str,
         mut candidates: Vec<WorkspaceScanCandidate>,
@@ -412,6 +411,22 @@ enum WorkspaceScanRunOutcome {
     Message(WorkspaceScanSchedulerMessage),
 }
 
+impl WorkspaceScanRunOutcome {
+    fn partial(
+        candidates: Vec<WorkspaceScanCandidate>,
+        completed_roots: usize,
+        reason: WorkspaceScanPartialReason,
+    ) -> Self {
+        let failed_roots = usize::from(reason == WorkspaceScanPartialReason::CommandFailed);
+        Self::Finished {
+            candidates,
+            completed_roots,
+            failed_roots,
+            reason: Some(reason),
+        }
+    }
+}
+
 fn workspace_scan_scheduler_loop(
     receiver: mpsc::Receiver<WorkspaceScanSchedulerMessage>,
     scans: WorkspaceScanRegistry,
@@ -554,160 +569,109 @@ fn run_workspace_scan(
     let mut completed_roots = 0;
     for root in &request.roots {
         if workspace_scan_budget_exhausted(started.elapsed()) {
-            return WorkspaceScanRunOutcome::Finished {
+            return WorkspaceScanRunOutcome::partial(
                 candidates,
                 completed_roots,
-                failed_roots: 0,
-                reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
-            };
+                WorkspaceScanPartialReason::BudgetExceeded,
+            );
         }
         let command =
             match p4::workspace_scan_command(&request.input, &request.workspace_root, root) {
                 Ok((_, command)) => command,
                 Err(_) => {
-                    return WorkspaceScanRunOutcome::Finished {
+                    return WorkspaceScanRunOutcome::partial(
                         candidates,
                         completed_roots,
-                        failed_roots: 1,
-                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                    };
+                        WorkspaceScanPartialReason::CommandFailed,
+                    );
                 }
             };
-        match run_workspace_scan_child(command, receiver, operations, &request.workspace, started) {
-            WorkspaceScanChildOutcome::Completed(output) => {
-                let parsed = match p4::parse_workspace_scan_output(&output) {
-                    Ok(parsed) => parsed,
-                    Err(_) => {
-                        return WorkspaceScanRunOutcome::Finished {
-                            candidates,
-                            completed_roots,
-                            failed_roots: 1,
-                            reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                        };
-                    }
-                };
-                if parsed.failed || !parsed.diagnostics.is_empty() {
-                    return WorkspaceScanRunOutcome::Finished {
-                        candidates,
-                        completed_roots,
-                        failed_roots: 1,
-                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                    };
-                }
-                candidates.retain(|candidate| {
-                    candidate.action == "add"
-                        || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
-                });
-                candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
-                    !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
-                }));
-                completed_roots += 1;
-            }
-            WorkspaceScanChildOutcome::Budget => {
-                return WorkspaceScanRunOutcome::Finished {
-                    candidates,
-                    completed_roots,
-                    failed_roots: 0,
-                    reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
-                };
-            }
-            WorkspaceScanChildOutcome::Foreground => {
-                return WorkspaceScanRunOutcome::Foreground;
-            }
-            WorkspaceScanChildOutcome::Message(message) => {
-                return WorkspaceScanRunOutcome::Message(message);
-            }
-            WorkspaceScanChildOutcome::Failed => {
-                return WorkspaceScanRunOutcome::Finished {
-                    candidates,
-                    completed_roots,
-                    failed_roots: 1,
-                    reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                };
-            }
+        let (parsed, retained_candidates) = match workspace_scan_child_result(
+            run_workspace_scan_child(
+                command,
+                p4::parse_workspace_scan_output,
+                receiver,
+                operations,
+                &request.workspace,
+                started,
+            ),
+            candidates,
+            completed_roots,
+        ) {
+            Ok(result) => result,
+            Err(outcome) => return outcome,
+        };
+        candidates = retained_candidates;
+        if parsed.failed || !parsed.diagnostics.is_empty() {
+            return WorkspaceScanRunOutcome::partial(
+                candidates,
+                completed_roots,
+                WorkspaceScanPartialReason::CommandFailed,
+            );
         }
+        candidates.retain(|candidate| {
+            candidate.action == "add"
+                || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
+        });
+        candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
+            !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
+        }));
+        completed_roots += 1;
     }
     if !request.roots.is_empty() {
         let add_root_index = request.next_add_root % request.roots.len();
         let add_root = &request.roots[add_root_index];
         if workspace_scan_budget_exhausted(started.elapsed()) {
-            return WorkspaceScanRunOutcome::Finished {
+            return WorkspaceScanRunOutcome::partial(
                 candidates,
                 completed_roots,
-                failed_roots: 0,
-                reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
-            };
+                WorkspaceScanPartialReason::BudgetExceeded,
+            );
         }
         let command =
             match p4::workspace_scan_add_command(&request.input, &request.workspace_root, add_root)
             {
                 Ok((_, command)) => command,
                 Err(_) => {
-                    return WorkspaceScanRunOutcome::Finished {
+                    return WorkspaceScanRunOutcome::partial(
                         candidates,
                         completed_roots,
-                        failed_roots: 1,
-                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                    };
+                        WorkspaceScanPartialReason::CommandFailed,
+                    );
                 }
             };
-        match run_workspace_scan_child(command, receiver, operations, &request.workspace, started) {
-            WorkspaceScanChildOutcome::Completed(output) => {
-                let parsed = match p4::parse_workspace_scan_add_output(&output) {
-                    Ok(parsed) => parsed,
-                    Err(_) => {
-                        return WorkspaceScanRunOutcome::Finished {
-                            candidates,
-                            completed_roots,
-                            failed_roots: 1,
-                            reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                        };
-                    }
-                };
-                if parsed.failed || !parsed.diagnostics.is_empty() {
-                    return WorkspaceScanRunOutcome::Finished {
-                        candidates,
-                        completed_roots,
-                        failed_roots: 1,
-                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                    };
-                }
-                candidates.retain(|candidate| {
-                    candidate.action != "add"
-                        || !workspace_scan_path_is_inside(
-                            &candidate.local_path,
-                            &add_root.local_path,
-                        )
-                });
-                candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
-                    !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
-                }));
-                request.cached_candidates.clone_from(&candidates);
-                request.next_add_root = (add_root_index + 1) % request.roots.len();
-            }
-            WorkspaceScanChildOutcome::Budget => {
-                return WorkspaceScanRunOutcome::Finished {
-                    candidates,
-                    completed_roots,
-                    failed_roots: 0,
-                    reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
-                };
-            }
-            WorkspaceScanChildOutcome::Foreground => {
-                return WorkspaceScanRunOutcome::Foreground;
-            }
-            WorkspaceScanChildOutcome::Message(message) => {
-                return WorkspaceScanRunOutcome::Message(message);
-            }
-            WorkspaceScanChildOutcome::Failed => {
-                return WorkspaceScanRunOutcome::Finished {
-                    candidates,
-                    completed_roots,
-                    failed_roots: 1,
-                    reason: Some(WorkspaceScanPartialReason::CommandFailed),
-                };
-            }
+        let (parsed, retained_candidates) = match workspace_scan_child_result(
+            run_workspace_scan_child(
+                command,
+                p4::parse_workspace_scan_add_output,
+                receiver,
+                operations,
+                &request.workspace,
+                started,
+            ),
+            candidates,
+            completed_roots,
+        ) {
+            Ok(result) => result,
+            Err(outcome) => return outcome,
+        };
+        candidates = retained_candidates;
+        if parsed.failed || !parsed.diagnostics.is_empty() {
+            return WorkspaceScanRunOutcome::partial(
+                candidates,
+                completed_roots,
+                WorkspaceScanPartialReason::CommandFailed,
+            );
         }
+        candidates.retain(|candidate| {
+            candidate.action != "add"
+                || !workspace_scan_path_is_inside(&candidate.local_path, &add_root.local_path)
+        });
+        candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
+            !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
+        }));
+        request.cached_candidates.clone_from(&candidates);
+        request.next_add_root = (add_root_index + 1) % request.roots.len();
     }
     request.cached_candidates.clone_from(&candidates);
     WorkspaceScanRunOutcome::Finished {
@@ -719,15 +683,41 @@ fn run_workspace_scan(
 }
 
 enum WorkspaceScanChildOutcome {
-    Completed(String),
+    Completed(p4::WorkspaceScanCommandOutput),
     Budget,
     Foreground,
     Message(WorkspaceScanSchedulerMessage),
     Failed,
 }
 
+fn workspace_scan_child_result(
+    outcome: WorkspaceScanChildOutcome,
+    candidates: Vec<WorkspaceScanCandidate>,
+    completed_roots: usize,
+) -> Result<(p4::WorkspaceScanCommandOutput, Vec<WorkspaceScanCandidate>), WorkspaceScanRunOutcome>
+{
+    match outcome {
+        WorkspaceScanChildOutcome::Completed(output) => Ok((output, candidates)),
+        WorkspaceScanChildOutcome::Budget => Err(WorkspaceScanRunOutcome::partial(
+            candidates,
+            completed_roots,
+            WorkspaceScanPartialReason::BudgetExceeded,
+        )),
+        WorkspaceScanChildOutcome::Foreground => Err(WorkspaceScanRunOutcome::Foreground),
+        WorkspaceScanChildOutcome::Message(message) => {
+            Err(WorkspaceScanRunOutcome::Message(message))
+        }
+        WorkspaceScanChildOutcome::Failed => Err(WorkspaceScanRunOutcome::partial(
+            candidates,
+            completed_roots,
+            WorkspaceScanPartialReason::CommandFailed,
+        )),
+    }
+}
+
 fn run_workspace_scan_child(
     mut command: Command,
+    parse: fn(&str) -> Result<p4::WorkspaceScanCommandOutput, AppError>,
     receiver: &mpsc::Receiver<WorkspaceScanSchedulerMessage>,
     operations: &OperationRegistry,
     workspace: &str,
@@ -781,9 +771,9 @@ fn run_workspace_scan_child(
                     .and_then(|reader| reader.join().ok())
                     .unwrap_or_default();
                 if status.success() {
-                    return WorkspaceScanChildOutcome::Completed(
-                        String::from_utf8_lossy(&stdout).into_owned(),
-                    );
+                    return parse(&String::from_utf8_lossy(&stdout))
+                        .map(WorkspaceScanChildOutcome::Completed)
+                        .unwrap_or(WorkspaceScanChildOutcome::Failed);
                 }
                 let _ = stderr;
                 return WorkspaceScanChildOutcome::Failed;
@@ -4206,6 +4196,7 @@ mod tests {
         assert!(matches!(
             super::run_workspace_scan_child(
                 sleeping_command(),
+                crate::p4::parse_workspace_scan_output,
                 &receiver,
                 &operations,
                 "server/alex/main",
@@ -4222,6 +4213,7 @@ mod tests {
         assert!(matches!(
             super::run_workspace_scan_child(
                 sleeping_command(),
+                crate::p4::parse_workspace_scan_output,
                 &receiver,
                 &operations,
                 "server/alex/main",
