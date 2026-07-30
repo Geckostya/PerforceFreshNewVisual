@@ -110,7 +110,6 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     const request = searchSequence.current + 1;
     searchSequence.current = request;
     setSearching(true);
-    setSearchResult(undefined);
     setSelected([]);
     setSelectedFolders([]);
     selectionAnchor.current = undefined;

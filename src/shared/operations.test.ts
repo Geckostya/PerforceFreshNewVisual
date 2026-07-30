@@ -72,6 +72,14 @@ describe("operation snapshots", () => {
     expect(state[0]).toMatchObject({ status: "unknown", processed: 2, retryable: false });
   });
 
+  it("keeps the first terminal result when a contradictory terminal event arrives", () => {
+    let state = reduceOperationSnapshots([], event("op-1", "started"));
+    state = reduceOperationSnapshots(state, event("op-1", "unknown", 2));
+    state = reduceOperationSnapshots(state, event("op-1", "failed", 3));
+
+    expect(state[0]).toMatchObject({ status: "unknown", processed: 2, retryable: false });
+  });
+
   it("keeps cancel requested active until a terminal event arrives", () => {
     let state = reduceOperationSnapshots([], event("op-1", "started"));
     state = reduceOperationSnapshots(state, event("op-1", "cancel_requested"));

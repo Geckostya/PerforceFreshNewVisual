@@ -49,7 +49,7 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
   const next = [...current];
   const index = next.findIndex((item) => item.operationId === event.operationId);
   const previous = index < 0 ? undefined : next[index];
-  if (previous && isOperationTerminal(previous.status) && !isOperationTerminal(event.kind)) {
+  if (previous && isOperationTerminal(previous.status)) {
     return current;
   }
   const now = Date.now();

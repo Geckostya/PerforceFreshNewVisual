@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { LocaleProvider } from "./i18n";
-import { confirmedMappingLocalPath, PathActions } from "./PathActions";
-import type { ConnectionInput, WorkspaceMapping } from "./models";
+import { authoritativeWorkspaceMapping, confirmedMappingLocalPath, PathActions } from "./PathActions";
+import type { ConnectionInput, WorkspaceMapping, WorkspaceMappingBatch } from "./models";
 
 const connection: ConnectionInput = {
   port: "perforce:1666",
@@ -21,6 +21,20 @@ function mapping(state: WorkspaceMapping["state"], localPath?: string): Workspac
 }
 
 describe("PathActions mapping identity", () => {
+  it("uses mapping results only when the server batch is complete", () => {
+    const mapped = mapping("mapped", "C:\\work\\a.txt");
+    const unmapped = mapping("unmapped");
+    const batch = (result: WorkspaceMapping, partial = false): WorkspaceMappingBatch => ({
+      mappings: [result],
+      partial,
+      diagnostics: partial ? ["incomplete"] : [],
+    });
+
+    expect(authoritativeWorkspaceMapping(batch(mapped))).toBe(mapped);
+    expect(authoritativeWorkspaceMapping(batch(unmapped))).toBe(unmapped);
+    expect(authoritativeWorkspaceMapping(batch(mapped, true))).toBeUndefined();
+  });
+
   it("uses a caller local path only when no server mapping context exists", () => {
     expect(confirmedMappingLocalPath(undefined, undefined, "C:\\work\\a.txt")).toBe("C:\\work\\a.txt");
     expect(confirmedMappingLocalPath(connection, undefined, "C:\\guessed\\a.txt")).toBeUndefined();

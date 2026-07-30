@@ -1770,7 +1770,7 @@ fn workspace_search_arguments(scope: &str, query: &str) -> Result<Vec<String>, A
     validate_depot_path(scope)?;
     let query = query.trim();
     if query.is_empty()
-        || query.len() > 128
+        || query.chars().count() > 128
         || query.contains(['\r', '\n', '\0'])
         || query.chars().any(|character| character.is_control())
     {
@@ -6262,6 +6262,10 @@ mod tests {
         );
         assert_eq!(arguments.last().unwrap(), "//Acme/main/...");
         assert!(workspace_search_arguments("//Acme/main/...", "  ").is_err());
+        assert!(workspace_search_arguments("//Acme/main/...", &"é".repeat(128)).is_ok());
+        assert!(workspace_search_arguments("//Acme/main/...", &"é".repeat(129)).is_err());
+        assert!(workspace_search_arguments("//Acme/main/...", "line\nbreak").is_err());
+        assert!(workspace_search_arguments("main/...", "source").is_err());
     }
 
     #[test]
@@ -6284,6 +6288,13 @@ mod tests {
             result.files.last().unwrap().depot_path,
             "//Acme/main/199.txt"
         );
+
+        let diagnostics = vec!["server stopped after a bounded response".to_owned()];
+        let server_partial =
+            workspace_search_result(&records[..1], diagnostics.clone(), true).unwrap();
+        assert_eq!(server_partial.files.len(), 1);
+        assert!(server_partial.partial);
+        assert_eq!(server_partial.diagnostics, diagnostics);
     }
 
     #[test]
