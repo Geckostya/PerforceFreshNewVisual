@@ -973,8 +973,19 @@ pub struct FileRevision {
     pub client: Option<String>,
     pub size: Option<String>,
     pub description: Option<String>,
-    pub integrations: Vec<String>,
+    pub integration_records: Vec<FileIntegrationRecord>,
     pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileIntegrationRecord {
+    pub how: Option<String>,
+    pub file_path: Option<String>,
+    pub start_revision: Option<String>,
+    pub end_revision: Option<String>,
+    pub complete: bool,
+    pub cyclic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

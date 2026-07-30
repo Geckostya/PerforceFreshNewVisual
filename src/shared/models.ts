@@ -636,8 +636,17 @@ export interface FileRevision {
   client?: string;
   size?: string;
   description?: string;
-  integrations: string[];
+  integrationRecords: FileIntegrationRecord[];
   labels: string[];
+}
+
+export interface FileIntegrationRecord {
+  how?: string;
+  filePath?: string;
+  startRevision?: string;
+  endRevision?: string;
+  complete: boolean;
+  cyclic: boolean;
 }
 
 export interface SubmittedFile { depotPath: string; action: string; revision?: string; fileType?: string; }

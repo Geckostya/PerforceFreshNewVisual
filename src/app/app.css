@@ -2193,6 +2193,12 @@
 .history-compact-row:last-child { border-bottom: 0; }
 .history-compact-row span,
 .history-compact-row small { color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-caption); line-height: var(--line-caption); }
+.filelog-integration-records { display: grid; gap: 4px; padding: 0 12px 8px; border-bottom: 1px solid var(--border); }
+.filelog-integration-record { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; color: var(--text-secondary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.filelog-integration-record > span,
+.filelog-integration-record > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filelog-integration-record > small { color: var(--text-tertiary); }
+.filelog-integration-record > .text-button { grid-column: 2; grid-row: 1 / span 2; }
 .history-update-action { align-items: center; }
 .history-update-action small,
 .change-history-meta { display: block; color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }

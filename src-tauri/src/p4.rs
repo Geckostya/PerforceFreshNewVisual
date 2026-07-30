@@ -27,11 +27,11 @@ use crate::models::{
     SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SubmittedHistoryPageInput, SyncPreview, SyncPreviewItem,
     CreateStreamType, DepotDirectory, DepotFile, DepotStateComparison, DepotStateDifference,
-    DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
-    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem, ResolveApplyResult,
-    ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode, ResolvePreviewItem,
-    ResolveReadBackState, RevertPreviewItem, ShelvedFile, StreamDetail, StreamHistoryEntry,
-    StreamIntegrationDirection, StreamIntegrationHint, StreamIntegrationInput,
+    DepotSummary, DiffMode, ErrorKind, FileDiff, FileIntegrationRecord, FileRevision, LoginStatus,
+    OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem,
+    ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode,
+    ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile, StreamDetail,
+    StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint, StreamIntegrationInput,
     StreamIntegrationPreview, StreamIntegrationPreviewItem, StreamLocalStrategy, StreamPathKind,
     StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
     SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
@@ -3335,7 +3335,10 @@ pub fn file_history(
     command.args([
         "-ztag", "-Mj", "filelog", "-i", "-l", "-t", "-m", &limit, depot_path,
     ]);
-    parse_file_history(&run_json_allowing_empty_match(&path, &mut command)?)
+    parse_file_history(
+        &run_json_allowing_empty_match(&path, &mut command)?,
+        depot_path,
+    )
 }
 
 pub fn file_history_page(
@@ -5133,14 +5136,13 @@ fn limit_change_detail(
     detail
 }
 
-fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision>, AppError> {
+fn parse_file_history(
+    records: &[Map<String, Value>],
+    depot_path: &str,
+) -> Result<Vec<FileRevision>, AppError> {
     let mut revisions = Vec::new();
     for record in records.iter().filter(|record| !is_message_record(record)) {
         if let Some(revision) = optional_field(record, &["rev", "revision"]) {
-            let integrations = ["how", "srev", "erev", "sfile"]
-                .iter()
-                .filter_map(|name| optional_field(record, &[*name]))
-                .collect();
             revisions.push(FileRevision {
                 revision,
                 change: optional_field(record, &["change"]).unwrap_or_default(),
@@ -5151,7 +5153,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
                 client: optional_field(record, &["client"]),
                 size: optional_field(record, &["fileSize", "size"]),
                 description: optional_field(record, &["desc", "description"]),
-                integrations,
+                integration_records: flat_integration_records(record, depot_path),
                 labels: ["label", "labelName"]
                     .iter()
                     .filter_map(|name| optional_field(record, &[*name]))
@@ -5167,10 +5169,6 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
         for index in indices {
             let revision = numbered_field(record, &["rev", "revision"], index)
                 .expect("revision index was collected from this record");
-            let integrations = ["how", "srev", "erev", "sfile", "file"]
-                .iter()
-                .flat_map(|name| numbered_fields(record, name, index))
-                .collect();
             revisions.push(FileRevision {
                 revision,
                 change: numbered_field(record, &["change"], index).unwrap_or_default(),
@@ -5181,7 +5179,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
                 client: numbered_field(record, &["client"], index),
                 size: numbered_field(record, &["fileSize", "size"], index),
                 description: numbered_field(record, &["desc", "description"], index),
-                integrations,
+                integration_records: indexed_integration_records(record, index, depot_path),
                 labels: ["label", "labelName"]
                     .iter()
                     .flat_map(|name| numbered_fields(record, name, index))
@@ -5190,6 +5188,100 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
         }
     }
     Ok(revisions)
+}
+
+fn flat_integration_records(
+    record: &Map<String, Value>,
+    depot_path: &str,
+) -> Vec<FileIntegrationRecord> {
+    let integration = integration_record(
+        optional_field(record, &["how"]),
+        optional_field(record, &["sfile", "file"]),
+        optional_field(record, &["srev"]),
+        optional_field(record, &["erev"]),
+        depot_path,
+    );
+    integration.into_iter().collect()
+}
+
+fn indexed_integration_records(
+    record: &Map<String, Value>,
+    revision_index: usize,
+    depot_path: &str,
+) -> Vec<FileIntegrationRecord> {
+    let how = numbered_integration_fields(record, "how", revision_index);
+    let source_file = numbered_integration_fields(record, "sfile", revision_index);
+    let related_file = numbered_integration_fields(record, "file", revision_index);
+    let start = numbered_integration_fields(record, "srev", revision_index);
+    let end = numbered_integration_fields(record, "erev", revision_index);
+    let indices = how
+        .keys()
+        .chain(source_file.keys())
+        .chain(related_file.keys())
+        .chain(start.keys())
+        .chain(end.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+
+    indices
+        .into_iter()
+        .filter_map(|index| {
+            integration_record(
+                how.get(&index).cloned(),
+                source_file
+                    .get(&index)
+                    .cloned()
+                    .or_else(|| related_file.get(&index).cloned()),
+                start.get(&index).cloned(),
+                end.get(&index).cloned(),
+                depot_path,
+            )
+        })
+        .collect()
+}
+
+fn numbered_integration_fields(
+    record: &Map<String, Value>,
+    prefix: &str,
+    revision_index: usize,
+) -> BTreeMap<usize, String> {
+    let exact = format!("{prefix}{revision_index}");
+    let nested = format!("{exact},");
+    record
+        .iter()
+        .filter_map(|(key, value)| {
+            let integration_index = if key == &exact {
+                Some(0)
+            } else {
+                key.strip_prefix(&nested)
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+            }?;
+            Some((integration_index, value_text(value)?))
+        })
+        .collect()
+}
+
+fn integration_record(
+    how: Option<String>,
+    file_path: Option<String>,
+    start_revision: Option<String>,
+    end_revision: Option<String>,
+    depot_path: &str,
+) -> Option<FileIntegrationRecord> {
+    if how.is_none() && file_path.is_none() && start_revision.is_none() && end_revision.is_none() {
+        return None;
+    }
+    let complete =
+        how.is_some() && file_path.is_some() && start_revision.is_some() && end_revision.is_some();
+    let cyclic = file_path.as_deref() == Some(depot_path);
+    Some(FileIntegrationRecord {
+        how,
+        file_path,
+        start_revision,
+        end_revision,
+        complete,
+        cyclic,
+    })
 }
 
 fn parse_opened_files(records: &[Map<String, Value>]) -> Result<Vec<OpenedFile>, AppError> {
@@ -6788,9 +6880,14 @@ mod tests {
 
     #[test]
     fn parses_filelog_revisions_and_keeps_integration_records() {
-        let revisions = parse_file_history(&parse_json_lines(
-            r#"{"rev":"4","change":"88","action":"edit","user":"alex","time":"1750000000","type":"text","client":"alex-main","fileSize":"128","label":"release_1","desc":"Fix parser","how":"merge","srev":"3","erev":"4","sfile":"//Acme/dev/a.txt"}"#,
-        ).unwrap()).unwrap();
+        let revisions = parse_file_history(
+            &parse_json_lines(
+                r#"{"rev":"4","change":"88","action":"edit","user":"alex","time":"1750000000","type":"text","client":"alex-main","fileSize":"128","label":"release_1","desc":"Fix parser","how":"merge","srev":"3","erev":"4","sfile":"//Acme/dev/a.txt"}"#,
+            )
+            .unwrap(),
+            "//Acme/main/a.txt",
+        )
+        .unwrap();
         assert_eq!(revisions.len(), 1);
         assert_eq!(revisions[0].revision, "4");
         assert_eq!(revisions[0].description.as_deref(), Some("Fix parser"));
@@ -6798,8 +6895,15 @@ mod tests {
         assert_eq!(revisions[0].size.as_deref(), Some("128"));
         assert_eq!(revisions[0].labels, ["release_1"]);
         assert_eq!(
-            revisions[0].integrations,
-            ["merge", "3", "4", "//Acme/dev/a.txt"]
+            revisions[0].integration_records,
+            [FileIntegrationRecord {
+                how: Some("merge".to_owned()),
+                file_path: Some("//Acme/dev/a.txt".to_owned()),
+                start_revision: Some("3".to_owned()),
+                end_revision: Some("4".to_owned()),
+                complete: true,
+                cyclic: false,
+            }]
         );
     }
 
@@ -6810,6 +6914,7 @@ mod tests {
                 r#"{"depotFile":"//Acme/main/a.txt","rev0":"5","rev1":"4","change0":"20","change1":"19","action0":"edit","action1":"add","user0":"alex","user1":"sam","desc0":"Latest","desc1":"Initial","how0,0":"branch into","file0,0":"//Acme/release/a.txt"}"#,
             )
             .unwrap(),
+            "//Acme/main/a.txt",
         )
         .unwrap();
 
@@ -6818,11 +6923,36 @@ mod tests {
         assert_eq!(revisions[0].change, "20");
         assert_eq!(revisions[0].description.as_deref(), Some("Latest"));
         assert_eq!(
-            revisions[0].integrations,
-            ["branch into", "//Acme/release/a.txt"]
+            revisions[0].integration_records,
+            [FileIntegrationRecord {
+                how: Some("branch into".to_owned()),
+                file_path: Some("//Acme/release/a.txt".to_owned()),
+                start_revision: None,
+                end_revision: None,
+                complete: false,
+                cyclic: false,
+            }]
         );
         assert_eq!(revisions[1].revision, "4");
         assert_eq!(revisions[1].action, "add");
+    }
+
+    #[test]
+    fn keeps_incomplete_and_cyclic_filelog_records_explicit() {
+        let revisions = parse_file_history(
+            &parse_json_lines(
+                r#"{"rev0":"4","how0,0":"move/add","sfile0,0":"//Acme/main/a.txt","how0,1":"merge","srev0,1":"1"}"#,
+            )
+            .unwrap(),
+            "//Acme/main/a.txt",
+        )
+        .unwrap();
+
+        assert_eq!(revisions[0].integration_records.len(), 2);
+        assert!(revisions[0].integration_records[0].cyclic);
+        assert!(!revisions[0].integration_records[0].complete);
+        assert_eq!(revisions[0].integration_records[1].file_path, None);
+        assert!(!revisions[0].integration_records[1].complete);
     }
 
     #[test]
