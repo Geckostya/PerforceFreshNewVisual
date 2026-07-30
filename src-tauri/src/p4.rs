@@ -56,6 +56,7 @@ const MAX_WORKSPACE_SEARCH_RESULTS: usize = 200;
 const MAX_INTEGRATION_PREVIEW_ITEMS: usize = 200;
 const MAX_HISTORY_RECORDS: &str = "5000";
 const MAX_SUBMITTED_DETAIL_PREVIEW_FILES: u32 = 1000;
+const WORKSPACE_FSTAT_FIELDS: &str = "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,otherLock,resolveStatus";
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RECOVERY_WORKERS: usize = 4;
 const IGNORE_DIRECTORY_PROBE: &str = "__p4fnv_ignore_probe__";
@@ -204,33 +205,8 @@ pub fn update_workspace(
     description: &str,
 ) -> Result<WorkspaceSpec, AppError> {
     required_client(input)?;
-    let name = validate_form_value(name.trim(), "workspace")?;
-    let root = validate_form_value(root.trim(), "workspace root")?;
-    let stream = stream.unwrap_or_default().trim();
-    if stream.contains(['\r', '\n']) {
-        return Err(AppError::new(
-            ErrorKind::CommandFailed,
-            "Некорректный stream.",
-        ));
-    }
-    let description = validate_description(Some(description))?;
-    let (path, mut output_command) = configured_command(input)?;
-    output_command.args(["client", "-o", name]);
-    let output = output_command
-        .output()
-        .map_err(|error| launch_error(&path, error))?;
-    if !output.status.success() {
-        return Err(command_error(&output));
-    }
-    let original = String::from_utf8_lossy(&output.stdout);
-    let updated = replace_workspace_fields(&original, root, stream, description)?;
-    let (_, mut input_command) = configured_command(input)?;
-    input_command.args(["client", "-i"]);
-    let applied = run_output_with_stdin(&path, &mut input_command, updated.as_bytes())?;
-    if !applied.status.success() {
-        return Err(command_error(&applied));
-    }
-    inspect_workspace_named(input, name).map_err(|error| {
+    let name = save_workspace_form(input, name, root, stream, description)?;
+    inspect_workspace_named(input, &name).map_err(|error| {
         AppError::new(
             ErrorKind::PartialResult,
             "Workspace specification was saved, but the server read-back failed.",
@@ -247,7 +223,17 @@ pub fn create_workspace(
     stream: Option<&str>,
     description: &str,
 ) -> Result<(), AppError> {
-    let name = validate_form_value(name.trim(), "workspace")?;
+    save_workspace_form(input, name, root, stream, description).map(|_| ())
+}
+
+fn save_workspace_form(
+    input: &ConnectionInput,
+    name: &str,
+    root: &str,
+    stream: Option<&str>,
+    description: &str,
+) -> Result<String, AppError> {
+    let name = validate_form_value(name.trim(), "workspace")?.to_owned();
     let root = validate_form_value(root.trim(), "workspace root")?;
     let stream = stream.unwrap_or_default().trim();
     if stream.contains(['\r', '\n']) {
@@ -258,7 +244,7 @@ pub fn create_workspace(
     }
     let description = validate_description(Some(description))?;
     let (path, mut output_command) = configured_command(input)?;
-    output_command.args(["client", "-o", name]);
+    output_command.args(["client", "-o", &name]);
     let output = output_command
         .output()
         .map_err(|error| launch_error(&path, error))?;
@@ -273,7 +259,7 @@ pub fn create_workspace(
     if !applied.status.success() {
         return Err(command_error(&applied));
     }
-    Ok(())
+    Ok(name)
 }
 
 pub fn delete_workspace(input: &ConnectionInput, name: &str) -> Result<(), AppError> {
@@ -1763,19 +1749,20 @@ fn workspace_client_path(root: &Path, path: &Path, client: &str) -> Result<Strin
 }
 
 fn workspace_fstat_arguments(scope: &str) -> Vec<String> {
-    [
-        "-ztag",
-        "-Mj",
-        "fstat",
-        "-Rc",
-        "-Ol",
-        "-T",
-        "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,otherLock,resolveStatus",
-        scope,
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+    let mut arguments = workspace_fstat_base_arguments();
+    arguments.extend([
+        "-T".to_owned(),
+        WORKSPACE_FSTAT_FIELDS.to_owned(),
+        scope.to_owned(),
+    ]);
+    arguments
+}
+
+fn workspace_fstat_base_arguments() -> Vec<String> {
+    ["-ztag", "-Mj", "fstat", "-Rc", "-Ol"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn workspace_search_arguments(scope: &str, query: &str) -> Result<Vec<String>, AppError> {
@@ -1800,20 +1787,17 @@ fn workspace_search_arguments(scope: &str, query: &str) -> Result<Vec<String>, A
         })
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(vec![
-        "-ztag".to_owned(),
-        "-Mj".to_owned(),
-        "fstat".to_owned(),
-        "-Rc".to_owned(),
-        "-Ol".to_owned(),
+    let mut arguments = workspace_fstat_base_arguments();
+    arguments.extend([
         "-m".to_owned(),
         (MAX_WORKSPACE_SEARCH_RESULTS + 1).to_string(),
         "-F".to_owned(),
         filter,
         "-T".to_owned(),
-        "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,otherLock,resolveStatus".to_owned(),
+        WORKSPACE_FSTAT_FIELDS.to_owned(),
         scope.to_owned(),
-    ])
+    ]);
+    Ok(arguments)
 }
 
 fn escape_fstat_filter_term(term: &str) -> String {
@@ -2889,11 +2873,7 @@ fn reconcile_preview_token(scope: &str, items: &[ReconcileItem]) -> String {
         .to_le_bytes()
         .into_iter()
         .chain(scope.bytes())
-        .chain(
-            serde_json::to_vec(&canonical_items)
-                .unwrap_or_default()
-                .into_iter(),
-        )
+        .chain(serde_json::to_vec(&canonical_items).unwrap_or_default())
     {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
@@ -4176,11 +4156,19 @@ fn workspace_paths(
     input: &ConnectionInput,
     depot_paths: &[String],
 ) -> Result<Vec<(String, String)>, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "where"]);
-    command.args(depot_paths);
+    let (path, mut command) = workspace_where_command(input, depot_paths)?;
     let records = run_json(&path, &mut command)?;
     Ok(parse_workspace_paths(&records))
+}
+
+fn workspace_where_command(
+    input: &ConnectionInput,
+    paths: &[String],
+) -> Result<(PathBuf, Command), AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "where"]);
+    command.args(paths);
+    Ok((path, command))
 }
 
 pub fn map_workspace_paths(
@@ -4212,9 +4200,7 @@ fn map_workspace_paths_chunk(
     input: &ConnectionInput,
     queries: &[String],
 ) -> Result<WorkspaceMappingBatch, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "where"]);
-    command.args(queries);
+    let (path, mut command) = workspace_where_command(input, queries)?;
     let (records, diagnostics, partial) = run_json_collecting_diagnostics(&path, &mut command)?;
     Ok(parse_workspace_mapping_batch(
         queries,
@@ -4247,13 +4233,13 @@ fn parse_workspace_mapping_batch(
         .map(|query| {
             let exact_candidates = records
                 .iter()
-                .filter(|record| mapping_record_matches_query(record, query))
+                .filter(|record| mapping_record_matches_query(record, query, false))
                 .collect::<Vec<_>>();
             let candidates = if exact_candidates.is_empty() {
                 records
                     .iter()
                     .filter(|record| {
-                        mapping_record_matches_query_with_case(record, query, true)
+                        mapping_record_matches_query(record, query, true)
                     })
                     .collect::<Vec<_>>()
             } else {
@@ -4310,11 +4296,7 @@ fn parse_workspace_mapping_batch(
     }
 }
 
-fn mapping_record_matches_query(record: &Map<String, Value>, query: &str) -> bool {
-    mapping_record_matches_query_with_case(record, query, false)
-}
-
-fn mapping_record_matches_query_with_case(
+fn mapping_record_matches_query(
     record: &Map<String, Value>,
     query: &str,
     ignore_case: bool,
@@ -4339,9 +4321,7 @@ fn probe_workspace_paths(
     input: &ConnectionInput,
     depot_paths: &[String],
 ) -> Result<Vec<(String, String)>, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "where"]);
-    command.args(depot_paths);
+    let (path, mut command) = workspace_where_command(input, depot_paths)?;
     let records = run_json_probe(&path, &mut command)?;
     Ok(parse_workspace_paths(&records))
 }

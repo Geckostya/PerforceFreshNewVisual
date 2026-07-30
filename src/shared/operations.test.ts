@@ -54,6 +54,16 @@ describe("operation snapshots", () => {
     expect(isOperationTerminal("progress")).toBe(false);
   });
 
+  it("classifies every protocol state explicitly", () => {
+    const active = ["started", "progress", "cancel_requested"] as const;
+    const terminal = ["completed", "failed", "cancelled", "partial", "unknown"] as const;
+
+    expect(active.every(isOperationActive)).toBe(true);
+    expect(active.some(isOperationTerminal)).toBe(false);
+    expect(terminal.every(isOperationTerminal)).toBe(true);
+    expect(terminal.some(isOperationActive)).toBe(false);
+  });
+
   it("does not regress a terminal result when late progress arrives", () => {
     let state = reduceOperationSnapshots([], event("op-1", "started"));
     state = reduceOperationSnapshots(state, event("op-1", "unknown", 2));

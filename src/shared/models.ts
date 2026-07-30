@@ -275,15 +275,17 @@ export interface AuthStage {
   maxPollingAttempts: number;
 }
 
-export type OperationEventKind =
+export type OperationActiveState =
   | "started"
   | "progress"
-  | "cancel_requested"
+  | "cancel_requested";
+export type OperationTerminalState =
   | "completed"
   | "failed"
   | "cancelled"
   | "partial"
   | "unknown";
+export type OperationEventKind = OperationActiveState | OperationTerminalState;
 export type OperationItemStatus = "succeeded" | "failed" | "skipped";
 export type OperationCompensationStatus = "not_required" | "succeeded" | "failed" | "unknown";
 export type OperationReadBackStatus = "succeeded" | "failed" | "not_required" | "unknown";

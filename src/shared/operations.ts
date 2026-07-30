@@ -5,8 +5,10 @@ import type {
   OperationDiagnostic,
   OperationEvent,
   OperationEventKind,
+  OperationActiveState,
   OperationItemResult,
   OperationReadBack,
+  OperationTerminalState,
 } from "./models";
 
 export interface OperationSnapshot {
@@ -99,12 +101,16 @@ export function formatEta(seconds: number): string {
   return `~${Math.floor(seconds / 3600)}h ${Math.ceil((seconds % 3600) / 60)}m`;
 }
 
-export function isOperationActive(status: OperationEventKind): boolean {
+export function isOperationActive(status: OperationEventKind): status is OperationActiveState {
   return status === "started" || status === "progress" || status === "cancel_requested";
 }
 
-export function isOperationTerminal(status: OperationEventKind): boolean {
-  return !isOperationActive(status);
+export function isOperationTerminal(status: OperationEventKind): status is OperationTerminalState {
+  return status === "completed"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "partial"
+    || status === "unknown";
 }
 
 export function operationAnnouncementPriority(status: OperationEventKind): "none" | "polite" | "assertive" {
