@@ -3370,8 +3370,10 @@ pub fn file_history_page(
         &(limit + 1).to_string(),
         &spec,
     ]);
-    let mut items =
-        parse_file_history(&run_json_allowing_empty_match(&path, &mut command)?, &path)?;
+    let mut items = parse_file_history(
+        &run_json_allowing_empty_match(&path, &mut command)?,
+        depot_path,
+    )?;
     if let Some(boundary) = boundary {
         items.retain(|item| item.revision != boundary);
     }
