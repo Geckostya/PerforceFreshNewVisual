@@ -15,15 +15,15 @@ use serde_json::{Map, Value};
 use crate::models::{
     AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
-    CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
-    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
-    ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide,
-    ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile,
-    StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
-    StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
-    StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
-    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
-    SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
+    CreateStreamType, DateSyncPreview, DepotDirectory, DepotFile, DepotSummary, DiffMode,
+    ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange,
+    ReconcileItem, ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent,
+    ResolveContentSide, ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem,
+    ShelvedFile, StreamDetail, StreamHistoryEntry, StreamIntegrationDirection,
+    StreamIntegrationHint, StreamIntegrationInput, StreamIntegrationPreview,
+    StreamIntegrationPreviewItem, StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode,
+    SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
+    SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
     UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
     WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingEdit, WorkspaceMappingEditor,
@@ -93,12 +93,16 @@ pub fn detect(explicit_path: Option<&str>) -> Result<P4Detection, AppError> {
 }
 
 pub fn info(input: &ConnectionInput) -> Result<P4Info, AppError> {
+    let mut info = read_info(input)?;
+    info.capabilities = Some(capabilities::build(input, &info));
+    Ok(info)
+}
+
+fn read_info(input: &ConnectionInput) -> Result<P4Info, AppError> {
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "info"]);
     let records = run_json(&path, &mut command)?;
-    let mut info = parse_info_records(&records)?;
-    info.capabilities = Some(capabilities::build(input, &info));
-    Ok(info)
+    parse_info_records(&records)
 }
 
 pub fn open_workspace(input: &ConnectionInput) -> Result<P4Info, AppError> {
@@ -2164,6 +2168,144 @@ pub fn preview_sync_scopes(
     preview.writable_files = workspace_files.writable;
     preview.missing_have_files = workspace_files.missing_have;
     Ok(preview)
+}
+
+pub fn preview_sync_at_date(
+    input: &ConnectionInput,
+    scopes: &[String],
+    target_date_time: &str,
+) -> Result<DateSyncPreview, AppError> {
+    let target_date_spec = normalize_date_sync_target(target_date_time)?;
+    let info = read_info(input)?;
+    let server_date = info.server_date.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "The server did not report its date and time zone.",
+        )
+        .with_hint("Refresh the connection and try the date preview again.")
+    })?;
+    let (server_now, server_time_zone) = parse_server_date_context(&server_date)?;
+    if target_date_spec > server_now {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The retrieval date cannot be later than the current server time.",
+        ));
+    }
+    let dated_scopes = date_sync_scopes(scopes, &target_date_spec)?;
+    let preview = preview_sync_scopes(input, &dated_scopes)?;
+    Ok(DateSyncPreview {
+        scopes: dated_scopes,
+        target_date_time: format!("{} {}", &target_date_spec[..10], &target_date_spec[11..]),
+        server_date,
+        server_time_zone,
+        preview,
+    })
+}
+
+fn normalize_date_sync_target(value: &str) -> Result<String, AppError> {
+    let value = value.trim();
+    let (date, time) = value.split_once('T').ok_or_else(invalid_date_sync_target)?;
+    if date.len() != 10 || !matches!(time.len(), 5 | 8) {
+        return Err(invalid_date_sync_target());
+    }
+    let date = parse_fixed_date_parts(date, '-', 3).ok_or_else(invalid_date_sync_target)?;
+    let time = parse_fixed_date_parts(time, ':', if time.len() == 5 { 2 } else { 3 })
+        .ok_or_else(invalid_date_sync_target)?;
+    if date.len() != 3 || time.len() < 2 || time.len() > 3 {
+        return Err(invalid_date_sync_target());
+    }
+    let (year, month, day) = (date[0], date[1], date[2]);
+    let (hour, minute) = (time[0], time[1]);
+    let second = *time.get(2).unwrap_or(&0);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if year < 1970 || day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
+        return Err(invalid_date_sync_target());
+    }
+    Ok(format!(
+        "{year:04}/{month:02}/{day:02}:{hour:02}:{minute:02}:{second:02}"
+    ))
+}
+
+fn parse_fixed_date_parts(value: &str, separator: char, expected: usize) -> Option<Vec<u32>> {
+    let parts = value.split(separator).collect::<Vec<_>>();
+    if parts.len() != expected
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    parts.into_iter().map(|part| part.parse().ok()).collect()
+}
+
+fn invalid_date_sync_target() -> AppError {
+    AppError::new(
+        ErrorKind::CommandFailed,
+        "Enter a valid server date and time.",
+    )
+}
+
+fn parse_server_date_context(server_date: &str) -> Result<(String, String), AppError> {
+    let mut parts = server_date.split_whitespace();
+    let date = parts.next().ok_or_else(invalid_server_date_context)?;
+    let time = parts.next().ok_or_else(invalid_server_date_context)?;
+    let offset = parts.next().ok_or_else(invalid_server_date_context)?;
+    if date.len() != 10
+        || time.len() != 8
+        || offset.len() != 5
+        || !matches!(offset.as_bytes().first(), Some(b'+') | Some(b'-'))
+        || !offset.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    {
+        return Err(invalid_server_date_context());
+    }
+    let offset_hour = offset[1..3]
+        .parse::<u8>()
+        .map_err(|_| invalid_server_date_context())?;
+    let offset_minute = offset[3..5]
+        .parse::<u8>()
+        .map_err(|_| invalid_server_date_context())?;
+    if offset_hour > 23 || offset_minute > 59 {
+        return Err(invalid_server_date_context());
+    }
+    let normalized = normalize_date_sync_target(&format!("{}T{time}", date.replace('/', "-")))?;
+    let zone_name = parts.collect::<Vec<_>>().join(" ");
+    let zone = if zone_name.is_empty() {
+        offset.to_owned()
+    } else {
+        format!("{offset} {zone_name}")
+    };
+    Ok((normalized, zone))
+}
+
+fn invalid_server_date_context() -> AppError {
+    AppError::new(
+        ErrorKind::InvalidOutput,
+        "The server returned an invalid date or time-zone context.",
+    )
+}
+
+fn date_sync_scopes(scopes: &[String], target_date_spec: &str) -> Result<Vec<String>, AppError> {
+    if scopes.is_empty() || scopes.len() > 1_000 {
+        return Err(empty_file_selection());
+    }
+    validate_depot_paths(scopes)?;
+    if scopes.iter().any(|scope| scope.contains(['@', '#', '\0'])) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Date retrieval requires depot paths without another revision specifier.",
+        ));
+    }
+    Ok(scopes
+        .iter()
+        .map(|scope| format!("{}@{target_date_spec}", scope.trim()))
+        .collect())
 }
 
 pub fn preview_sync_items(
@@ -5448,6 +5590,7 @@ fn parse_info_records(records: &[Map<String, Value>]) -> Result<P4Info, AppError
     let info = P4Info {
         server_address: take_field(&fields, &["serverAddress"]),
         server_version: take_field(&fields, &["serverVersion"]),
+        server_date: take_field(&fields, &["serverDate"]),
         user_name: take_field(&fields, &["userName"]),
         client_name: take_field(&fields, &["clientName"]),
         client_root: take_field(&fields, &["clientRoot"]),
@@ -6171,7 +6314,7 @@ mod tests {
     fn parses_info_from_multiple_json_records() {
         let records = parse_json_lines(
             r#"{"serverAddress":"ssl:p4.example:1666","serverVersion":"P4D/NTX64/2025.1"}
-{"userName":"alex","clientName":"alex-main","clientRoot":"C:\\work","caseHandling":"insensitive","serverServices":"commit-server","serverID":"commit-1","security":"3","clientAddress":"10.0.0.8:5000","userEmail":"alex@example.test"}"#,
+{"userName":"alex","clientName":"alex-main","clientRoot":"C:\\work","serverDate":"2026/07/30 13:15:00 +0200 CEST","caseHandling":"insensitive","serverServices":"commit-server","serverID":"commit-1","security":"3","clientAddress":"10.0.0.8:5000","userEmail":"alex@example.test"}"#,
         )
         .unwrap();
 
@@ -6179,6 +6322,10 @@ mod tests {
         assert_eq!(info.server_address.as_deref(), Some("ssl:p4.example:1666"));
         assert_eq!(info.client_name.as_deref(), Some("alex-main"));
         assert_eq!(info.client_root.as_deref(), Some("C:\\work"));
+        assert_eq!(
+            info.server_date.as_deref(),
+            Some("2026/07/30 13:15:00 +0200 CEST")
+        );
         assert_eq!(info.case_handling.as_deref(), Some("insensitive"));
         assert_eq!(info.server_services.as_deref(), Some("commit-server"));
         assert_eq!(info.server_id.as_deref(), Some("commit-1"));
@@ -7474,6 +7621,47 @@ mod tests {
             &parse_json_lines(r#"{"depotFile":"//Acme/main/new.txt","action":"added"}"#).unwrap(),
         );
         assert_eq!(sync_preview_diff_paths(&added), ["//Acme/main/new.txt"]);
+    }
+
+    #[test]
+    fn builds_validated_date_sync_scopes_with_server_timezone_context() {
+        assert_eq!(
+            normalize_date_sync_target("2024-02-29T09:07").unwrap(),
+            "2024/02/29:09:07:00"
+        );
+        assert_eq!(
+            normalize_date_sync_target("2026-07-30T13:15:42").unwrap(),
+            "2026/07/30:13:15:42"
+        );
+        assert_eq!(
+            parse_server_date_context("2026/07/30 13:15:00 +0200 Central European Summer Time")
+                .unwrap(),
+            (
+                "2026/07/30:13:15:00".to_owned(),
+                "+0200 Central European Summer Time".to_owned()
+            )
+        );
+        assert_eq!(
+            date_sync_scopes(&["//Acme/main/...".to_owned()], "2026/07/30:12:00:00").unwrap(),
+            ["//Acme/main/...@2026/07/30:12:00:00"]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_already_revisioned_date_sync_targets() {
+        for invalid in [
+            "2023-02-29T10:00",
+            "2024-13-01T10:00",
+            "2024-01-01T24:00",
+            "2024-01-01 10:00",
+            "1969-12-31T23:59:59",
+        ] {
+            assert!(normalize_date_sync_target(invalid).is_err(), "{invalid}");
+        }
+        assert!(parse_server_date_context("2026/07/30 13:15:00").is_err());
+        assert!(
+            date_sync_scopes(&["//Acme/main/...@42".to_owned()], "2026/07/30:12:00:00").is_err()
+        );
     }
 
     #[test]

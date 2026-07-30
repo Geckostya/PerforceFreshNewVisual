@@ -7,6 +7,7 @@ import type {
   FileDiff,
   AnnotationLine,
   DiffMode,
+  DateSyncPreview,
   FileRevision,
   LocaleCatalog,
   OpenedFile,
@@ -333,6 +334,10 @@ export async function listLocalWorkspaceDirectory(input: ConnectionInput, direct
 
 export async function previewSync(input: ConnectionInput, scopes: string[]): Promise<SyncPreview> {
   return invoke<SyncPreview>("preview_sync", { input, scopes });
+}
+
+export async function previewSyncAtDate(input: ConnectionInput, scopes: string[], targetDateTime: string): Promise<DateSyncPreview> {
+  return invoke<DateSyncPreview>("preview_sync_at_date", { input, scopes, targetDateTime });
 }
 
 export async function repairSyncHaveList(input: ConnectionInput, paths: string[]): Promise<void> {

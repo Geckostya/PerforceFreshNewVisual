@@ -3,9 +3,9 @@ use crate::{
     models::{
         AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
         CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
-        CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
-        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        CreateStreamPreview, DateSyncPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory,
+        DepotFile, DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff,
+        FileOperationInput, FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
         OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
         OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
         P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
@@ -1668,6 +1668,19 @@ pub async fn preview_sync(
     tauri::async_runtime::spawn_blocking(move || p4::preview_sync_scopes(&input, &scopes))
         .await
         .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_sync_at_date(
+    input: ConnectionInput,
+    scopes: Vec<String>,
+    target_date_time: String,
+) -> Result<DateSyncPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_sync_at_date(&input, &scopes, &target_date_time)
+    })
+    .await
+    .map_err(task_error)?
 }
 
 #[tauri::command]

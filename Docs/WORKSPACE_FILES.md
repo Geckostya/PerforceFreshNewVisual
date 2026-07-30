@@ -46,6 +46,8 @@ Keep Local Files mounted for the workspace session so navigation does not duplic
 
 All retrieval entry points use one frontend controller, one array-of-scopes IPC contract, one writable-conflict dialog, and the shared long-operation protocol.
 
+Date retrieval accepts a wall-clock target explicitly in the P4 Server time zone reported by fresh `p4 info`. Rust validates the target, rejects future or already-revisioned scopes, and returns the exact dated scopes with the ordinary server sync preview. Confirmation starts the same Safe Sync operation, so cancellation, writable-file decisions, exact-revision overwrite recovery, and workspace/have-list read-back remain unchanged.
+
 1. Start ordinary retrieval with `p4 sync -s`; it downloads safe files and skips unsafe overwrites. A folder scope is sent as `folder/...` in the same batch as other selections.
 2. Before the terminal event, find remaining incoming paths with `p4 sync -n` and compare that exact set through one validated `p4 diff -f -sa` using `p4 -x -` stdin. Here `-f` is read-only comparison, not overwrite.
 3. For a mapped local file without `haveRev`, treat the expected “not on client” result as empty diagnostics and repair knowledge through `p4 reconcile -k`. Recover mapped read-only files separately; never overwrite a writable file without a user decision.

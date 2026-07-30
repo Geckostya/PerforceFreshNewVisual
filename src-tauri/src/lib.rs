@@ -84,6 +84,7 @@ pub fn run() {
             commands::ignore_local_file,
             commands::delete_local_file,
             commands::preview_sync,
+            commands::preview_sync_at_date,
             commands::repair_sync_have_list,
             commands::start_sync,
             commands::start_submit,

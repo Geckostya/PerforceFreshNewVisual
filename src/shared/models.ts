@@ -69,6 +69,7 @@ export interface LocaleCatalog {
 export interface P4Info {
   serverAddress?: string;
   serverVersion?: string;
+  serverDate?: string;
   userName?: string;
   clientName?: string;
   clientRoot?: string;
@@ -590,6 +591,7 @@ export interface SyncPreviewItem {
 }
 
 export interface SyncPreview { items: SyncPreviewItem[]; totalBytes: number; modifiedFiles: string[]; writableFiles: string[]; missingHaveFiles: string[]; }
+export interface DateSyncPreview { scopes: string[]; targetDateTime: string; serverDate: string; serverTimeZone: string; preview: SyncPreview; }
 
 export type ReconcileAction = "add" | "edit" | "delete" | "move" | "unsafe";
 export interface ReconcileItem {

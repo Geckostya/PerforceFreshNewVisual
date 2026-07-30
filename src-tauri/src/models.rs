@@ -258,6 +258,8 @@ pub struct P4Info {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
@@ -933,6 +935,16 @@ pub struct SyncPreview {
     pub modified_files: Vec<String>,
     pub writable_files: Vec<String>,
     pub missing_have_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DateSyncPreview {
+    pub scopes: Vec<String>,
+    pub target_date_time: String,
+    pub server_date: String,
+    pub server_time_zone: String,
+    pub preview: SyncPreview,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

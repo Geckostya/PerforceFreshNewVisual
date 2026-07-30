@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { normalizeAppError, previewSync, repairSyncHaveList, startSync } from "./api";
+import { normalizeAppError, previewSync, previewSyncAtDate, repairSyncHaveList, startSync } from "./api";
 import { useLocale } from "./i18n";
-import type { AppError, ConnectionInput, OperationEvent, SyncPreview, SyncPreviewItem } from "./models";
+import type { AppError, ConnectionInput, DateSyncPreview, OperationEvent, SyncPreview, SyncPreviewItem } from "./models";
 import { isOperationTerminal, startObservedOperation, useActiveOperation } from "./operations";
 import { Modal } from "./View";
 
@@ -19,11 +19,18 @@ export function overwritePathsAfterForce(kind: OperationEvent["kind"], paths: st
   return kind === "completed" ? [] : paths;
 }
 
-export function exactOverwriteScopes(paths: string[], items: SyncPreviewItem[]): string[] {
+export function exactOverwriteScopes(paths: string[], items: SyncPreviewItem[], originalScopes: string[] = []): string[] {
+  const revisionSpecs = [...new Set(originalScopes.map((scope) => scope.match(/([@#][^@#]+)$/)?.[1]).filter((value): value is string => Boolean(value)))];
+  const fallbackRevisionSpec = revisionSpecs.length === 1 ? revisionSpecs[0] : "";
   return paths.map((path) => {
     const item = items.find((candidate) => candidate.depotPath.toLowerCase() === path.toLowerCase());
-    return item?.revision && /^\d+$/.test(item.revision) ? `${path}#${item.revision}` : path;
+    return item?.revision && /^\d+$/.test(item.revision) ? `${path}#${item.revision}` : `${path}${fallbackRevisionSpec}`;
   });
+}
+
+export function serverDateInputValue(serverDate?: string): string {
+  const match = serverDate?.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\s|$)/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}` : "";
 }
 
 export interface SafeSyncController {
@@ -47,6 +54,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
   const [conflicts, setConflicts] = useState<string[]>([]);
   const [overwritePaths, setOverwritePaths] = useState<string[]>([]);
   const [conflictItems, setConflictItems] = useState<SyncPreviewItem[]>([]);
+  const [conflictScopes, setConflictScopes] = useState<string[]>([]);
 
   async function refresh() {
     try {
@@ -79,6 +87,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
         setConflicts(remaining.writableFiles);
         setOverwritePaths([]);
         setConflictItems(remaining.items);
+        setConflictScopes(scopes);
         setPhase("idle");
         return;
       }
@@ -99,6 +108,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     setConflicts([]);
     setOverwritePaths([]);
     setConflictItems([]);
+    setConflictScopes([]);
     setPhase("syncing");
     try {
       await startObservedOperation("sync", () => startSync(connection, scopes), (event) => {
@@ -115,7 +125,10 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     const remaining = overwritePathsAfterForce(event.kind, paths);
     setConflicts(remaining);
     setOverwritePaths(remaining);
-    if (remaining.length === 0) setConflictItems([]);
+    if (remaining.length === 0) {
+      setConflictItems([]);
+      setConflictScopes([]);
+    }
     await refresh();
     setPhase("idle");
     if (event.kind === "cancelled") {
@@ -135,13 +148,14 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     if (selectedOverwritePaths.length === 0) {
       setConflicts([]);
       setConflictItems([]);
+      setConflictScopes([]);
       callbacks.setNotice(t("syncKeptWritableFiles"));
       await refresh();
       return;
     }
     setPhase("forcing");
     callbacks.setError(undefined);
-    const selectedOverwriteScopes = exactOverwriteScopes(selectedOverwritePaths, conflictItems);
+    const selectedOverwriteScopes = exactOverwriteScopes(selectedOverwritePaths, conflictItems, conflictScopes);
     try {
       await startObservedOperation("sync", () => startSync(connection, selectedOverwriteScopes, true), (event) => {
         if (!isOperationTerminal(event.kind)) return;
@@ -198,6 +212,57 @@ export function SyncPreviewDialog({ preview, busy, acknowledged, onAcknowledged,
       <div className="dialog-body"><SyncPreviewDetails preview={preview} acknowledged={acknowledged} onAcknowledged={onAcknowledged} /></div>
       <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button><button className="primary-button" type="button" onClick={onConfirm} disabled={busy || preview.items.length === 0 || (preview.modifiedFiles.length > 0 && !acknowledged)}>{confirmLabel || t("syncNow")}</button></div>
     </> : <div className="dialog-body sync-preview-loading" role="status"><span className="folder-loading-indicator" aria-hidden="true" /><div><strong>{t("preparingUpdate")}</strong><p>{t("preparingUpdateBody")}</p></div></div>}
+  </Modal>;
+}
+
+export function DateSyncDialog({ connection, scopes, serverDate, onClose, onConfirm }: {
+  connection: ConnectionInput;
+  scopes: string[];
+  serverDate?: string;
+  onClose: () => void;
+  onConfirm: (datedScopes: string[]) => void;
+}) {
+  const { t } = useLocale();
+  const [target, setTarget] = useState(() => serverDateInputValue(serverDate));
+  const [preview, setPreview] = useState<DateSyncPreview>();
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<AppError>();
+
+  async function review() {
+    if (!target) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      setPreview(await previewSyncAtDate(connection, scopes, target));
+      setAcknowledged(false);
+    } catch (reason) {
+      setError(normalizeAppError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <Modal title={t("dateSyncTitle")} busy={busy} onClose={onClose}>
+    <div className="dialog-body" data-agent-id="date-sync-dialog">
+      {error && <div className="diff-warning" role="alert"><strong>{error.message}</strong>{error.hints.map((hint) => <div key={hint}>{hint}</div>)}</div>}
+      {preview ? <>
+        <p>{t("dateSyncReviewBody")}</p>
+        <dl className="dialog-facts"><dt>{t("dateSyncTarget")}</dt><dd>{preview.targetDateTime} {preview.serverTimeZone}</dd><dt>{t("dateSyncServerNow")}</dt><dd>{preview.serverDate}</dd></dl>
+        <SyncPreviewDetails preview={preview.preview} acknowledged={acknowledged} onAcknowledged={setAcknowledged} />
+      </> : <>
+        <p>{t("dateSyncBody")}</p>
+        <label className="field"><span className="field-label">{t("dateSyncServerDateTime")}</span><input data-agent-id="date-sync-target" type="datetime-local" step="1" value={target} max={serverDateInputValue(serverDate) || undefined} onChange={(event) => { setTarget(event.target.value); setPreview(undefined); setError(undefined); }} /></label>
+        <dl className="dialog-facts"><dt>{t("dateSyncServerNow")}</dt><dd>{serverDate || t("dateSyncServerUnknown")}</dd><dt>{t("dateSyncScope")}</dt><dd>{scopes.join(" · ")}</dd></dl>
+      </>}
+    </div>
+    <div className="dialog-actions">
+      {preview && <button className="secondary-button" type="button" onClick={() => setPreview(undefined)} disabled={busy}>{t("back")}</button>}
+      <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button>
+      {preview
+        ? <button className="primary-button" data-agent-id="date-sync-confirm" type="button" onClick={() => onConfirm(preview.scopes)} disabled={busy || preview.preview.items.length === 0 || (preview.preview.modifiedFiles.length > 0 && !acknowledged)}>{t("dateSyncRetrieve")}</button>
+        : <button className="primary-button" data-agent-id="date-sync-preview" type="button" onClick={() => void review()} disabled={busy || !target}>{t("dateSyncPreview")}</button>}
+    </div>
   </Modal>;
 }
 
