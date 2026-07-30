@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import { CircleAlert, CircleCheck, LoaderCircle } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   detectP4,
   beginAuth,
@@ -39,6 +40,8 @@ type TestState =
   | { phase: "error"; error: AppError };
 
 type Translate = (key: TranslationKey) => string;
+
+export const P4_CLI_DOWNLOAD_URL = "https://www.perforce.com/downloads/helix-core-apps/command-line-client";
 
 export interface ConnectedSession {
   connection: ConnectionInput;
@@ -555,7 +558,7 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
             </div>
           </form>
 
-          <ConnectionResult state={testState} t={t} password={password} setPassword={setPassword} onLogin={() => void handleLogin()} onBeginAuth={() => void handleBeginAuth()} onInspectTrust={() => void handleInspectTrust()} loginBusy={busyAction === "login"} authBusy={auth.busy} trustBusy={busyAction === "trust"} ticketStatus={ticketStatus} onTicketStatus={() => void handleTicketStatus()} onRenew={() => void handleRenewTicket()} renewBusy={renewBusy} />
+          <ConnectionResult state={testState} t={t} password={password} setPassword={setPassword} onLogin={() => void handleLogin()} onBeginAuth={() => void handleBeginAuth()} onInspectTrust={() => void handleInspectTrust()} onRetry={() => void handleTestConnection()} loginBusy={busyAction === "login"} authBusy={auth.busy} trustBusy={busyAction === "trust"} ticketStatus={ticketStatus} onTicketStatus={() => void handleTicketStatus()} onRenew={() => void handleRenewTicket()} renewBusy={renewBusy} />
           {trustError && <InlineError error={trustError} t={t} />}
           {trustEntries && <div className="workspace-choice discovery trust-list" role="status"><strong>{t("trustEntriesTitle")}</strong>{trustEntries.length ? trustEntries.map((entry) => <div className="preview-row" key={`${entry.server}-${entry.fingerprint}`}><span>{entry.server}</span><small>{entry.fingerprint}</small></div>) : <p className="field-hint">{t("noTrustEntries")}</p>}</div>}
           {(workspacesLoading || workspaces.length > 0 || workspaceError) && (
@@ -601,11 +604,11 @@ function DetectionStatus({ detection, onRetry, t }: { detection: DetectionState;
   return <div className="tool-status success" role="status"><CircleCheck className="status-symbol" aria-hidden="true" /><div className="tool-status-copy"><strong>{t("toolReady")}</strong><span title={`${detection.value.path} · ${detection.value.version}`}>{detection.value.path} · {detection.value.version}</span></div><button className="link-button" type="button" onClick={onRetry}>{t("findAgain")}</button></div>;
 }
 
-function ConnectionResult({ state, t, password, setPassword, onLogin, onBeginAuth, onInspectTrust, loginBusy, authBusy, trustBusy, ticketStatus, onTicketStatus, onRenew, renewBusy }: { state: TestState; t: Translate; password: string; setPassword: (value: string) => void; onLogin: () => void; onBeginAuth: () => void; onInspectTrust: () => void; loginBusy: boolean; authBusy: boolean; trustBusy: boolean; ticketStatus: { phase: "idle" | "loading" | "success" | "error"; value?: LoginStatus; error?: AppError }; onTicketStatus: () => void; onRenew: () => void; renewBusy: boolean }) {
+function ConnectionResult({ state, t, password, setPassword, onLogin, onBeginAuth, onInspectTrust, onRetry, loginBusy, authBusy, trustBusy, ticketStatus, onTicketStatus, onRenew, renewBusy }: { state: TestState; t: Translate; password: string; setPassword: (value: string) => void; onLogin: () => void; onBeginAuth: () => void; onInspectTrust: () => void; onRetry: () => void; loginBusy: boolean; authBusy: boolean; trustBusy: boolean; ticketStatus: { phase: "idle" | "loading" | "success" | "error"; value?: LoginStatus; error?: AppError }; onTicketStatus: () => void; onRenew: () => void; renewBusy: boolean }) {
   if (state.phase === "idle" || state.phase === "loading") return null;
   if (state.phase === "error") {
     const copy = errorText(state.error.kind, t);
-    return <div className="result error" role="alert"><CircleAlert className="status-symbol" aria-hidden="true" /><div><h3>{t("connectionFailed")}</h3><p>{copy.message}</p><p>{copy.hint}</p>{state.error.kind === "auth" && <div className="login-inline"><label className="field"><span className="field-label">{t("passwordLabel")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" onKeyDown={(event) => { if (event.key === "Enter") onLogin(); }} /></label><button className="primary-button" type="button" onClick={onLogin} disabled={loginBusy || !password}>{loginBusy ? t("loggingIn") : t("login")}</button><button className="secondary-button" type="button" onClick={onBeginAuth} disabled={authBusy}>{authBusy ? t("authStarting") : t("authServerDriven")}</button><small>{t("passwordNotStored")}</small></div>}{state.error.kind === "trust" && <button className="primary-button" type="button" onClick={onInspectTrust} disabled={trustBusy}>{trustBusy ? t("loadingTrust") : t("trustReview")}</button>}{state.error.diagnostics && <details className="diagnostics"><summary>{t("technicalDetails")}</summary><pre>{state.error.diagnostics}</pre></details>}</div></div>;
+    return <div className="result error" role="alert"><CircleAlert className="status-symbol" aria-hidden="true" /><div><h3>{t("connectionFailed")}</h3><p>{copy.message}</p><p>{copy.hint}</p>{state.error.kind === "executable_not_found" && <div className="connection-recovery"><button className="secondary-button" type="button" onClick={() => void openUrl(P4_CLI_DOWNLOAD_URL)}>{t("downloadP4Cli")}</button><button className="link-button" type="button" onClick={onRetry}>{t("retryConnection")}</button></div>}{state.error.kind === "auth" && <div className="login-inline"><label className="field"><span className="field-label">{t("passwordLabel")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" onKeyDown={(event) => { if (event.key === "Enter") onLogin(); }} /></label><button className="primary-button" type="button" onClick={onLogin} disabled={loginBusy || !password}>{loginBusy ? t("loggingIn") : t("login")}</button><button className="secondary-button" type="button" onClick={onBeginAuth} disabled={authBusy}>{authBusy ? t("authStarting") : t("authServerDriven")}</button><small>{t("passwordNotStored")}</small></div>}{state.error.kind === "trust" && <button className="primary-button" type="button" onClick={onInspectTrust} disabled={trustBusy}>{trustBusy ? t("loadingTrust") : t("trustReview")}</button>}{state.error.diagnostics && <details className="diagnostics"><summary>{t("technicalDetails")}</summary><pre>{state.error.diagnostics}</pre></details>}</div></div>;
   }
   const info = state.value;
   const capabilities = info.capabilities;

@@ -76,6 +76,8 @@
     "localeWarning": "Some language files were ignored because they are invalid or incomplete.",
     "errorExecutable": "p4 CLI was not found.",
     "hintExecutable": "Install p4 CLI or specify its path manually.",
+    "downloadP4Cli": "Download p4 CLI",
+    "retryConnection": "Try again",
     "errorAuth": "The server requires sign-in.",
     "hintAuth": "Sign in to Helix Core and try again.",
     "errorTrust": "The server certificate is not trusted yet.",
