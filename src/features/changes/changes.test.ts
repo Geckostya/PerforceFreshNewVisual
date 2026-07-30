@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { OpenedFile, PendingChange } from "../../shared/models";
+import type { OpenedFile, PendingChange, WorkspaceScanCoverageState } from "../../shared/models";
 import {
   decodeChangeDrag,
   dragEffectAllowed,
@@ -13,6 +13,10 @@ import {
   resolveChangeDrop,
   selectedChangesForArchive,
   shouldRefreshOnFocus,
+  unopenedChangesGroup,
+  unopenedChangesMatch,
+  workspaceScanCoverageStateKey,
+  workspaceScanReasonKey,
   visibleShelfFiles,
 } from "./changes";
 
@@ -61,6 +65,65 @@ describe("pending changelist filter", () => {
     expect(filterChangeGroups(groups, "release", "42").map((group) => group.id)).toEqual(["42", "77"]);
     expect(filterChangeGroups(groups, "menu").map((group) => group.id)).toEqual(["42"]);
     expect(filterChangeGroups(groups, "", "default")).toHaveLength(3);
+  });
+});
+
+describe("virtual unopened changes presentation", () => {
+  const snapshot = {
+    scopeId: "scope-1",
+    identity: { server: "perforce:1666", user: "alex", workspace: "alex-main" },
+    roots: [],
+    exclusions: [],
+    candidates: [{
+      stableId: "C:\\work\\menu.ts\0edit",
+      action: "edit",
+      depotPath: "//Acme/main/menu.ts",
+      clientPath: "//alex-main/menu.ts",
+      localPath: "C:\\work\\menu.ts",
+    }],
+    coverage: {
+      state: "partial" as const,
+      completedRoots: 1,
+      totalRoots: 2,
+      candidateCount: 1,
+      candidateLimit: 500,
+      partialReasons: ["budget_exceeded" as const],
+    },
+    generatedAtMs: 42,
+  };
+
+  it("stays separate from real PendingChange data and preserves coverage", () => {
+    const group = unopenedChangesGroup(snapshot);
+    expect(group).toEqual({
+      kind: "unopened_changes",
+      id: "virtual:unopened-changes",
+      candidates: snapshot.candidates,
+      coverage: snapshot.coverage,
+      generatedAtMs: 42,
+    });
+    expect(group).not.toHaveProperty("files");
+    expect(group).not.toHaveProperty("description");
+  });
+
+  it("filters by localized label and candidate identity but keeps selection visible", () => {
+    const group = unopenedChangesGroup(snapshot);
+    expect(unopenedChangesMatch(group, "unopened", "Unopened changes", false)).toBe(true);
+    expect(unopenedChangesMatch(group, "menu.ts", "Unopened changes", false)).toBe(true);
+    expect(unopenedChangesMatch(group, "missing", "Unopened changes", false)).toBe(false);
+    expect(unopenedChangesMatch(group, "missing", "Unopened changes", true)).toBe(true);
+  });
+
+  it("maps every coverage and reason state to localized copy", () => {
+    const states: WorkspaceScanCoverageState[] = ["not_started", "complete", "partial", "paused", "stale"];
+    expect(states.map(workspaceScanCoverageStateKey)).toEqual([
+      "unopenedCoverageNotStarted",
+      "unopenedCoverageComplete",
+      "unopenedCoveragePartial",
+      "unopenedCoveragePaused",
+      "unopenedCoverageStale",
+    ]);
+    expect(workspaceScanReasonKey("foreground_active")).toBe("unopenedReasonForegroundActive");
+    expect(workspaceScanReasonKey("cancelled")).toBe("unopenedReasonCancelled");
   });
 });
 

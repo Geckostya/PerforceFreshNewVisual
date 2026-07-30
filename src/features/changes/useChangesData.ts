@@ -5,9 +5,10 @@ import {
   listPendingChanges,
   listShelvedChanges,
   listShelvedFiles,
+  getWorkspaceScanSnapshot,
   normalizeAppError,
 } from "../../shared/api";
-import type { AppError, ConnectionInput, OpenedFile, PendingChange, ShelvedFile } from "../../shared/models";
+import type { AppError, ConnectionInput, OpenedFile, PendingChange, ShelvedFile, WorkspaceScanSnapshot } from "../../shared/models";
 import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
 import { groupChanges, shouldRefreshOnFocus, visibleShelfFiles } from "./changes";
 
@@ -29,12 +30,29 @@ export function useChangesData(
   const [shelfFreshChange, setShelfFreshChange] = useState<string>();
   const [error, setError] = useState<AppError>();
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [workspaceScan, setWorkspaceScan] = useState<WorkspaceScanSnapshot>();
   const lastFocusRefresh = useRef(0);
   const hasSuccessfulSnapshot = useRef(false);
 
   const refreshData = useCallback(() => {
     setRefreshVersion((value) => value + 1);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    setWorkspaceScan(undefined);
+    const refreshScan = () => {
+      void getWorkspaceScanSnapshot(connection)
+        .then((snapshot) => { if (active) setWorkspaceScan(snapshot); })
+        .catch(() => undefined);
+    };
+    refreshScan();
+    const timer = window.setInterval(refreshScan, 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [connection]);
 
   useEffect(() => {
     let active = true;
@@ -127,6 +145,7 @@ export function useChangesData(
     groups,
     currentGroup,
     currentShelfFiles,
+    workspaceScan,
     state,
     shelfLoading,
     shelfState,

@@ -53,11 +53,17 @@ import type {
   SubmitPreflightIssue,
   SubmitPreflightSummary,
   UnshelveConflict,
+  WorkspaceScanCandidate,
 } from "../../shared/models";
 import {
+  UNOPENED_CHANGES_GROUP_ID,
   changeOptionLabel,
   filterChangeGroups,
+  unopenedChangesGroup,
+  unopenedChangesMatch,
   selectedChangesForArchive,
+  workspaceScanCoverageStateKey,
+  workspaceScanReasonKey,
   type ChangeDropTarget,
 } from "./changes";
 import {
@@ -119,6 +125,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     groups,
     currentGroup,
     currentShelfFiles,
+    workspaceScan,
     state,
     shelfLoading,
     shelfState,
@@ -162,6 +169,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   const [conflictMenu, setConflictMenu] = useState<{ x: number; y: number }>();
   const changeMenu = useContextMenu<MenuTarget>();
   const [changeQuery, setChangeQuery] = useState("");
+  const [selectedUnopenedCandidate, setSelectedUnopenedCandidate] = useState<string>();
   const [unactualOpen, setUnactualOpen] = useState(true);
   const { archivedIds: archivedChanges, setArchived } = useLocalArchive(
     "changes",
@@ -169,9 +177,15 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     groups.filter((group) => !group.isDefault).map((group) => group.id),
     state === "fresh",
   );
-  const canSubmit = currentGroup.files.length > 0 || currentGroup.isShelved;
-  const mutationsBlocked = state !== "fresh"
+  const unopenedGroup = workspaceScan ? unopenedChangesGroup(workspaceScan) : undefined;
+  const isUnopenedSelected = selectedChange === UNOPENED_CHANGES_GROUP_ID && unopenedGroup !== undefined;
+  const currentUnopenedCandidate = isUnopenedSelected
+    ? unopenedGroup.candidates.find((candidate) => candidate.stableId === selectedUnopenedCandidate)
+    : undefined;
+  const canSubmit = !isUnopenedSelected && (currentGroup.files.length > 0 || currentGroup.isShelved);
+  const resourceMutationsBlocked = state !== "fresh"
     || (currentGroup.isShelved && (shelfState !== "fresh" || shelfFreshChange !== currentGroup.id));
+  const mutationsBlocked = resourceMutationsBlocked || isUnopenedSelected;
   const safeSync = useSafeSync(connection, { refresh: refreshData, setNotice, setError });
 
   useEffect(() => {
@@ -205,6 +219,25 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     changeSelectionAnchor.current = next.anchor;
     if (change === selectedChange) return;
     setSelectedChange(change);
+    setSelectedUnopenedCandidate(undefined);
+    fileSelection.clear();
+    setDiff(undefined);
+  }
+
+  function selectUnopenedChanges() {
+    setSelectedChange(UNOPENED_CHANGES_GROUP_ID);
+    setSelectedChanges([]);
+    changeSelectionAnchor.current = undefined;
+    setSelectedUnopenedCandidate((current) => unopenedGroup?.candidates.some((candidate) => candidate.stableId === current)
+      ? current
+      : unopenedGroup?.candidates[0]?.stableId);
+    fileSelection.clear();
+    setDiff(undefined);
+    changeMenu.close();
+  }
+
+  function selectUnopenedCandidate(candidate: WorkspaceScanCandidate) {
+    setSelectedUnopenedCandidate(candidate.stableId);
     fileSelection.clear();
     setDiff(undefined);
   }
@@ -500,9 +533,19 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
 
   const menu = changeMenu.menu?.target;
   const contextGroup = menu ? groups.find((group) => group.id === menu.change) : undefined;
-  const visibleGroups = filterChangeGroups(groups, changeQuery, currentGroup.id);
+  const visibleGroups = filterChangeGroups(groups, changeQuery, isUnopenedSelected ? undefined : currentGroup.id);
+  const showUnopenedGroup = unopenedGroup !== undefined && unopenedChangesMatch(
+    unopenedGroup,
+    changeQuery,
+    t("unopenedChanges"),
+    isUnopenedSelected,
+  );
   const partitionedGroups = partitionArchived(visibleGroups, archivedChanges, (group) => group.id);
-  const orderedChangeIds = [...partitionedGroups.current, ...(unactualOpen ? partitionedGroups.archived : [])].map((group) => group.id);
+  const orderedChangeIds = [
+    ...(showUnopenedGroup ? [UNOPENED_CHANGES_GROUP_ID] : []),
+    ...partitionedGroups.current.map((group) => group.id),
+    ...(unactualOpen ? partitionedGroups.archived.map((group) => group.id) : []),
+  ];
   const contextOpened = menu?.kind === "opened"
     ? files.find((file) => file.depotPath === menu.depotPath)
     : undefined;
@@ -556,6 +599,19 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     </SelectableSurface>
   );
 
+  const unopenedCoverageLabel = unopenedGroup
+    ? t(workspaceScanCoverageStateKey(unopenedGroup.coverage.state))
+    : "";
+  const unopenedCoverageReasons = unopenedGroup?.coverage.partialReasons
+    .map((reason) => t(workspaceScanReasonKey(reason))) ?? [];
+  const unopenedActionLabel = (action: string) => action === "add"
+    ? t("reconcileGroup_add")
+    : action === "edit"
+      ? t("reconcileGroup_edit")
+      : action === "delete"
+        ? t("reconcileGroup_delete")
+        : action;
+
   return (
     <View
       id="changes-title"
@@ -569,34 +625,49 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       actions={<>
           <span className="auto-refresh"><span aria-hidden="true" />{t("refreshOnFocus")}</span>
           <RefreshButton busy={state === "loading"} onClick={() => void refreshData()} />
-          <button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start(["//..."])} disabled={mutationsBlocked || safeSync.phase !== "idle"} aria-describedby={mutationsBlocked ? "changes-stale-reason" : undefined}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button>
+          <button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start(["//..."])} disabled={mutationsBlocked || safeSync.phase !== "idle"} aria-describedby={isUnopenedSelected ? "unopened-read-only-reason" : resourceMutationsBlocked ? "changes-stale-reason" : undefined}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button>
       </>}
     >
-      {mutationsBlocked && state !== "loading" && <p className="notice-banner" id="changes-stale-reason" role="status">{t("staleMutationBlocked")}</p>}
+      {resourceMutationsBlocked && state !== "loading" && <p className="notice-banner" id="changes-stale-reason" role="status">{t("staleMutationBlocked")}</p>}
       <div className="change-toolbar">
-        <div>
-          <strong className={currentGroup.isDefault ? undefined : "changelist-number"}>{currentGroup.isDefault ? t("defaultChangelist") : `CL ${currentGroup.id}`}</strong>
-          <ChangelistDescription value={currentGroup.description} fallback={t("noDescription")} compact />
-        </div>
-        <div className="change-toolbar-actions">
-          <button className="secondary-button" type="button" disabled={mutationsBlocked} aria-describedby={mutationsBlocked ? "changes-stale-reason" : undefined} onClick={() => { setDescription(""); setDialog("create"); }}>
-            {t("newChangelist")}
-          </button>
-          <button className="primary-button" type="button" disabled={mutationsBlocked || !canSubmit} aria-describedby={mutationsBlocked ? "changes-stale-reason" : undefined} onClick={openSubmit}>
-            {currentGroup.isShelved && currentGroup.files.length === 0 ? t("submitShelf") : t("submitChange")}
-          </button>
-        </div>
+        {isUnopenedSelected ? <>
+          <div><strong>{t("unopenedChanges")}</strong><span id="unopened-read-only-reason">{t("unopenedPresentationOnly")}</span></div>
+          <span className="source-badge local" role="status">{unopenedCoverageLabel}</span>
+        </> : <>
+          <div>
+            <strong className={currentGroup.isDefault ? undefined : "changelist-number"}>{currentGroup.isDefault ? t("defaultChangelist") : `CL ${currentGroup.id}`}</strong>
+            <ChangelistDescription value={currentGroup.description} fallback={t("noDescription")} compact />
+          </div>
+          <div className="change-toolbar-actions">
+            <button className="secondary-button" type="button" disabled={mutationsBlocked} aria-describedby={resourceMutationsBlocked ? "changes-stale-reason" : undefined} onClick={() => { setDescription(""); setDialog("create"); }}>
+              {t("newChangelist")}
+            </button>
+            <button className="primary-button" type="button" disabled={mutationsBlocked || !canSubmit} aria-describedby={resourceMutationsBlocked ? "changes-stale-reason" : undefined} onClick={openSubmit}>
+              {currentGroup.isShelved && currentGroup.files.length === 0 ? t("submitShelf") : t("submitChange")}
+            </button>
+          </div>
+        </>}
       </div>
 
       <div className="changes-workbench">
-        <aside className="change-column" aria-label={t("changelistsLabel")}>
-          <div className="column-heading"><strong>{t("changelistsLabel")}</strong><span>{partitionedGroups.current.length} / {groups.length}</span></div>
+        <aside className="change-column" aria-label={t("changeGroupsLabel")}>
+          <div className="column-heading"><strong>{t("changeGroupsLabel")}</strong><span>{partitionedGroups.current.length + (showUnopenedGroup ? 1 : 0)} / {groups.length + (unopenedGroup ? 1 : 0)}</span></div>
           <label className="field change-filter"><span className="sr-only">{t("pendingChangesFilter")}</span><input value={changeQuery} placeholder={t("pendingChangesFilterPlaceholder")} onChange={(event) => setChangeQuery(event.target.value)} /></label>
           <div
             className={`actual-list archive-drop-zone${archiveDragDrop.dropTarget === "current" ? " drag-over" : ""}`}
             onDragOver={(event) => archiveDragDrop.allowDrop(event, "current")}
             onDrop={(event) => { const ids = archiveDragDrop.takeDrop(event, "current"); if (ids) setUnactual(ids, false); }}
           >
+            {showUnopenedGroup && <SelectableSurface
+              data-agent-id="changes-unopened-group"
+              selected={isUnopenedSelected}
+              aria-label={`${t("unopenedChanges")} · ${unopenedGroup.candidates.length} ${t("unopenedFilesCount")} · ${unopenedCoverageLabel}`}
+              className="change-item"
+              onClick={selectUnopenedChanges}
+            >
+              <span className="change-title-row"><span className="change-title">{t("unopenedChanges")}</span><span className="source-badge local">{unopenedCoverageLabel}</span></span>
+              <span className="change-meta">{unopenedGroup.candidates.length} {t("unopenedFilesCount")} · {unopenedGroup.coverage.completedRoots} / {unopenedGroup.coverage.totalRoots} {t("unopenedRootsCount")}</span>
+            </SelectableSurface>}
             {partitionedGroups.current.map(renderChange)}
           </div>
           <section
@@ -609,7 +680,29 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
           </section>
         </aside>
 
-        <section className="file-column" aria-label={t("changeContentsLabel")}>
+        <section className="file-column" aria-label={isUnopenedSelected ? t("unopenedChanges") : t("changeContentsLabel")}>
+          {isUnopenedSelected ? <div className="file-section">
+            <div className="column-heading"><strong>{t("unopenedDetectedFiles")}</strong><span>{unopenedGroup.candidates.length}</span></div>
+            <p className="notice-banner" role="status">
+              {t("unopenedCoverageSummary").replace("{completed}", String(unopenedGroup.coverage.completedRoots)).replace("{total}", String(unopenedGroup.coverage.totalRoots)).replace("{state}", unopenedCoverageLabel)}
+              {unopenedCoverageReasons.length > 0 ? ` ${unopenedCoverageReasons.join(" · ")}` : ""}
+            </p>
+            {unopenedGroup.candidates.length === 0
+              ? <CompactEmpty text={t(unopenedGroup.coverage.state === "not_started" ? "unopenedNotConfigured" : "unopenedEmpty")} />
+              : <div className="file-list" role="listbox" aria-label={t("unopenedDetectedFiles")}>{unopenedGroup.candidates.map((candidate) => (
+                <SelectableRow
+                  selectionRole="option"
+                  selected={selectedUnopenedCandidate === candidate.stableId}
+                  className="file-item"
+                  key={candidate.stableId}
+                  onClick={() => selectUnopenedCandidate(candidate)}
+                  aria-label={`${unopenedActionLabel(candidate.action)} · ${candidate.localPath}`}
+                >
+                  <span className={`action-badge action-${candidate.action}`}>{unopenedActionLabel(candidate.action)}</span>
+                  <ItemRowCopy primary={candidate.localPath.split(/[\\/]/).at(-1) || candidate.localPath} secondary={candidate.localPath} />
+                </SelectableRow>
+              ))}</div>}
+          </div> : <>
           <div className="file-section" onDragOver={(event) => dragDrop.allowDrop(event, { kind: "changelist", change: currentGroup.id })} onDrop={(event) => void handleDrop(event, { kind: "changelist", change: currentGroup.id })}>
             <div className="column-heading section-heading" onContextMenu={(event) => { if (currentGroup.files.length > 0) openMenu(event, { kind: "section", section: "opened", change: currentGroup.id }); }}><strong>{t("openedFilesLabel")}</strong><span>{openedSelection.length > 0 ? `${openedSelection.length} / ` : ""}{currentGroup.files.length}</span></div>
             {state === "loading" && changes.length === 0 && files.length === 0
@@ -659,11 +752,27 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
                     </SelectableRow>
                   ))}</div>}
           </div>
+          </>}
         </section>
 
         <aside className="inspector" aria-label={t("fileDetailsLabel")}>
           <div className="column-heading"><strong>{t("fileDetailsLabel")}</strong></div>
-          {!currentOpened && !currentShelved ? <EmptyState title={t("selectFile")} body={t("selectFileBody")} /> : (
+          {isUnopenedSelected ? (!currentUnopenedCandidate
+            ? <EmptyState title={t("selectUnopenedFile")} body={t("selectUnopenedFileBody")} />
+            : <div className="inspector-content">
+              <div>
+                <span className="source-badge local">{t("unopenedFileBadge")}</span>
+                <h2>{currentUnopenedCandidate.localPath.split(/[\\/]/).at(-1) || currentUnopenedCandidate.localPath}</h2>
+                <p className="depot-path">{currentUnopenedCandidate.localPath}</p>
+              </div>
+              <dl className="file-facts">
+                <dt>{t("actionLabel")}</dt><dd>{unopenedActionLabel(currentUnopenedCandidate.action)}</dd>
+                {currentUnopenedCandidate.depotPath && <><dt>{t("depotPath")}</dt><dd>{currentUnopenedCandidate.depotPath}</dd></>}
+                {currentUnopenedCandidate.clientPath && <><dt>{t("clientPath")}</dt><dd>{currentUnopenedCandidate.clientPath}</dd></>}
+                <dt>{t("unopenedCoverageLabel")}</dt><dd>{unopenedCoverageLabel}</dd>
+              </dl>
+              <p className="notice-banner" role="note">{t("unopenedPresentationOnly")}</p>
+            </div>) : !currentOpened && !currentShelved ? <EmptyState title={t("selectFile")} body={t("selectFileBody")} /> : (
             <div className="inspector-content">
               <div>
                 <span className={`source-badge ${currentShelved ? "shelf" : "local"}`}>{currentShelved ? t("shelfSource") : t("localSource")}</span>
