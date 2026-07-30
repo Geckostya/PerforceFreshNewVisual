@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceMappingEditor } from "../../shared/models";
-import { createWorkspaceMappingDraft, moveWorkspaceMappingDraft, newWorkspaceMappingDraft, removeWorkspaceMappingDraft, serializeWorkspaceMappingDraft, workspaceMappingDraftIsComplete } from "./workspaceMappings";
+import { createWorkspaceMappingDraft, moveWorkspaceMappingDraft, newWorkspaceMappingDraft, removeWorkspaceMappingDraft, serializeWorkspaceMappingDraft, workspaceMappingDraftCanMove, workspaceMappingDraftIsComplete } from "./workspaceMappings";
 
 const editor: WorkspaceMappingEditor = {
   workspace: "sample-main",
@@ -23,6 +23,8 @@ describe("workspace mapping editor draft", () => {
   it("does not remove, move, or cross a protected unknown entry", () => {
     const entries = createWorkspaceMappingDraft(editor);
     expect(removeWorkspaceMappingDraft(entries, "existing-1")).toBe(entries);
+    expect(workspaceMappingDraftCanMove(entries, "existing-1", -1)).toBe(false);
+    expect(workspaceMappingDraftCanMove(entries, "existing-0", 1)).toBe(false);
     expect(moveWorkspaceMappingDraft(entries, "existing-1", -1)).toBe(entries);
     expect(moveWorkspaceMappingDraft(entries, "existing-0", 1)).toBe(entries);
   });

@@ -232,7 +232,8 @@ pub fn inspect_workspace_mapping_editor(
     let workspace = current_workspace_name(input, workspace)?;
     let form = read_workspace_form(input, workspace)?;
     ensure_classic_workspace_form(&form)?;
-    let mappings = workspace_form_multiline_values(&form, "View")?;
+    let lines = form.lines().collect::<Vec<_>>();
+    let mappings = required_form_multiline_values(&lines, "View")?;
     Ok(WorkspaceMappingEditor {
         workspace: workspace.to_owned(),
         entries: mappings
@@ -335,7 +336,8 @@ fn build_workspace_mapping_preview(
             "The workspace mapping exceeds the supported editor limit.",
         ));
     }
-    let before = workspace_form_multiline_values(form, "View")?;
+    let lines = form.lines().collect::<Vec<_>>();
+    let before = required_form_multiline_values(&lines, "View")?;
     let unknown_indices = before
         .iter()
         .enumerate()
@@ -398,7 +400,8 @@ fn build_workspace_mapping_preview(
 }
 
 fn ensure_classic_workspace_form(form: &str) -> Result<(), AppError> {
-    let stream = workspace_form_single_value(form, "Stream").unwrap_or_default();
+    let lines = form.lines().collect::<Vec<_>>();
+    let stream = form_single_value(&lines, "Stream").unwrap_or_default();
     if stream.trim().is_empty() {
         return Ok(());
     }
@@ -407,34 +410,6 @@ fn ensure_classic_workspace_form(form: &str) -> Result<(), AppError> {
         "The server generates View mappings for this stream workspace.",
     )
     .with_hint("Edit the stream Paths instead of the client View."))
-}
-
-fn workspace_form_single_value(form: &str, field: &str) -> Option<String> {
-    let prefix = format!("{field}:");
-    form.lines().find_map(|line| {
-        line.strip_prefix(&prefix)
-            .map(|value| value.trim().to_owned())
-    })
-}
-
-fn workspace_form_multiline_values(form: &str, field: &str) -> Result<Vec<String>, AppError> {
-    let prefix = format!("{field}:");
-    let lines = form.lines().collect::<Vec<_>>();
-    let start = lines
-        .iter()
-        .position(|line| line.starts_with(&prefix))
-        .ok_or_else(|| {
-            AppError::new(
-                ErrorKind::InvalidOutput,
-                format!("The client form has no {field} field."),
-            )
-        })?;
-    Ok(lines[start + 1..]
-        .iter()
-        .take_while(|line| line.starts_with([' ', '\t']) || line.is_empty())
-        .map(|line| line.trim_start_matches([' ', '\t']).to_owned())
-        .filter(|line| !line.is_empty())
-        .collect())
 }
 
 fn is_supported_workspace_mapping(mapping: &str) -> bool {
@@ -782,26 +757,56 @@ fn quote_stream_view_path(path: &str) -> String {
     }
 }
 
-fn form_single_value(lines: &[String], field: &str) -> Option<String> {
+fn form_single_value<T: AsRef<str>>(lines: &[T], field: &str) -> Option<String> {
     let prefix = format!("{field}:");
     lines
         .iter()
-        .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
+        .find_map(|line| line.as_ref().strip_prefix(&prefix).map(str::trim))
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
 
-fn form_multiline_values(lines: &[String], field: &str) -> Vec<String> {
+fn form_multiline_values<T: AsRef<str>>(
+    lines: &[T],
+    field: &str,
+    preserve_trailing: bool,
+) -> Vec<String> {
     let prefix = format!("{field}:");
-    let Some(start) = lines.iter().position(|line| line.starts_with(&prefix)) else {
+    let Some(start) = lines
+        .iter()
+        .position(|line| line.as_ref().starts_with(&prefix))
+    else {
         return Vec::new();
     };
     lines[start + 1..]
         .iter()
-        .take_while(|line| line.starts_with('\t') || line.starts_with(' '))
-        .map(|line| line.trim().to_owned())
+        .map(AsRef::as_ref)
+        .take_while(|line| line.starts_with([' ', '\t']) || line.is_empty())
+        .map(|line| {
+            if preserve_trailing {
+                line.trim_start_matches([' ', '\t'])
+            } else {
+                line.trim()
+            }
+            .to_owned()
+        })
         .filter(|line| !line.is_empty())
         .collect()
+}
+
+fn required_form_multiline_values<T: AsRef<str>>(
+    lines: &[T],
+    field: &str,
+) -> Result<Vec<String>, AppError> {
+    let prefix = format!("{field}:");
+    if lines.iter().any(|line| line.as_ref().starts_with(&prefix)) {
+        Ok(form_multiline_values(lines, field, true))
+    } else {
+        Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            format!("The client form has no {field} field."),
+        ))
+    }
 }
 
 pub fn inspect_stream(
@@ -896,9 +901,9 @@ pub fn inspect_stream(
         options: form_single_value(&lines, "Options")
             .map(|value| value.split_whitespace().map(str::to_owned).collect())
             .unwrap_or_default(),
-        paths: form_multiline_values(&lines, "Paths"),
-        remapped: form_multiline_values(&lines, "Remapped"),
-        ignored: form_multiline_values(&lines, "Ignored"),
+        paths: form_multiline_values(&lines, "Paths", false),
+        remapped: form_multiline_values(&lines, "Remapped", false),
+        ignored: form_multiline_values(&lines, "Ignored", false),
         history,
         hints,
         warnings,
@@ -6308,6 +6313,22 @@ mod tests {
             .unwrap();
         assert!(lines.contains(&"\tPaths: still description".to_owned()));
         assert_eq!(form_single_value(&lines, "Name").as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn shared_form_readers_keep_stream_normalization_and_workspace_verbatim_rows() {
+        let stream_lines = ["Paths:", "\tshare ...   ", "", "Options:\tallsubmit"];
+        assert_eq!(
+            form_multiline_values(&stream_lines, "Paths", false),
+            ["share ..."]
+        );
+
+        let workspace_lines = ["View:", "\tcustom extension row   ", "", "Root:\tC:\\work"];
+        assert_eq!(
+            required_form_multiline_values(&workspace_lines, "View").unwrap(),
+            ["custom extension row   "]
+        );
+        assert!(required_form_multiline_values(&workspace_lines, "Missing").is_err());
     }
 
     #[test]

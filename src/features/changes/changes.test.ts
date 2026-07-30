@@ -95,11 +95,9 @@ describe("virtual unopened changes presentation", () => {
   it("stays separate from real PendingChange data and preserves coverage", () => {
     const group = unopenedChangesGroup(snapshot);
     expect(group).toEqual({
-      kind: "unopened_changes",
       id: "virtual:unopened-changes",
       candidates: snapshot.candidates,
       coverage: snapshot.coverage,
-      generatedAtMs: 42,
     });
     expect(group).not.toHaveProperty("files");
     expect(group).not.toHaveProperty("description");

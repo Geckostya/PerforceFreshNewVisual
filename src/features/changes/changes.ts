@@ -20,20 +20,16 @@ export interface ChangeGroup extends PendingChange {
 export const UNOPENED_CHANGES_GROUP_ID = "virtual:unopened-changes";
 
 export interface UnopenedChangesGroup {
-  kind: "unopened_changes";
   id: typeof UNOPENED_CHANGES_GROUP_ID;
   candidates: WorkspaceScanSnapshot["candidates"];
   coverage: WorkspaceScanSnapshot["coverage"];
-  generatedAtMs: number;
 }
 
 export function unopenedChangesGroup(snapshot: WorkspaceScanSnapshot): UnopenedChangesGroup {
   return {
-    kind: "unopened_changes",
     id: UNOPENED_CHANGES_GROUP_ID,
     candidates: snapshot.candidates,
     coverage: snapshot.coverage,
-    generatedAtMs: snapshot.generatedAtMs,
   };
 }
 

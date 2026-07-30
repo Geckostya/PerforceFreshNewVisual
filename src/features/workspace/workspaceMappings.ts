@@ -29,15 +29,19 @@ export function removeWorkspaceMappingDraft(entries: WorkspaceMappingDraftEntry[
 }
 
 export function moveWorkspaceMappingDraft(entries: WorkspaceMappingDraftEntry[], id: string, offset: -1 | 1): WorkspaceMappingDraftEntry[] {
+  if (!workspaceMappingDraftCanMove(entries, id, offset)) return entries;
   const from = entries.findIndex((entry) => entry.id === id);
   const to = from + offset;
-  if (from < 0 || to < 0 || to >= entries.length) return entries;
-  const entry = entries[from];
-  const neighbor = entries[to];
-  if ((entry.source === "existing" && entry.preservedOnly) || (neighbor.source === "existing" && neighbor.preservedOnly)) return entries;
   const next = [...entries];
   [next[from], next[to]] = [next[to], next[from]];
   return next;
+}
+
+export function workspaceMappingDraftCanMove(entries: WorkspaceMappingDraftEntry[], id: string, offset: -1 | 1): boolean {
+  const from = entries.findIndex((entry) => entry.id === id);
+  const to = from + offset;
+  if (from < 0 || to < 0 || to >= entries.length) return false;
+  return ![entries[from], entries[to]].some((entry) => entry.source === "existing" && entry.preservedOnly);
 }
 
 export function workspaceMappingDraftIsComplete(entries: WorkspaceMappingDraftEntry[]): boolean {

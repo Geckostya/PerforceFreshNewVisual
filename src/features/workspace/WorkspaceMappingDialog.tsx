@@ -4,7 +4,7 @@ import { applyWorkspaceMappings, inspectWorkspaceMappingEditor, normalizeAppErro
 import { useLocale } from "../../shared/i18n";
 import type { AppError, ConnectionInput, WorkspaceMappingKind, WorkspaceMappingPreview, WorkspaceSpec } from "../../shared/models";
 import { CompactEmpty, Modal } from "../../shared/View";
-import { createWorkspaceMappingDraft, moveWorkspaceMappingDraft, newWorkspaceMappingDraft, removeWorkspaceMappingDraft, serializeWorkspaceMappingDraft, workspaceMappingDraftIsComplete, type WorkspaceMappingDraftEntry } from "./workspaceMappings";
+import { createWorkspaceMappingDraft, moveWorkspaceMappingDraft, newWorkspaceMappingDraft, removeWorkspaceMappingDraft, serializeWorkspaceMappingDraft, workspaceMappingDraftCanMove, workspaceMappingDraftIsComplete, type WorkspaceMappingDraftEntry } from "./workspaceMappings";
 
 export function WorkspaceMappingDialog({ connection, workspace, onClose, onSaved }: {
   connection: ConnectionInput;
@@ -94,11 +94,11 @@ export function WorkspaceMappingDialog({ connection, workspace, onClose, onSaved
       </> : <>
         <p>{t("workspaceMappingEditorHelp")}</p>
         {loaded && <div className="workspace-mapping-list">
-          {entries.length ? entries.map((entry, index) => <MappingEntry
+          {entries.length ? entries.map((entry) => <MappingEntry
             key={entry.id}
             entry={entry}
-            index={index}
-            count={entries.length}
+            canMoveUp={workspaceMappingDraftCanMove(entries, entry.id, -1)}
+            canMoveDown={workspaceMappingDraftCanMove(entries, entry.id, 1)}
             busy={busy}
             onMove={(offset) => changeEntries((current) => moveWorkspaceMappingDraft(current, entry.id, offset))}
             onRemove={() => changeEntries((current) => removeWorkspaceMappingDraft(current, entry.id))}
@@ -126,10 +126,10 @@ function MappingList({ title, mappings, empty }: { title: string; mappings: stri
     : <CompactEmpty text={empty} />}</div></section>;
 }
 
-function MappingEntry({ entry, index, count, busy, onMove, onRemove, onUpdate }: {
+function MappingEntry({ entry, canMoveUp, canMoveDown, busy, onMove, onRemove, onUpdate }: {
   entry: WorkspaceMappingDraftEntry;
-  index: number;
-  count: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   busy: boolean;
   onMove: (offset: -1 | 1) => void;
   onRemove: () => void;
@@ -139,8 +139,8 @@ function MappingEntry({ entry, index, count, busy, onMove, onRemove, onUpdate }:
   const protectedEntry = entry.source === "existing" && entry.preservedOnly;
   return <div className={`workspace-mapping-entry${protectedEntry ? " protected" : ""}`}>
     <div className="workspace-mapping-entry-actions">
-      <button type="button" disabled={busy || index === 0 || protectedEntry} aria-label={t("workspaceMappingMoveUp")} onClick={() => onMove(-1)}><ArrowUp className="ui-icon" aria-hidden="true" /></button>
-      <button type="button" disabled={busy || index === count - 1 || protectedEntry} aria-label={t("workspaceMappingMoveDown")} onClick={() => onMove(1)}><ArrowDown className="ui-icon" aria-hidden="true" /></button>
+      <button type="button" disabled={busy || !canMoveUp} aria-label={t("workspaceMappingMoveUp")} onClick={() => onMove(-1)}><ArrowUp className="ui-icon" aria-hidden="true" /></button>
+      <button type="button" disabled={busy || !canMoveDown} aria-label={t("workspaceMappingMoveDown")} onClick={() => onMove(1)}><ArrowDown className="ui-icon" aria-hidden="true" /></button>
       <button type="button" disabled={busy || protectedEntry} aria-label={t("workspaceMappingRemove")} onClick={onRemove}><Trash2 className="ui-icon" aria-hidden="true" /></button>
     </div>
     {entry.source === "existing" ? <div className="workspace-mapping-existing">
