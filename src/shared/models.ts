@@ -498,6 +498,7 @@ export interface UiAgentResponse {
 
 export type ResolveMode = "yours" | "theirs" | "autoSafe" | "autoMerge" | "editResult";
 export type ResolveConflictKind = "text" | "binary" | "move_name" | "filetype_attribute" | "stream_spec" | "unknown";
+export type ResolveScope = "content" | "move" | "filetype" | "attribute" | "stream_spec" | "unknown";
 export type ResolveReadBackState = "pending" | "resolved" | "unknown";
 
 export interface SyncPreviewItem {
@@ -535,9 +536,11 @@ export interface ResolvePreviewItem {
   action: string;
   detail?: string;
   conflictKind: ResolveConflictKind;
+  scope: ResolveScope;
   baseIdentifier?: string;
   sourceIdentifier?: string;
   workspaceIdentifier: string;
+  previewToken: string;
   allowedActions: ResolveMode[];
   readBack: ResolveReadBackState;
 }

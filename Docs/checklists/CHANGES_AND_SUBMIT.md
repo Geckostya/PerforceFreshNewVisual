@@ -17,7 +17,7 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 
 ## P0 gaps
 
-- [~] Add specialized action dialogs for binary, move/name, filetype/attribute, and stream-spec resolve; they are already classified and excluded from the text editor.
+- [x] Specialized action dialogs for binary, move/name, filetype/attribute, and stream-spec resolve use category-specific safe scopes, cancel defaults, and read-back outcomes; they remain excluded from the text editor.
 - [x] After submit cancellation/network loss, present `submitted`, `pending`, or `unknown` with a concrete recovery action.
 - [x] Publish shelf-preserving submit modes through the same operation protocol as local submit without weakening compensation behavior.
 - [ ] Show succeeded/failed/skipped items and compensation results consistently for every compound mutation.

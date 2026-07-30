@@ -81,6 +81,7 @@ pub fn run() {
             commands::lock_files,
             commands::unlock_files,
             commands::resolve_files,
+            commands::resolve_specialized,
             commands::preview_resolve,
             commands::load_resolve_content,
             commands::save_resolve_result,

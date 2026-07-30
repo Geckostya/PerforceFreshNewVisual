@@ -17,7 +17,7 @@ Current status for streams, integration, shared shelves, jobs, labels, and locks
 ## P1 gaps
 
 - [~] Add compatible-workspace discovery; selected stream specs/history, Paths/Remapped/Ignored, and server-backed `istat` hints are available.
-- [~] Add specialized file-move, filetype, and stream-spec conflict actions; partial outcomes and exact affected items already route through shared read-back and Resolve.
+- [x] Specialized file-move, filetype, and stream-spec conflict actions use explicit category scopes, cancel defaults, stale-preview checks, and exact per-item read-back outcomes.
 - [ ] Distinguish explicit, exclusive-filetype, local, and global locks using detected topology.
 - [ ] Create/edit jobs from custom jobspecs and show the server-defined post-submit status.
 - [ ] Create/edit/delete labels and preview tag/untag safely.
