@@ -286,6 +286,18 @@ pub(super) fn p4_command(path: &Path) -> Command {
     command
 }
 
+pub(super) fn set_low_process_priority(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 pub(super) fn set_non_empty_env(command: &mut Command, name: &str, value: Option<&str>) {
     if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
         command.env(name, value);

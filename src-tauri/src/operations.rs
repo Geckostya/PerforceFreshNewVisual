@@ -97,6 +97,14 @@ impl OperationRegistry {
             }
         })
     }
+
+    pub fn has_active_workspace_operation(&self, workspace: &str) -> bool {
+        self.inner
+            .handles
+            .lock()
+            .map(|handles| handles.values().any(|handle| handle.workspace == workspace))
+            .unwrap_or(true)
+    }
 }
 
 fn operation_kinds_conflict(active: &str, candidate: &str) -> bool {
@@ -221,5 +229,25 @@ mod tests {
         assert!(
             registry.insert_if_kind_idle("op-5".to_owned(), handle("sync", "server/alex/main"))
         );
+    }
+
+    #[test]
+    fn foreground_activity_is_visible_to_background_schedulers() {
+        let registry = OperationRegistry::default();
+        let (cancel, _) = mpsc::channel();
+        assert!(registry.insert_if_kind_idle(
+            "op-1".to_owned(),
+            OperationHandle {
+                kind: "reconcile_preview",
+                workspace: "server/alex/main".to_owned(),
+                started_at_ms: 42,
+                cancel,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            }
+        ));
+        assert!(registry.has_active_workspace_operation("server/alex/main"));
+        assert!(!registry.has_active_workspace_operation("server/alex/other"));
+        registry.remove("op-1");
+        assert!(!registry.has_active_workspace_operation("server/alex/main"));
     }
 }

@@ -303,6 +303,14 @@ export async function getWorkspaceScanSnapshot(input: ConnectionInput): Promise<
   return invoke<WorkspaceScanSnapshot>("get_workspace_scan_snapshot", { input });
 }
 
+export async function refreshWorkspaceScan(input: ConnectionInput): Promise<void> {
+  return invoke("refresh_workspace_scan", { input });
+}
+
+export async function cancelWorkspaceScan(): Promise<void> {
+  return invoke("cancel_workspace_scan");
+}
+
 export async function listLocalWorkspaceDirectory(input: ConnectionInput, directory: string): Promise<WorkspaceLocalBatch> {
   return invoke<WorkspaceLocalBatch>("list_local_workspace_directory", { input, directory });
 }

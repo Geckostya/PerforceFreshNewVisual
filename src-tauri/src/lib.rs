@@ -8,12 +8,16 @@ mod settings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let operations = operations::OperationRegistry::default();
+    let scans = commands::WorkspaceScanRegistry::default();
+    let scan_scheduler = commands::WorkspaceScanScheduler::new(scans.clone(), operations.clone());
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(operations::OperationRegistry::default())
+        .manage(operations)
         .manage(commands::WorkspaceRootRegistry::default())
-        .manage(commands::WorkspaceScanRegistry::default())
+        .manage(scans)
+        .manage(scan_scheduler)
         .invoke_handler(tauri::generate_handler![
             commands::detect_p4,
             commands::test_connection,
@@ -71,6 +75,8 @@ pub fn run() {
             commands::map_workspace_paths,
             commands::configure_workspace_scan,
             commands::get_workspace_scan_snapshot,
+            commands::refresh_workspace_scan,
+            commands::cancel_workspace_scan,
             commands::list_local_workspace_directory,
             commands::ignore_local_file,
             commands::delete_local_file,

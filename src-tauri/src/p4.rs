@@ -26,8 +26,9 @@ use crate::models::{
     SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
     UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
-    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceScanPartialReason,
-    WorkspaceScanRoot, WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
+    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceScanCandidate,
+    WorkspaceScanPartialReason, WorkspaceScanRoot, WorkspaceSearchResult, WorkspaceSpec,
+    WorkspaceSummary,
 };
 
 mod auth;
@@ -4460,6 +4461,156 @@ fn parse_workspace_scan_ignore_sources(output: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn workspace_scan_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+) -> Result<(PathBuf, Command), AppError> {
+    validate_depot_path(&root.depot_scope)?;
+    let scan_root = Path::new(&root.local_path);
+    if !scan_root.is_absolute() || !scan_root.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Корень фонового сканирования больше недоступен.",
+        ));
+    }
+    let (path, mut command) = configured_command(input)?;
+    command.current_dir(scan_root);
+    if let Some(ignore_file) = workspace_ignore_file(workspace_root) {
+        command.env("P4IGNORE", ignore_file);
+    }
+    command.args(workspace_scan_arguments(&root.depot_scope));
+    set_low_process_priority(&mut command);
+    Ok((path, command))
+}
+
+pub fn workspace_scan_add_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+) -> Result<(PathBuf, Command), AppError> {
+    let scan_root = Path::new(&root.local_path);
+    if !scan_root.is_absolute() || !scan_root.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Корень фонового сканирования больше недоступен.",
+        ));
+    }
+    let local_scope = workspace_cli_path(&scan_root.join("*").to_string_lossy());
+    let (path, mut command) = configured_command(input)?;
+    command.current_dir(scan_root);
+    if let Some(ignore_file) = workspace_ignore_file(workspace_root) {
+        command.env("P4IGNORE", ignore_file);
+    }
+    command.args(workspace_scan_add_arguments(&local_scope));
+    set_low_process_priority(&mut command);
+    Ok((path, command))
+}
+
+fn workspace_scan_arguments(scope: &str) -> [&str; 7] {
+    ["-ztag", "-Mj", "status", "-e", "-d", "-m", scope]
+}
+
+fn workspace_scan_add_arguments(scope: &str) -> [&str; 5] {
+    ["-ztag", "-Mj", "status", "-a", scope]
+}
+
+pub struct WorkspaceScanCommandOutput {
+    pub candidates: Vec<WorkspaceScanCandidate>,
+    pub diagnostics: Vec<String>,
+    pub failed: bool,
+}
+
+pub fn parse_workspace_scan_output(output: &str) -> Result<WorkspaceScanCommandOutput, AppError> {
+    parse_workspace_scan_output_actions(output, &["edit", "delete"])
+}
+
+pub fn parse_workspace_scan_add_output(
+    output: &str,
+) -> Result<WorkspaceScanCommandOutput, AppError> {
+    parse_workspace_scan_output_actions(output, &["add"])
+}
+
+fn parse_workspace_scan_output_actions(
+    output: &str,
+    allowed_actions: &[&str],
+) -> Result<WorkspaceScanCommandOutput, AppError> {
+    let records = parse_json_lines(output)?;
+    let mut candidates = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut failed = false;
+    for record in records {
+        let severity = field(&record, &["severity"])
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let generic = field(&record, &["generic"])
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let error_code =
+            field(&record, &["code"]).is_some_and(|code| code.eq_ignore_ascii_case("error"));
+        if severity >= 2 || error_code {
+            let empty_match = severity == 2 && generic == 17;
+            if !empty_match {
+                diagnostics.extend(
+                    record
+                        .get("data")
+                        .or_else(|| record.get("fmt"))
+                        .and_then(value_text),
+                );
+            }
+            failed |= !empty_match && (severity >= 3 || error_code);
+            continue;
+        }
+        let Some(original_action) =
+            field(&record, &["action", "status"]).map(|action| action.to_lowercase())
+        else {
+            continue;
+        };
+        let action = if original_action.contains("add") {
+            "add"
+        } else if original_action.contains("delete")
+            || original_action.contains("remove")
+            || original_action.contains("missing")
+        {
+            "delete"
+        } else if original_action.contains("edit") || original_action.contains("update") {
+            "edit"
+        } else {
+            continue;
+        };
+        if !allowed_actions.contains(&action) {
+            continue;
+        }
+        let tagged_client = field(&record, &["clientFile"]);
+        let local_path = field(&record, &["path"]).or_else(|| {
+            tagged_client
+                .as_deref()
+                .filter(|path| !path.starts_with("//"))
+                .map(str::to_owned)
+        });
+        let Some(local_path) = local_path else {
+            diagnostics.push("p4 status returned a candidate without a local path.".to_owned());
+            failed = true;
+            continue;
+        };
+        let client_path = tagged_client.filter(|path| path.starts_with("//"));
+        candidates.push(WorkspaceScanCandidate {
+            stable_id: format!("{local_path}\0{action}"),
+            action: action.to_owned(),
+            depot_path: field(&record, &["depotFile"]),
+            client_path,
+            local_path,
+        });
+    }
+    candidates.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+    candidates.dedup_by(|left, right| left.stable_id == right.stable_id);
+    Ok(WorkspaceScanCommandOutput {
+        candidates,
+        diagnostics,
+        failed,
+    })
+}
+
 pub fn map_workspace_paths(
     input: &ConnectionInput,
     queries: &[String],
@@ -6415,6 +6566,103 @@ mod tests {
         );
 
         fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn background_workspace_scan_is_read_only_scoped_and_ignore_aware() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-background-scan-{}", std::process::id()));
+        let scan_root = fixture.join("Source");
+        fs::create_dir_all(&scan_root).unwrap();
+        let ignore_file = fixture.join(".p4ignore");
+        fs::write(&ignore_file, b"Generated/\n").unwrap();
+        let input = ConnectionInput {
+            p4_path: Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let root = WorkspaceScanRoot {
+            local_path: scan_root.to_string_lossy().into_owned(),
+            local_scope: scan_root.join("...").to_string_lossy().into_owned(),
+            client_scope: "//alex-main/Source/...".to_owned(),
+            depot_scope: "//Acme/main/Source/...".to_owned(),
+            ignore_sources: vec![ignore_file.to_string_lossy().into_owned()],
+        };
+        let (_, command) = workspace_scan_command(&input, &fixture, &root).unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            [
+                "-ztag",
+                "-Mj",
+                "status",
+                "-e",
+                "-d",
+                "-m",
+                "//Acme/main/Source/..."
+            ]
+        );
+        assert!(!arguments.iter().any(|argument| argument == "-A"));
+        assert!(!arguments.iter().any(|argument| argument == "-I"));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "P4IGNORE"
+                && value.is_some_and(|value| Path::new(value) == ignore_file.as_path())
+        }));
+        let (_, add_command) = workspace_scan_add_command(&input, &fixture, &root).unwrap();
+        let add_arguments = add_command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(&add_arguments[..4], ["-ztag", "-Mj", "status", "-a"]);
+        assert!(add_arguments[4].ends_with(r"Source\*"));
+        assert!(!add_arguments.iter().any(|argument| argument == "..."));
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn background_workspace_scan_keeps_only_fast_edit_and_delete_candidates() {
+        let output = parse_workspace_scan_output(
+            r#"{"depotFile":"//Acme/main/edit.txt","clientFile":"//alex-main/edit.txt","path":"C:\\work\\edit.txt","action":"edit"}
+{"depotFile":"//Acme/main/delete.txt","clientFile":"C:\\work\\delete.txt","action":"delete"}
+{"depotFile":"//Acme/main/add.txt","path":"C:\\work\\add.txt","action":"add"}
+{"code":"error","severity":"2","generic":"17","data":"no file(s) to reconcile"}"#,
+        )
+        .unwrap();
+        assert!(!output.failed);
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(output.candidates.len(), 2);
+        assert_eq!(output.candidates[0].action, "delete");
+        assert_eq!(output.candidates[0].local_path, r"C:\work\delete.txt");
+        assert_eq!(
+            output.candidates[1].client_path.as_deref(),
+            Some("//alex-main/edit.txt")
+        );
+        assert!(
+            output
+                .candidates
+                .iter()
+                .all(|candidate| candidate.action != "add")
+        );
+        let adds = parse_workspace_scan_add_output(
+            r#"{"depotFile":"//Acme/main/add.txt","path":"C:\\work\\add.txt","action":"add"}
+{"depotFile":"//Acme/main/edit.txt","path":"C:\\work\\edit.txt","action":"edit"}"#,
+        )
+        .unwrap();
+        assert_eq!(adds.candidates.len(), 1);
+        assert_eq!(adds.candidates[0].action, "add");
     }
 
     #[test]

@@ -449,8 +449,15 @@ export interface WorkspaceScanRoot {
   ignoreSources: string[];
 }
 
-export type WorkspaceScanCoverageState = "not_started" | "complete" | "partial" | "stale";
-export type WorkspaceScanPartialReason = "candidate_limit" | "ignore_rules_unavailable" | "root_error";
+export type WorkspaceScanCoverageState = "not_started" | "complete" | "partial" | "paused" | "stale";
+export type WorkspaceScanPartialReason =
+  | "candidate_limit"
+  | "budget_exceeded"
+  | "cancelled"
+  | "command_failed"
+  | "foreground_active"
+  | "ignore_rules_unavailable"
+  | "root_error";
 
 export interface WorkspaceScanCoverage {
   state: WorkspaceScanCoverageState;
@@ -462,6 +469,7 @@ export interface WorkspaceScanCoverage {
 }
 
 export interface WorkspaceScanCandidate {
+  stableId: string;
   action: string;
   depotPath?: string;
   clientPath?: string;

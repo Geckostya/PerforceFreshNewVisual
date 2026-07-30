@@ -793,6 +793,7 @@ pub enum WorkspaceScanCoverageState {
     NotStarted,
     Complete,
     Partial,
+    Paused,
     Stale,
 }
 
@@ -801,6 +802,10 @@ pub enum WorkspaceScanCoverageState {
 #[allow(dead_code)]
 pub enum WorkspaceScanPartialReason {
     CandidateLimit,
+    BudgetExceeded,
+    Cancelled,
+    CommandFailed,
+    ForegroundActive,
     IgnoreRulesUnavailable,
     RootError,
 }
@@ -819,6 +824,7 @@ pub struct WorkspaceScanCoverage {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceScanCandidate {
+    pub stable_id: String,
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depot_path: Option<String>,

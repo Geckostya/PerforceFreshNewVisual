@@ -31,12 +31,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     hash::{DefaultHasher, Hash, Hasher},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex, atomic::Ordering, mpsc},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -46,9 +46,9 @@ pub struct WorkspaceRootRegistry {
     roots: Mutex<BTreeMap<String, PathBuf>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct WorkspaceScanRegistry {
-    snapshot: Mutex<Option<WorkspaceScanSnapshot>>,
+    snapshot: Arc<Mutex<Option<WorkspaceScanSnapshot>>>,
 }
 
 impl WorkspaceScanRegistry {
@@ -158,6 +158,7 @@ impl WorkspaceScanRegistry {
         mut candidates: Vec<WorkspaceScanCandidate>,
         completed_roots: usize,
         failed_roots: usize,
+        reasons: &[WorkspaceScanPartialReason],
     ) -> Result<WorkspaceScanSnapshot, AppError> {
         let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
         let current = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
@@ -167,7 +168,20 @@ impl WorkspaceScanRegistry {
                 "Результат сканирования относится к устаревшему scope.",
             ));
         }
-        let mut partial_reasons = current.coverage.partial_reasons.clone();
+        let mut partial_reasons = current
+            .coverage
+            .partial_reasons
+            .iter()
+            .filter(|reason| **reason == WorkspaceScanPartialReason::IgnoreRulesUnavailable)
+            .cloned()
+            .collect::<Vec<_>>();
+        for reason in reasons {
+            if !partial_reasons.contains(reason) {
+                partial_reasons.push(reason.clone());
+            }
+        }
+        candidates.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+        candidates.dedup_by(|left, right| left.stable_id == right.stable_id);
         if candidates.len() > p4::MAX_WORKSPACE_SCAN_CANDIDATES {
             candidates.truncate(p4::MAX_WORKSPACE_SCAN_CANDIDATES);
             if !partial_reasons.contains(&WorkspaceScanPartialReason::CandidateLimit) {
@@ -175,9 +189,7 @@ impl WorkspaceScanRegistry {
             }
         }
         let total_roots = current.roots.len();
-        if (failed_roots > 0 || completed_roots.saturating_add(failed_roots) < total_roots)
-            && !partial_reasons.contains(&WorkspaceScanPartialReason::RootError)
-        {
+        if failed_roots > 0 && !partial_reasons.contains(&WorkspaceScanPartialReason::RootError) {
             partial_reasons.push(WorkspaceScanPartialReason::RootError);
         }
         let mut published = current.clone();
@@ -197,6 +209,27 @@ impl WorkspaceScanRegistry {
         published.generated_at_ms = operation_started_at_ms();
         *snapshot = Some(published.clone());
         Ok(published)
+    }
+
+    fn pause(
+        &self,
+        expected_scope_id: &str,
+        reason: WorkspaceScanPartialReason,
+    ) -> Result<(), AppError> {
+        let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let current = snapshot.as_mut().ok_or_else(workspace_scan_not_open)?;
+        if current.scope_id != expected_scope_id {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Состояние сканера относится к устаревшему scope.",
+            ));
+        }
+        current.coverage.state = WorkspaceScanCoverageState::Paused;
+        if !current.coverage.partial_reasons.contains(&reason) {
+            current.coverage.partial_reasons.push(reason);
+        }
+        current.generated_at_ms = operation_started_at_ms();
+        Ok(())
     }
 
     fn replace(&self, replacement: WorkspaceScanSnapshot) -> Result<(), AppError> {
@@ -269,6 +302,517 @@ fn workspace_scan_lock_error(error: impl std::fmt::Display) -> AppError {
         "Не удалось прочитать состояние сканера workspace.",
     )
     .with_diagnostics(error.to_string())
+}
+
+const WORKSPACE_SCAN_DEBOUNCE: Duration = Duration::from_millis(300);
+const WORKSPACE_SCAN_BUDGET: Duration = Duration::from_millis(1_500);
+const WORKSPACE_SCAN_FOREGROUND_RETRY: Duration = Duration::from_millis(500);
+const WORKSPACE_SCAN_INTERVAL: Duration = Duration::from_secs(30);
+const WORKSPACE_SCAN_MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+struct WorkspaceScanRequest {
+    input: ConnectionInput,
+    workspace_root: PathBuf,
+    scope_id: String,
+    roots: Vec<WorkspaceScanRoot>,
+    exclusions: Vec<String>,
+    workspace: String,
+    next_add_root: usize,
+    cached_candidates: Vec<WorkspaceScanCandidate>,
+}
+
+impl WorkspaceScanRequest {
+    fn new(
+        input: ConnectionInput,
+        workspace_root: PathBuf,
+        snapshot: &WorkspaceScanSnapshot,
+    ) -> Self {
+        Self {
+            workspace: operation_workspace(&input),
+            input,
+            workspace_root,
+            scope_id: snapshot.scope_id.clone(),
+            roots: snapshot.roots.clone(),
+            exclusions: snapshot.exclusions.clone(),
+            next_add_root: 0,
+            cached_candidates: snapshot.candidates.clone(),
+        }
+    }
+}
+
+enum WorkspaceScanSchedulerMessage {
+    Schedule(Box<WorkspaceScanRequest>, Duration),
+    Cancel(mpsc::Sender<()>),
+}
+
+struct ScheduledWorkspaceScan {
+    request: WorkspaceScanRequest,
+    due: Instant,
+}
+
+#[derive(Clone)]
+pub struct WorkspaceScanScheduler {
+    sender: mpsc::Sender<WorkspaceScanSchedulerMessage>,
+}
+
+impl WorkspaceScanScheduler {
+    pub fn new(scans: WorkspaceScanRegistry, operations: OperationRegistry) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || workspace_scan_scheduler_loop(receiver, scans, operations));
+        Self { sender }
+    }
+
+    fn schedule(&self, request: WorkspaceScanRequest, delay: Duration) -> Result<(), AppError> {
+        self.sender
+            .send(WorkspaceScanSchedulerMessage::Schedule(
+                Box::new(request),
+                delay,
+            ))
+            .map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось запланировать фоновое сканирование.",
+                )
+                .with_diagnostics(error.to_string())
+            })
+    }
+
+    fn cancel_and_wait(&self) -> Result<(), AppError> {
+        let (acknowledge, acknowledged) = mpsc::channel();
+        self.sender
+            .send(WorkspaceScanSchedulerMessage::Cancel(acknowledge))
+            .map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось отменить фоновое сканирование.",
+                )
+                .with_diagnostics(error.to_string())
+            })?;
+        acknowledged
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|error| {
+                AppError::new(
+                    ErrorKind::Timeout,
+                    "Фоновое сканирование не завершилось вовремя.",
+                )
+                .with_diagnostics(error.to_string())
+            })
+    }
+}
+
+enum WorkspaceScanRunOutcome {
+    Finished {
+        candidates: Vec<WorkspaceScanCandidate>,
+        completed_roots: usize,
+        failed_roots: usize,
+        reason: Option<WorkspaceScanPartialReason>,
+    },
+    Foreground,
+    Message(WorkspaceScanSchedulerMessage),
+}
+
+fn workspace_scan_scheduler_loop(
+    receiver: mpsc::Receiver<WorkspaceScanSchedulerMessage>,
+    scans: WorkspaceScanRegistry,
+    operations: OperationRegistry,
+) {
+    let mut pending: Option<ScheduledWorkspaceScan> = None;
+    let mut failures = 0_u32;
+    loop {
+        let message = match pending.as_ref() {
+            Some(scheduled) => {
+                let wait = scheduled.due.saturating_duration_since(Instant::now());
+                match receiver.recv_timeout(wait) {
+                    Ok(message) => Some(message),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            None => match receiver.recv() {
+                Ok(message) => Some(message),
+                Err(_) => return,
+            },
+        };
+        if let Some(message) = message {
+            match message {
+                WorkspaceScanSchedulerMessage::Schedule(request, delay) => {
+                    pending = Some(ScheduledWorkspaceScan {
+                        request: *request,
+                        due: Instant::now() + delay,
+                    });
+                    failures = 0;
+                }
+                WorkspaceScanSchedulerMessage::Cancel(acknowledge) => {
+                    if let Some(scheduled) = pending.take() {
+                        let _ = scans.pause(
+                            &scheduled.request.scope_id,
+                            WorkspaceScanPartialReason::Cancelled,
+                        );
+                    }
+                    let _ = acknowledge.send(());
+                }
+            }
+            continue;
+        }
+
+        let Some(scheduled) = pending.take() else {
+            continue;
+        };
+        let mut request = scheduled.request;
+        if operations.has_active_workspace_operation(&request.workspace) {
+            let _ = scans.pause(
+                &request.scope_id,
+                WorkspaceScanPartialReason::ForegroundActive,
+            );
+            pending = Some(ScheduledWorkspaceScan {
+                request,
+                due: Instant::now() + WORKSPACE_SCAN_FOREGROUND_RETRY,
+            });
+            continue;
+        }
+        match run_workspace_scan(&receiver, &operations, &mut request) {
+            WorkspaceScanRunOutcome::Finished {
+                candidates,
+                completed_roots,
+                failed_roots,
+                reason,
+            } => {
+                let reasons = reason.into_iter().collect::<Vec<_>>();
+                let published = scans.publish_results(
+                    &request.scope_id,
+                    candidates,
+                    completed_roots,
+                    failed_roots,
+                    &reasons,
+                );
+                if published.is_err() {
+                    continue;
+                }
+                let failed = failed_roots > 0
+                    || reasons.contains(&WorkspaceScanPartialReason::CommandFailed);
+                failures = if failed {
+                    failures.saturating_add(1)
+                } else {
+                    0
+                };
+                let delay = if failed {
+                    workspace_scan_backoff(failures)
+                } else if reasons.contains(&WorkspaceScanPartialReason::BudgetExceeded) {
+                    WORKSPACE_SCAN_DEBOUNCE
+                } else {
+                    WORKSPACE_SCAN_INTERVAL
+                };
+                pending = Some(ScheduledWorkspaceScan {
+                    request,
+                    due: Instant::now() + delay,
+                });
+            }
+            WorkspaceScanRunOutcome::Foreground => {
+                let _ = scans.pause(
+                    &request.scope_id,
+                    WorkspaceScanPartialReason::ForegroundActive,
+                );
+                pending = Some(ScheduledWorkspaceScan {
+                    request,
+                    due: Instant::now() + WORKSPACE_SCAN_FOREGROUND_RETRY,
+                });
+            }
+            WorkspaceScanRunOutcome::Message(message) => match message {
+                WorkspaceScanSchedulerMessage::Schedule(next, delay) => {
+                    pending = Some(ScheduledWorkspaceScan {
+                        request: *next,
+                        due: Instant::now() + delay,
+                    });
+                    failures = 0;
+                }
+                WorkspaceScanSchedulerMessage::Cancel(acknowledge) => {
+                    let _ = scans.pause(&request.scope_id, WorkspaceScanPartialReason::Cancelled);
+                    let _ = acknowledge.send(());
+                }
+            },
+        }
+    }
+}
+
+fn workspace_scan_backoff(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(6);
+    Duration::from_secs(1_u64 << exponent).min(WORKSPACE_SCAN_MAX_BACKOFF)
+}
+
+fn workspace_scan_budget_exhausted(elapsed: Duration) -> bool {
+    elapsed >= WORKSPACE_SCAN_BUDGET
+}
+
+fn run_workspace_scan(
+    receiver: &mpsc::Receiver<WorkspaceScanSchedulerMessage>,
+    operations: &OperationRegistry,
+    request: &mut WorkspaceScanRequest,
+) -> WorkspaceScanRunOutcome {
+    let started = Instant::now();
+    let mut candidates = request.cached_candidates.clone();
+    let mut completed_roots = 0;
+    for root in &request.roots {
+        if workspace_scan_budget_exhausted(started.elapsed()) {
+            return WorkspaceScanRunOutcome::Finished {
+                candidates,
+                completed_roots,
+                failed_roots: 0,
+                reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
+            };
+        }
+        let command =
+            match p4::workspace_scan_command(&request.input, &request.workspace_root, root) {
+                Ok((_, command)) => command,
+                Err(_) => {
+                    return WorkspaceScanRunOutcome::Finished {
+                        candidates,
+                        completed_roots,
+                        failed_roots: 1,
+                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                    };
+                }
+            };
+        match run_workspace_scan_child(command, receiver, operations, &request.workspace, started) {
+            WorkspaceScanChildOutcome::Completed(output) => {
+                let parsed = match p4::parse_workspace_scan_output(&output) {
+                    Ok(parsed) => parsed,
+                    Err(_) => {
+                        return WorkspaceScanRunOutcome::Finished {
+                            candidates,
+                            completed_roots,
+                            failed_roots: 1,
+                            reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                        };
+                    }
+                };
+                if parsed.failed || !parsed.diagnostics.is_empty() {
+                    return WorkspaceScanRunOutcome::Finished {
+                        candidates,
+                        completed_roots,
+                        failed_roots: 1,
+                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                    };
+                }
+                candidates.retain(|candidate| {
+                    candidate.action == "add"
+                        || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
+                });
+                candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
+                    !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
+                }));
+                completed_roots += 1;
+            }
+            WorkspaceScanChildOutcome::Budget => {
+                return WorkspaceScanRunOutcome::Finished {
+                    candidates,
+                    completed_roots,
+                    failed_roots: 0,
+                    reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
+                };
+            }
+            WorkspaceScanChildOutcome::Foreground => {
+                return WorkspaceScanRunOutcome::Foreground;
+            }
+            WorkspaceScanChildOutcome::Message(message) => {
+                return WorkspaceScanRunOutcome::Message(message);
+            }
+            WorkspaceScanChildOutcome::Failed => {
+                return WorkspaceScanRunOutcome::Finished {
+                    candidates,
+                    completed_roots,
+                    failed_roots: 1,
+                    reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                };
+            }
+        }
+    }
+    if !request.roots.is_empty() {
+        let add_root_index = request.next_add_root % request.roots.len();
+        let add_root = &request.roots[add_root_index];
+        if workspace_scan_budget_exhausted(started.elapsed()) {
+            return WorkspaceScanRunOutcome::Finished {
+                candidates,
+                completed_roots,
+                failed_roots: 0,
+                reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
+            };
+        }
+        let command =
+            match p4::workspace_scan_add_command(&request.input, &request.workspace_root, add_root)
+            {
+                Ok((_, command)) => command,
+                Err(_) => {
+                    return WorkspaceScanRunOutcome::Finished {
+                        candidates,
+                        completed_roots,
+                        failed_roots: 1,
+                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                    };
+                }
+            };
+        match run_workspace_scan_child(command, receiver, operations, &request.workspace, started) {
+            WorkspaceScanChildOutcome::Completed(output) => {
+                let parsed = match p4::parse_workspace_scan_add_output(&output) {
+                    Ok(parsed) => parsed,
+                    Err(_) => {
+                        return WorkspaceScanRunOutcome::Finished {
+                            candidates,
+                            completed_roots,
+                            failed_roots: 1,
+                            reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                        };
+                    }
+                };
+                if parsed.failed || !parsed.diagnostics.is_empty() {
+                    return WorkspaceScanRunOutcome::Finished {
+                        candidates,
+                        completed_roots,
+                        failed_roots: 1,
+                        reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                    };
+                }
+                candidates.retain(|candidate| {
+                    candidate.action != "add"
+                        || !workspace_scan_path_is_inside(
+                            &candidate.local_path,
+                            &add_root.local_path,
+                        )
+                });
+                candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
+                    !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
+                }));
+                request.cached_candidates.clone_from(&candidates);
+                request.next_add_root = (add_root_index + 1) % request.roots.len();
+            }
+            WorkspaceScanChildOutcome::Budget => {
+                return WorkspaceScanRunOutcome::Finished {
+                    candidates,
+                    completed_roots,
+                    failed_roots: 0,
+                    reason: Some(WorkspaceScanPartialReason::BudgetExceeded),
+                };
+            }
+            WorkspaceScanChildOutcome::Foreground => {
+                return WorkspaceScanRunOutcome::Foreground;
+            }
+            WorkspaceScanChildOutcome::Message(message) => {
+                return WorkspaceScanRunOutcome::Message(message);
+            }
+            WorkspaceScanChildOutcome::Failed => {
+                return WorkspaceScanRunOutcome::Finished {
+                    candidates,
+                    completed_roots,
+                    failed_roots: 1,
+                    reason: Some(WorkspaceScanPartialReason::CommandFailed),
+                };
+            }
+        }
+    }
+    request.cached_candidates.clone_from(&candidates);
+    WorkspaceScanRunOutcome::Finished {
+        candidates,
+        completed_roots,
+        failed_roots: 0,
+        reason: None,
+    }
+}
+
+enum WorkspaceScanChildOutcome {
+    Completed(String),
+    Budget,
+    Foreground,
+    Message(WorkspaceScanSchedulerMessage),
+    Failed,
+}
+
+fn run_workspace_scan_child(
+    mut command: Command,
+    receiver: &mpsc::Receiver<WorkspaceScanSchedulerMessage>,
+    operations: &OperationRegistry,
+    workspace: &str,
+    scan_started: Instant,
+) -> WorkspaceScanChildOutcome {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let Ok(mut child) = command.spawn() else {
+        return WorkspaceScanChildOutcome::Failed;
+    };
+    let mut stdout = child.stdout.take().map(|mut stdout| {
+        thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = stdout.read_to_end(&mut output);
+            output
+        })
+    });
+    let mut stderr = child.stderr.take().map(|mut stderr| {
+        thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = stderr.read_to_end(&mut output);
+            output
+        })
+    });
+    loop {
+        let interruption = if workspace_scan_budget_exhausted(scan_started.elapsed()) {
+            Some(WorkspaceScanChildOutcome::Budget)
+        } else if operations.has_active_workspace_operation(workspace) {
+            Some(WorkspaceScanChildOutcome::Foreground)
+        } else {
+            match receiver.try_recv() {
+                Ok(message) => Some(WorkspaceScanChildOutcome::Message(message)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(WorkspaceScanChildOutcome::Failed),
+            }
+        };
+        if let Some(interruption) = interruption {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout.take().and_then(|reader| reader.join().ok());
+            let _ = stderr.take().and_then(|reader| reader.join().ok());
+            return interruption;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout
+                    .take()
+                    .and_then(|reader| reader.join().ok())
+                    .unwrap_or_default();
+                let stderr = stderr
+                    .take()
+                    .and_then(|reader| reader.join().ok())
+                    .unwrap_or_default();
+                if status.success() {
+                    return WorkspaceScanChildOutcome::Completed(
+                        String::from_utf8_lossy(&stdout).into_owned(),
+                    );
+                }
+                let _ = stderr;
+                return WorkspaceScanChildOutcome::Failed;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout.take().and_then(|reader| reader.join().ok());
+                let _ = stderr.take().and_then(|reader| reader.join().ok());
+                return WorkspaceScanChildOutcome::Failed;
+            }
+        }
+    }
+}
+
+fn workspace_scan_path_is_excluded(path: &str, exclusions: &[String]) -> bool {
+    exclusions
+        .iter()
+        .any(|exclusion| workspace_scan_path_is_inside(path, exclusion))
+}
+
+fn workspace_scan_path_is_inside(path: &str, directory: &str) -> bool {
+    let path = path.replace('/', "\\").to_lowercase();
+    let directory = directory
+        .trim_end_matches(['/', '\\'])
+        .replace('/', "\\")
+        .to_lowercase();
+    path == directory || path.starts_with(&format!("{directory}\\"))
 }
 
 impl WorkspaceRootRegistry {
@@ -376,7 +920,9 @@ pub async fn open_workspace(
     input: ConnectionInput,
     roots: State<'_, WorkspaceRootRegistry>,
     scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
 ) -> Result<P4Info, AppError> {
+    scheduler.cancel_and_wait()?;
     let registry_input = input.clone();
     let info = tauri::async_runtime::spawn_blocking(move || p4::open_workspace(&input))
         .await
@@ -724,7 +1270,9 @@ fn workspace_stream_view_paths(
 pub async fn switch_stream(
     input: SwitchStreamInput,
     scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
 ) -> Result<(), AppError> {
+    scheduler.cancel_and_wait()?;
     let registry_input = input.connection.clone();
     let stream = input.stream.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -988,8 +1536,11 @@ pub async fn configure_workspace_scan(
     exclusions: Vec<String>,
     workspace_roots: State<'_, WorkspaceRootRegistry>,
     scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
 ) -> Result<WorkspaceScanSnapshot, AppError> {
+    scheduler.cancel_and_wait()?;
     let workspace_root = workspace_roots.root(&input)?;
+    let request_workspace_root = workspace_root.clone();
     let identity = scans.identity(&input)?;
     let scan_input = input.clone();
     let configuration = tauri::async_runtime::spawn_blocking(move || {
@@ -997,12 +1548,17 @@ pub async fn configure_workspace_scan(
     })
     .await
     .map_err(task_error)??;
-    scans.configure(
+    let snapshot = scans.configure(
         &identity,
         configuration.roots,
         configuration.exclusions,
         configuration.partial_reasons,
-    )
+    )?;
+    scheduler.schedule(
+        WorkspaceScanRequest::new(input, request_workspace_root, &snapshot),
+        WORKSPACE_SCAN_DEBOUNCE,
+    )?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1011,6 +1567,32 @@ pub fn get_workspace_scan_snapshot(
     scans: State<'_, WorkspaceScanRegistry>,
 ) -> Result<WorkspaceScanSnapshot, AppError> {
     scans.get(&input)
+}
+
+#[tauri::command]
+pub fn refresh_workspace_scan(
+    input: ConnectionInput,
+    workspace_roots: State<'_, WorkspaceRootRegistry>,
+    scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
+) -> Result<(), AppError> {
+    let workspace_root = workspace_roots.root(&input)?;
+    let snapshot = scans.get(&input)?;
+    if snapshot.roots.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Корни фонового сканирования ещё не настроены.",
+        ));
+    }
+    scheduler.schedule(
+        WorkspaceScanRequest::new(input, workspace_root, &snapshot),
+        Duration::ZERO,
+    )
+}
+
+#[tauri::command]
+pub fn cancel_workspace_scan(scheduler: State<'_, WorkspaceScanScheduler>) -> Result<(), AppError> {
+    scheduler.cancel_and_wait()
 }
 
 #[tauri::command]
@@ -3213,16 +3795,27 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorkspaceScanRegistry, bounded_operation_diagnostics, confirmed_integration_paths,
-        operation_event, parse_sync_output_record, submitted_change_from_record,
+        WORKSPACE_SCAN_BUDGET, WorkspaceScanRegistry, WorkspaceScanRequest, WorkspaceScanScheduler,
+        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
+        operation_workspace, parse_sync_output_record, submitted_change_from_record,
         sync_operation_scope, sync_operation_succeeded, unexpected_integration_paths,
-        validate_reveal_path, workspace_stream_view_paths,
+        validate_reveal_path, workspace_scan_backoff, workspace_scan_budget_exhausted,
+        workspace_scan_path_is_excluded, workspace_stream_view_paths,
     };
     use crate::models::{
-        ConnectionInput, OpenedFile, OperationEventKind, P4Info, WorkspaceScanCandidate,
+        ConnectionInput, ErrorKind, OpenedFile, OperationEventKind, P4Info, WorkspaceScanCandidate,
         WorkspaceScanCoverageState, WorkspaceScanPartialReason, WorkspaceScanRoot,
     };
-    use std::{collections::BTreeSet, fs};
+    use crate::operations::{OperationHandle, OperationRegistry};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        path::PathBuf,
+        process::Command,
+        sync::{Arc, atomic::AtomicBool, mpsc},
+        thread,
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -3428,6 +4021,7 @@ mod tests {
                 &configured.scope_id,
                 (0..=crate::p4::MAX_WORKSPACE_SCAN_CANDIDATES)
                     .map(|index| WorkspaceScanCandidate {
+                        stable_id: format!("candidate-{index}"),
                         action: "add".to_owned(),
                         depot_path: None,
                         client_path: None,
@@ -3436,6 +4030,7 @@ mod tests {
                     .collect(),
                 0,
                 1,
+                &[],
             )
             .unwrap();
         assert_eq!(
@@ -3462,6 +4057,13 @@ mod tests {
         assert!(reset.roots.is_empty());
         assert!(reset.candidates.is_empty());
         assert_ne!(reset.scope_id, configured.scope_id);
+        assert_eq!(
+            registry
+                .publish_results(&configured.scope_id, Vec::new(), 0, 0, &[])
+                .unwrap_err()
+                .kind,
+            ErrorKind::Stale
+        );
 
         let mut other_workspace = input;
         other_workspace.client = Some("alex-release".to_owned());
@@ -3482,5 +4084,158 @@ mod tests {
             WorkspaceScanCoverageState::NotStarted
         );
         assert!(workspace_reset.roots.is_empty());
+    }
+
+    #[test]
+    fn workspace_scan_scheduler_has_bounded_budget_backoff_and_exclusions() {
+        assert!(!workspace_scan_budget_exhausted(Duration::from_millis(
+            1499
+        )));
+        assert!(workspace_scan_budget_exhausted(Duration::from_millis(1500)));
+        assert_eq!(workspace_scan_backoff(1), Duration::from_secs(1));
+        assert_eq!(workspace_scan_backoff(2), Duration::from_secs(2));
+        assert_eq!(workspace_scan_backoff(99), Duration::from_secs(60));
+        assert!(workspace_scan_path_is_excluded(
+            r"C:\work\Generated\a.txt",
+            &[r"c:\WORK\generated".to_owned()]
+        ));
+        assert!(!workspace_scan_path_is_excluded(
+            r"C:\work\Source\a.txt",
+            &[r"C:\work\Generated".to_owned()]
+        ));
+    }
+
+    #[test]
+    fn workspace_scan_scheduler_yields_to_foreground_and_cancels_pending_retry() {
+        let input = ConnectionInput {
+            p4_path: None,
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let scans = WorkspaceScanRegistry::default();
+        scans
+            .reset(
+                &input,
+                &P4Info {
+                    client_name: Some("alex-main".to_owned()),
+                    client_stream: Some("//Acme/main".to_owned()),
+                    ..P4Info::default()
+                },
+            )
+            .unwrap();
+        let identity = scans.identity(&input).unwrap();
+        let configured = scans
+            .configure(
+                &identity,
+                vec![WorkspaceScanRoot {
+                    local_path: r"C:\work\Source".to_owned(),
+                    local_scope: r"C:\work\Source\...".to_owned(),
+                    client_scope: "//alex-main/Source/...".to_owned(),
+                    depot_scope: "//Acme/main/Source/...".to_owned(),
+                    ignore_sources: Vec::new(),
+                }],
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let operations = OperationRegistry::default();
+        let (cancel, _) = mpsc::channel();
+        assert!(operations.insert_if_kind_idle(
+            "op-foreground".to_owned(),
+            OperationHandle {
+                kind: "sync",
+                workspace: operation_workspace(&input),
+                started_at_ms: 42,
+                cancel,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            }
+        ));
+        let scheduler = WorkspaceScanScheduler::new(scans.clone(), operations.clone());
+        scheduler
+            .schedule(
+                WorkspaceScanRequest::new(input.clone(), PathBuf::from(r"C:\work"), &configured),
+                Duration::ZERO,
+            )
+            .unwrap();
+        for _ in 0..50 {
+            if scans
+                .get(&input)
+                .is_ok_and(|snapshot| snapshot.coverage.state == WorkspaceScanCoverageState::Paused)
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let paused = scans.get(&input).unwrap();
+        assert_eq!(paused.coverage.state, WorkspaceScanCoverageState::Paused);
+        assert!(
+            paused
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::ForegroundActive)
+        );
+        scheduler.cancel_and_wait().unwrap();
+        operations.remove("op-foreground");
+        assert!(
+            scans
+                .get(&input)
+                .unwrap()
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::Cancelled)
+        );
+    }
+
+    #[test]
+    fn workspace_scan_budget_and_cancel_kill_the_active_child() {
+        let sleeping_command = || {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "commands::tests::workspace_scan_sleeping_child_fixture",
+                "--ignored",
+                "--exact",
+            ]);
+            command
+        };
+        let operations = OperationRegistry::default();
+        let (_sender, receiver) = mpsc::channel();
+        assert!(matches!(
+            super::run_workspace_scan_child(
+                sleeping_command(),
+                &receiver,
+                &operations,
+                "server/alex/main",
+                Instant::now() - WORKSPACE_SCAN_BUDGET,
+            ),
+            super::WorkspaceScanChildOutcome::Budget
+        ));
+
+        let (sender, receiver) = mpsc::channel();
+        let (acknowledge, _acknowledged) = mpsc::channel();
+        sender
+            .send(super::WorkspaceScanSchedulerMessage::Cancel(acknowledge))
+            .unwrap();
+        assert!(matches!(
+            super::run_workspace_scan_child(
+                sleeping_command(),
+                &receiver,
+                &operations,
+                "server/alex/main",
+                Instant::now(),
+            ),
+            super::WorkspaceScanChildOutcome::Message(
+                super::WorkspaceScanSchedulerMessage::Cancel(_)
+            )
+        ));
+    }
+
+    #[test]
+    #[ignore]
+    fn workspace_scan_sleeping_child_fixture() {
+        thread::sleep(Duration::from_secs(10));
     }
 }
