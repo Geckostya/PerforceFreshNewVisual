@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { StreamSummary } from "../../shared/models";
-import { buildStreamForest, childStreamPath, flattenStreamForest, isValidStreamName, layoutStreamGraph, mergeSelectedStreamViewPaths, streamDescendantPaths, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
+import type { CapabilitySnapshot, StreamSummary } from "../../shared/models";
+import { buildStreamForest, childStreamPath, flattenStreamForest, isValidStreamName, layoutStreamGraph, mergeSelectedStreamViewPaths, streamDescendantPaths, streamIntegrationAllowed, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
 
 const stream = (path: string, parent?: string): StreamSummary => ({
   path,
@@ -11,6 +11,25 @@ const stream = (path: string, parent?: string): StreamSummary => ({
 });
 
 describe("stream hierarchy", () => {
+  it("gates integration on its command and every required flag without blocking unknown probes", () => {
+    const supported = { state: "supported", reason: "verified_help", evidence: "client" } as const;
+    const unsupported = { state: "unsupported", reason: "flag_missing", evidence: "client" } as const;
+    const capabilities = {
+      commands: { integrate: supported, copy: supported },
+      flags: {
+        integrateStream: supported,
+        integrateReverse: supported,
+        integrateForceBranch: unsupported,
+        copyStream: supported,
+        copyForceBranch: supported,
+      },
+    } as CapabilitySnapshot;
+
+    expect(streamIntegrationAllowed(capabilities, "mergeDown")).toBe(false);
+    expect(streamIntegrationAllowed(capabilities, "copyUp")).toBe(true);
+    expect(streamIntegrationAllowed(undefined, "mergeDown")).toBe(true);
+  });
+
   it("derives the child path and validates the conservative stream name subset", () => {
     expect(childStreamPath("//Acme/main", "feature-login")).toBe("//Acme/feature-login");
     expect(isValidStreamName("release-1.0_rc")).toBe(true);

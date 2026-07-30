@@ -15,7 +15,7 @@ import { isContextMenuShortcut, selectionMode, updateSelection } from "../../sha
 import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, MenuButton, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
 import { useContextMenu } from "../../shared/useContextMenu";
-import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
+import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamIntegrationAllowed, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
 import { loadStreamPreferences, saveStreamPreferences, streamPreferencesStorageKey, type StreamPreferences } from "./streamPreferences";
 import { CreateStreamDialog } from "./CreateStreamDialog";
 import { StreamIntegrationDialog } from "./StreamIntegrationDialog";
@@ -99,7 +99,7 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
   const selectedStream = selectedPaths.length === 1 ? streams.find((stream) => stream.path === selectedPaths[0]) : undefined;
   const integrationCandidates = useMemo(
     () => streamIntegrationCandidates(streams, currentStream)
-      .filter((candidate) => capabilities?.commands[candidate.direction === "mergeDown" ? "integrate" : "copy"]?.state !== "unsupported"),
+      .filter((candidate) => streamIntegrationAllowed(capabilities, candidate.direction)),
     [streams, currentStream, capabilities],
   );
   const selectedIntegrationCandidates = useMemo(
