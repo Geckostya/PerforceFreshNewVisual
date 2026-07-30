@@ -3,6 +3,15 @@ import { mapWorkspacePaths, revealPath } from "./api";
 import { useLocale } from "./i18n";
 import type { ConnectionInput, WorkspaceMapping } from "./models";
 
+export function confirmedMappingLocalPath(
+  connection: ConnectionInput | undefined,
+  mapping: WorkspaceMapping | undefined,
+  callerLocalPath: string | undefined,
+): string | undefined {
+  if (!connection) return callerLocalPath;
+  return mapping?.state === "mapped" ? mapping.localPath : undefined;
+}
+
 export function PathActions({ depotPath, localPath, connection, onNavigateLocal }: { depotPath: string; localPath?: string; connection?: ConnectionInput; onNavigateLocal?: (mapping: WorkspaceMapping) => void }) {
   const { t } = useLocale();
   const [copied, setCopied] = useState(false);
@@ -12,14 +21,15 @@ export function PathActions({ depotPath, localPath, connection, onNavigateLocal 
   useEffect(() => {
     let active = true;
     setMapping(undefined);
+    setError("");
     if (!connection) return () => { active = false; };
     void mapWorkspacePaths(connection, [depotPath])
       .then((batch) => { if (active) setMapping(batch.mappings[0]); })
       .catch(() => { if (active) setError(t("mappingLookupFailed")); });
     return () => { active = false; };
-  }, [connection?.port, connection?.user, connection?.client, depotPath]);
+  }, [connection?.p4Path, connection?.port, connection?.user, connection?.client, connection?.charset, connection?.p4Config, connection?.p4Enviro, depotPath, t]);
 
-  const confirmedLocalPath = mapping?.state === "mapped" ? mapping.localPath : localPath;
+  const confirmedLocalPath = confirmedMappingLocalPath(connection, mapping, localPath);
 
   async function copy(path: string) {
     setError("");

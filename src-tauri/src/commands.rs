@@ -2279,16 +2279,7 @@ pub async fn start_reconcile(
             "Select at least one reconcile candidate.",
         ));
     }
-    if input
-        .items
-        .iter()
-        .any(|item| item.ignored || item.unsafe_item)
-    {
-        return Err(AppError::new(
-            ErrorKind::Conflict,
-            "Ignored or unsafe reconcile candidates cannot be applied.",
-        ));
-    }
+    p4::validate_reconcile_selection(&input.items)?;
     if input.preview_token.trim().is_empty()
         || input
             .items

@@ -2765,15 +2765,106 @@ fn reconcile_local_metadata(item: &mut ReconcileItem) {
 }
 
 fn reconcile_preview_token(scope: &str, items: &[ReconcileItem]) -> String {
+    let mut canonical_items = items.to_vec();
+    for item in &mut canonical_items {
+        item.preview_token.clear();
+    }
+    canonical_items.sort_by(|left, right| {
+        serde_json::to_vec(left)
+            .unwrap_or_default()
+            .cmp(&serde_json::to_vec(right).unwrap_or_default())
+    });
     let mut hash = 0xcbf29ce484222325_u64;
-    for byte in scope
-        .bytes()
-        .chain(serde_json::to_vec(items).unwrap_or_default())
+    for byte in (scope.len() as u64)
+        .to_le_bytes()
+        .into_iter()
+        .chain(scope.bytes())
+        .chain(
+            serde_json::to_vec(&canonical_items)
+                .unwrap_or_default()
+                .into_iter(),
+        )
     {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    format!("reconcile-v1-{hash:016x}")
+    format!("reconcile-v2-{hash:016x}")
+}
+
+fn reconcile_move_partner_index(items: &[ReconcileItem], item_index: usize) -> Option<usize> {
+    let item = items.get(item_index)?;
+    let partner = item.move_partner.as_deref()?;
+    items
+        .iter()
+        .enumerate()
+        .find_map(|(candidate_index, candidate)| {
+            (candidate_index != item_index
+                && candidate.action == "move"
+                && candidate.depot_path == partner
+                && candidate.move_partner.as_deref() == Some(item.depot_path.as_str()))
+            .then_some(candidate_index)
+        })
+}
+
+fn mark_unsafe_reconcile_move_pairs(items: &mut [ReconcileItem]) {
+    let base_unsafe = items
+        .iter()
+        .map(|item| item.ignored || item.unsafe_item)
+        .collect::<Vec<_>>();
+    let unsafe_pairs = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            item.action == "move"
+                && reconcile_move_partner_index(items, index)
+                    .is_none_or(|partner_index| base_unsafe[partner_index])
+        })
+        .collect::<Vec<_>>();
+    for (item, unsafe_pair) in items.iter_mut().zip(unsafe_pairs) {
+        if unsafe_pair {
+            if !item
+                .reasons
+                .iter()
+                .any(|reason| reason == "incomplete_move_pair")
+            {
+                item.reasons.push("incomplete_move_pair".to_owned());
+            }
+            item.unsafe_item = true;
+        }
+    }
+}
+
+pub fn validate_reconcile_selection(items: &[ReconcileItem]) -> Result<(), AppError> {
+    if items.iter().any(|item| {
+        item.ignored
+            || item.unsafe_item
+            || item.action == "unsafe"
+            || !matches!(item.mapping_state, WorkspaceMappingState::Mapped)
+    }) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Ignored, unmapped, or unsafe reconcile candidates cannot be applied.",
+        ));
+    }
+    let stable_ids = items
+        .iter()
+        .map(|item| item.stable_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if stable_ids.len() != items.len() {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "A reconcile candidate can be selected only once.",
+        ));
+    }
+    if items.iter().enumerate().any(|(index, item)| {
+        item.action == "move" && reconcile_move_partner_index(items, index).is_none()
+    }) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Both server-reported halves of a move must be selected together.",
+        ));
+    }
+    Ok(())
 }
 
 pub fn reconcile_preview_snapshot(
@@ -2843,6 +2934,7 @@ pub fn reconcile_preview_snapshot(
             || (item.action == "move" && item.move_partner.is_none());
         reconcile_local_metadata(item);
     }
+    mark_unsafe_reconcile_move_pairs(&mut items);
     let token = reconcile_preview_token(scope, &items);
     for item in &mut items {
         item.preview_token.clone_from(&token);
@@ -4043,10 +4135,20 @@ fn parse_workspace_mapping_batch(
     let mappings = queries
         .iter()
         .map(|query| {
-            let candidates = records
+            let exact_candidates = records
                 .iter()
                 .filter(|record| mapping_record_matches_query(record, query))
                 .collect::<Vec<_>>();
+            let candidates = if exact_candidates.is_empty() {
+                records
+                    .iter()
+                    .filter(|record| {
+                        mapping_record_matches_query_with_case(record, query, true)
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                exact_candidates
+            };
             let Some(record) = candidates.last() else {
                 return WorkspaceMapping {
                     query: query.clone(),
@@ -4099,12 +4201,26 @@ fn parse_workspace_mapping_batch(
 }
 
 fn mapping_record_matches_query(record: &Map<String, Value>, query: &str) -> bool {
+    mapping_record_matches_query_with_case(record, query, false)
+}
+
+fn mapping_record_matches_query_with_case(
+    record: &Map<String, Value>,
+    query: &str,
+    ignore_case: bool,
+) -> bool {
     ["depotFile", "clientFile", "path"]
         .iter()
         .any(|field_name| {
             field(record, &[*field_name]).is_some_and(|value| {
                 let (value, _) = mapping_path(Some(value));
-                value.is_some_and(|value| value.eq_ignore_ascii_case(query))
+                value.is_some_and(|value| {
+                    if ignore_case {
+                        value.eq_ignore_ascii_case(query)
+                    } else {
+                        value == query
+                    }
+                })
             })
         })
 }
@@ -5694,6 +5810,39 @@ mod tests {
     }
 
     #[test]
+    fn mapping_batch_keeps_case_distinct_depot_queries_separate() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/File.txt","clientFile":"//alex-main/File.txt","path":"C:\\work\\File.txt"}
+{"depotFile":"//Acme/main/file.txt","clientFile":"//alex-main/file.txt","path":"C:\\work\\file.txt"}"#,
+        )
+        .unwrap();
+        let batch = parse_workspace_mapping_batch(
+            &[
+                "//Acme/main/File.txt".to_owned(),
+                "//Acme/main/file.txt".to_owned(),
+            ],
+            &records,
+            Vec::new(),
+            false,
+        );
+
+        assert_eq!(
+            batch.mappings[0].local_path.as_deref(),
+            Some("C:\\work\\File.txt")
+        );
+        assert_eq!(
+            batch.mappings[1].local_path.as_deref(),
+            Some("C:\\work\\file.txt")
+        );
+        assert!(
+            batch
+                .mappings
+                .iter()
+                .all(|mapping| mapping.diagnostics.is_empty())
+        );
+    }
+
+    #[test]
     fn reconcile_token_changes_with_action_mapping_or_local_metadata() {
         let mut item = test_reconcile_item("//Acme/main/a.txt", "edit", Some("C:\\work\\a.txt"));
         item.mapping_state = WorkspaceMappingState::Mapped;
@@ -5703,6 +5852,54 @@ mod tests {
         item.action = "edit".to_owned();
         item.local_size = Some(42);
         assert_ne!(reconcile_preview_token("//...", &[item]), original);
+    }
+
+    #[test]
+    fn reconcile_token_is_order_independent_and_ignores_embedded_tokens() {
+        let mut first = test_reconcile_item("//Acme/main/a.txt", "edit", Some("C:\\work\\a.txt"));
+        first.mapping_state = WorkspaceMappingState::Mapped;
+        let mut second = test_reconcile_item("//Acme/main/b.txt", "delete", None);
+        second.mapping_state = WorkspaceMappingState::Mapped;
+        let token = reconcile_preview_token("//Acme/main/...", &[first.clone(), second.clone()]);
+        first.preview_token = "old-token".to_owned();
+        second.preview_token = "another-old-token".to_owned();
+
+        assert!(token.starts_with("reconcile-v2-"));
+        assert_eq!(
+            reconcile_preview_token("//Acme/main/...", &[second, first]),
+            token
+        );
+    }
+
+    #[test]
+    fn reconcile_move_pairs_must_be_complete_safe_and_selected_together() {
+        let mut source = test_reconcile_item("//Acme/main/old.txt", "move", None);
+        source.original_action = Some("move/delete".to_owned());
+        source.move_partner = Some("//Acme/main/new.txt".to_owned());
+        source.mapping_state = WorkspaceMappingState::Mapped;
+        let mut target = test_reconcile_item("//Acme/main/new.txt", "move", None);
+        target.original_action = Some("move/add".to_owned());
+        target.move_partner = Some("//Acme/main/old.txt".to_owned());
+        target.mapping_state = WorkspaceMappingState::Mapped;
+        let mut pair = vec![source, target];
+
+        mark_unsafe_reconcile_move_pairs(&mut pair);
+        assert!(pair.iter().all(|item| !item.unsafe_item));
+        assert!(validate_reconcile_selection(&pair).is_ok());
+        assert_eq!(
+            validate_reconcile_selection(&pair[..1]).unwrap_err().kind,
+            ErrorKind::Conflict
+        );
+
+        pair[1].unsafe_item = true;
+        mark_unsafe_reconcile_move_pairs(&mut pair);
+        assert!(pair.iter().all(|item| item.unsafe_item));
+        assert!(
+            pair[0]
+                .reasons
+                .iter()
+                .any(|reason| reason == "incomplete_move_pair")
+        );
     }
 
     #[test]
