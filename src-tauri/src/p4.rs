@@ -2804,6 +2804,90 @@ pub fn reconcile_command(
     Ok((path, command))
 }
 
+fn local_directory_reconcile_query(directory: &str) -> Result<String, AppError> {
+    let directory = directory.trim();
+    if directory.is_empty()
+        || directory.len() > 4096
+        || directory.contains(['\r', '\n', '\0'])
+        || directory.chars().any(|character| character.is_control())
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile folder path is invalid.",
+        ));
+    }
+    let directory = Path::new(directory);
+    if !directory.is_absolute() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile folder must use an absolute path.",
+        ));
+    }
+    let metadata = fs::metadata(directory).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile folder is unavailable.",
+        )
+        .with_diagnostics(error.to_string())
+    })?;
+    if !metadata.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile path is not a folder.",
+        ));
+    }
+    directory
+        .join("...")
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::CommandFailed,
+                "The selected reconcile folder cannot be represented safely.",
+            )
+        })
+}
+
+fn mapped_reconcile_scope(batch: &WorkspaceMappingBatch) -> Result<String, AppError> {
+    if batch.partial {
+        return Err(AppError::new(
+            ErrorKind::PartialResult,
+            "The selected folder mapping is incomplete.",
+        )
+        .with_hint("Choose a narrower mapped folder and retry."));
+    }
+    let mapping = batch.mappings.first().ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "The server returned no mapping result for the selected folder.",
+        )
+    })?;
+    if !matches!(mapping.state, WorkspaceMappingState::Mapped) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The selected folder is not mapped by the current workspace.",
+        )
+        .with_hint("Choose a folder included by the current client view."));
+    }
+    let scope = mapping.depot_path.as_deref().ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "The mapped folder response has no depot scope.",
+        )
+    })?;
+    validate_depot_path(scope)?;
+    Ok(scope.to_owned())
+}
+
+pub fn reconcile_scope_from_local_directory(
+    input: &ConnectionInput,
+    directory: &str,
+) -> Result<String, AppError> {
+    let query = local_directory_reconcile_query(directory)?;
+    let batch = map_workspace_paths(input, &[query])?;
+    mapped_reconcile_scope(&batch)
+}
+
 pub fn parse_reconcile_output_record(line: &str) -> Option<ReconcileItem> {
     let record = serde_json::from_str::<Map<String, Value>>(line).ok()?;
     reconcile_item(&record)
@@ -5988,6 +6072,60 @@ mod tests {
                 .mappings
                 .iter()
                 .all(|mapping| mapping.diagnostics.is_empty())
+        );
+    }
+
+    #[test]
+    fn local_reconcile_folder_scope_requires_an_existing_absolute_directory() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-reconcile-folder-{}", std::process::id()));
+        let folder = fixture.join("Source");
+        let file = fixture.join("file.txt");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(&file, b"not a directory").unwrap();
+
+        assert_eq!(
+            PathBuf::from(local_directory_reconcile_query(folder.to_str().unwrap()).unwrap()),
+            folder.join("...")
+        );
+        assert!(local_directory_reconcile_query("relative-folder").is_err());
+        assert!(local_directory_reconcile_query(file.to_str().unwrap()).is_err());
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn local_reconcile_folder_scope_accepts_only_a_complete_mapped_where_result() {
+        let mapping = WorkspaceMapping {
+            query: "C:\\work\\Source\\...".to_owned(),
+            state: WorkspaceMappingState::Mapped,
+            depot_path: Some("//Acme/main/Source/...".to_owned()),
+            client_path: Some("//alex-main/Source/...".to_owned()),
+            local_path: Some("C:\\work\\Source\\...".to_owned()),
+            diagnostics: Vec::new(),
+        };
+        let batch = WorkspaceMappingBatch {
+            mappings: vec![mapping],
+            partial: false,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(
+            mapped_reconcile_scope(&batch).unwrap(),
+            "//Acme/main/Source/..."
+        );
+
+        let mut partial = batch.clone();
+        partial.partial = true;
+        assert_eq!(
+            mapped_reconcile_scope(&partial).unwrap_err().kind,
+            ErrorKind::PartialResult
+        );
+
+        let mut excluded = batch;
+        excluded.mappings[0].state = WorkspaceMappingState::Excluded;
+        assert_eq!(
+            mapped_reconcile_scope(&excluded).unwrap_err().kind,
+            ErrorKind::Conflict
         );
     }
 

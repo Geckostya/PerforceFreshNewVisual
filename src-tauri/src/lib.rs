@@ -86,6 +86,7 @@ pub fn run() {
             commands::load_resolve_content,
             commands::save_resolve_result,
             commands::move_file,
+            commands::reconcile_scope_from_local_directory,
             commands::start_reconcile,
             commands::start_reconcile_preview,
             commands::list_shelved_files,

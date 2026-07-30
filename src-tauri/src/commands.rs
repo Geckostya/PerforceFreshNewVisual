@@ -2279,6 +2279,18 @@ pub async fn start_reconcile_preview(
 }
 
 #[tauri::command]
+pub async fn reconcile_scope_from_local_directory(
+    input: ConnectionInput,
+    directory: String,
+) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::reconcile_scope_from_local_directory(&input, &directory)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn start_reconcile(
     app: tauri::AppHandle,
     registry: State<'_, OperationRegistry>,

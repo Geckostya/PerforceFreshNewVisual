@@ -372,6 +372,10 @@ export async function startReconcilePreview(input: ConnectionInput, scope?: stri
   return invoke<string>("start_reconcile_preview", { input, scope });
 }
 
+export async function reconcileScopeFromLocalDirectory(input: ConnectionInput, directory: string): Promise<string> {
+  return invoke<string>("reconcile_scope_from_local_directory", { input, directory });
+}
+
 export async function listShelvedFiles(
   connection: ConnectionInput,
   change: string,
