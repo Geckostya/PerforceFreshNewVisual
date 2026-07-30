@@ -860,6 +860,43 @@ fn bounded_operation_diagnostics(message: Option<&str>) -> Vec<OperationDiagnost
         .collect()
 }
 
+fn submit_item_results(outcome: &SubmitOutcome) -> Vec<OperationItemResult> {
+    outcome
+        .steps
+        .iter()
+        .map(|step| OperationItemResult {
+            item_id: step.step.clone(),
+            path: None,
+            status: match step.status.as_str() {
+                "completed" => OperationItemStatus::Succeeded,
+                "skipped" => OperationItemStatus::Skipped,
+                _ => OperationItemStatus::Failed,
+            },
+            reason: step.detail.clone(),
+            compensation: OperationCompensationStatus::NotRequired,
+            recovery_action_id: (!outcome.recovery_actions.is_empty())
+                .then(|| "refresh_changes".to_owned()),
+        })
+        .collect()
+}
+
+fn failed_submit_item_results(mode: &SubmitMode, error: &AppError) -> Vec<OperationItemResult> {
+    vec![OperationItemResult {
+        item_id: "submit".to_owned(),
+        path: None,
+        status: OperationItemStatus::Failed,
+        reason: Some(error.message.clone()),
+        // A shelf-preserving submit may have attempted to move local files back after a
+        // failed shelf submit. The error boundary cannot prove that compensation completed.
+        compensation: if matches!(mode, SubmitMode::Shelf) {
+            OperationCompensationStatus::Unknown
+        } else {
+            OperationCompensationStatus::NotRequired
+        },
+        recovery_action_id: Some("refresh_changes".to_owned()),
+    }]
+}
+
 fn submitted_change_from_record(
     record: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<String> {
@@ -1532,8 +1569,10 @@ pub async fn start_submit(
                 &input.mode,
             );
             let was_cancelled = cancelled.load(Ordering::Acquire);
-            let (kind, message, diagnostics, read_back, submit_outcome) = match result {
+            let (kind, message, diagnostics, read_back, submit_outcome, item_results) = match result
+            {
                 Ok(outcome) => {
+                    let item_results = submit_item_results(&outcome);
                     let kind = match outcome.terminal {
                         SubmitTerminalOutcome::Submitted => OperationEventKind::Completed,
                         SubmitTerminalOutcome::Pending if was_cancelled => {
@@ -1566,6 +1605,7 @@ pub async fn start_submit(
                             message,
                         },
                         Some(outcome),
+                        item_results,
                     )
                 }
                 Err(error) => {
@@ -1598,6 +1638,7 @@ pub async fn start_submit(
                             message: Some(readback.message),
                         },
                         None,
+                        failed_submit_item_results(&input.mode, &error),
                     )
                 }
             };
@@ -1612,6 +1653,7 @@ pub async fn start_submit(
                     diagnostics,
                     read_back,
                     submit_outcome,
+                    item_results,
                     ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
                 },
             );
@@ -1770,6 +1812,7 @@ pub async fn start_submit(
                 detail: None,
             }],
         };
+        let item_results = submit_item_results(&submit_outcome);
         let message = if !success && !was_cancelled {
             let detail = stderr_text.trim();
             Some(if detail.is_empty() {
@@ -1807,6 +1850,7 @@ pub async fn start_submit(
                 phase: None,
                 reconcile_items: None,
                 submit_outcome: Some(submit_outcome),
+                item_results,
                 diagnostics,
                 read_back: OperationReadBack {
                     status: match readback.outcome {
@@ -2930,12 +2974,15 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
-        parse_sync_output_record, submitted_change_from_record, sync_operation_scope,
-        sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
-        workspace_stream_view_paths,
+        bounded_operation_diagnostics, confirmed_integration_paths, failed_submit_item_results,
+        operation_event, parse_sync_output_record, submit_item_results, submitted_change_from_record,
+        sync_operation_scope, sync_operation_succeeded, unexpected_integration_paths,
+        validate_reveal_path, workspace_stream_view_paths,
     };
-    use crate::models::{OpenedFile, OperationEventKind};
+    use crate::models::{
+        AppError, ErrorKind, OpenedFile, OperationCompensationStatus, OperationEventKind,
+        OperationItemStatus, SubmitMode, SubmitOutcome, SubmitStepResult, SubmitTerminalOutcome,
+    };
     use std::{collections::BTreeSet, fs};
 
     #[test]
@@ -3036,6 +3083,37 @@ mod tests {
         assert_eq!(value["startedAtMs"], 42);
         assert_eq!(value["readBack"]["status"], "not_required");
         assert_eq!(value["retryable"], false);
+    }
+
+    #[test]
+    fn shelf_submit_exposes_step_and_compensation_outcomes() {
+        let outcome = SubmitOutcome {
+            preserved_local_change: Some("205".to_owned()),
+            terminal: SubmitTerminalOutcome::Submitted,
+            affected_change: Some("104".to_owned()),
+            recovery_actions: Vec::new(),
+            steps: vec![SubmitStepResult {
+                step: "move_local_files".to_owned(),
+                status: "completed".to_owned(),
+                detail: None,
+            }],
+        };
+
+        let results = submit_item_results(&outcome);
+        assert_eq!(results[0].item_id, "move_local_files");
+        assert_eq!(results[0].status, OperationItemStatus::Succeeded);
+        assert_eq!(
+            results[0].compensation,
+            OperationCompensationStatus::NotRequired
+        );
+
+        let failure = failed_submit_item_results(
+            &SubmitMode::Shelf,
+            &AppError::new(ErrorKind::CommandFailed, "submit failed"),
+        );
+        assert_eq!(failure[0].status, OperationItemStatus::Failed);
+        assert_eq!(failure[0].compensation, OperationCompensationStatus::Unknown);
+        assert_eq!(failure[0].recovery_action_id.as_deref(), Some("refresh_changes"));
     }
 
     #[test]
