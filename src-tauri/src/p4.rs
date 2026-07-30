@@ -16,14 +16,14 @@ use crate::models::{
     AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
     CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
-    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
-    ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide,
-    ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile,
-    StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
-    StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
-    StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
-    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
-    SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
+    FileIntegration, FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange,
+    ReconcileItem, ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent,
+    ResolveContentSide, ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem,
+    ShelvedFile, StreamDetail, StreamHistoryEntry, StreamIntegrationDirection,
+    StreamIntegrationHint, StreamIntegrationInput, StreamIntegrationPreview,
+    StreamIntegrationPreviewItem, StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode,
+    SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
+    SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
     UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
     WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSpec,
@@ -4773,10 +4773,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
     let mut revisions = Vec::new();
     for record in records.iter().filter(|record| !is_message_record(record)) {
         if let Some(revision) = optional_field(record, &["rev", "revision"]) {
-            let integrations = ["how", "srev", "erev", "sfile"]
-                .iter()
-                .filter_map(|name| optional_field(record, &[*name]))
-                .collect();
+            let integrations = parse_flat_file_integrations(record);
             revisions.push(FileRevision {
                 revision,
                 change: optional_field(record, &["change"]).unwrap_or_default(),
@@ -4803,10 +4800,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
         for index in indices {
             let revision = numbered_field(record, &["rev", "revision"], index)
                 .expect("revision index was collected from this record");
-            let integrations = ["how", "srev", "erev", "sfile", "file"]
-                .iter()
-                .flat_map(|name| numbered_fields(record, name, index))
-                .collect();
+            let integrations = parse_indexed_file_integrations(record, index);
             revisions.push(FileRevision {
                 revision,
                 change: numbered_field(record, &["change"], index).unwrap_or_default(),
@@ -4826,6 +4820,41 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
         }
     }
     Ok(revisions)
+}
+
+fn parse_flat_file_integrations(record: &Map<String, Value>) -> Vec<FileIntegration> {
+    optional_field(record, &["how"])
+        .map(|how| FileIntegration {
+            how,
+            source_path: optional_field(record, &["sfile", "file"]),
+            source_start_revision: optional_field(record, &["srev"]),
+            source_end_revision: optional_field(record, &["erev"]),
+        })
+        .into_iter()
+        .collect()
+}
+
+fn parse_indexed_file_integrations(
+    record: &Map<String, Value>,
+    revision_index: usize,
+) -> Vec<FileIntegration> {
+    let how = numbered_fields(record, "how", revision_index);
+    let source_paths = numbered_fields(record, "sfile", revision_index);
+    let fallback_paths = numbered_fields(record, "file", revision_index);
+    let source_starts = numbered_fields(record, "srev", revision_index);
+    let source_ends = numbered_fields(record, "erev", revision_index);
+    how.into_iter()
+        .enumerate()
+        .map(|(integration_index, how)| FileIntegration {
+            how,
+            source_path: source_paths
+                .get(integration_index)
+                .cloned()
+                .or_else(|| fallback_paths.get(integration_index).cloned()),
+            source_start_revision: source_starts.get(integration_index).cloned(),
+            source_end_revision: source_ends.get(integration_index).cloned(),
+        })
+        .collect()
 }
 
 fn parse_opened_files(records: &[Map<String, Value>]) -> Result<Vec<OpenedFile>, AppError> {
@@ -6335,7 +6364,12 @@ mod tests {
         assert_eq!(revisions[0].labels, ["release_1"]);
         assert_eq!(
             revisions[0].integrations,
-            ["merge", "3", "4", "//Acme/dev/a.txt"]
+            [FileIntegration {
+                how: "merge".to_owned(),
+                source_start_revision: Some("3".to_owned()),
+                source_end_revision: Some("4".to_owned()),
+                source_path: Some("//Acme/dev/a.txt".to_owned())
+            }]
         );
     }
 
@@ -6355,7 +6389,12 @@ mod tests {
         assert_eq!(revisions[0].description.as_deref(), Some("Latest"));
         assert_eq!(
             revisions[0].integrations,
-            ["branch into", "//Acme/release/a.txt"]
+            [FileIntegration {
+                how: "branch into".to_owned(),
+                source_start_revision: None,
+                source_end_revision: None,
+                source_path: Some("//Acme/release/a.txt".to_owned())
+            }]
         );
         assert_eq!(revisions[1].revision, "4");
         assert_eq!(revisions[1].action, "add");

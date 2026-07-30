@@ -604,6 +604,13 @@ export interface AnnotationLine { change: string; user?: string; date?: string; 
 
 export type DiffMode = "default" | "ignoreWhitespaceChanges" | "ignoreWhitespace" | "ignoreLineEndings";
 
+export interface FileIntegration {
+  how: string;
+  sourcePath?: string;
+  sourceStartRevision?: string;
+  sourceEndRevision?: string;
+}
+
 export interface FileRevision {
   revision: string;
   change: string;
@@ -614,7 +621,7 @@ export interface FileRevision {
   client?: string;
   size?: string;
   description?: string;
-  integrations: string[];
+  integrations: FileIntegration[];
   labels: string[];
 }
 

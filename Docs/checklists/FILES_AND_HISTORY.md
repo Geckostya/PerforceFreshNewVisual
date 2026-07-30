@@ -27,4 +27,4 @@ Current status for Local Files, Depot Files, retrieval, file lifecycle, history,
 - [ ] Chunk or stream large text with a clear bounded fallback.
 - [ ] Add syntax/word highlighting and image/binary metadata preview.
 - [ ] Launch configured editor/diff/merge tools without a shell and manage temporary files explicitly.
-- [ ] Build Revision Graph only from `filelog`/integration records; never infer edges.
+- [x] Build Revision Graph only from bounded `filelog`/integration records; never infer edges, and expose partial graph state.

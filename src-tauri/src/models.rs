@@ -925,8 +925,25 @@ pub struct FileRevision {
     pub client: Option<String>,
     pub size: Option<String>,
     pub description: Option<String>,
-    pub integrations: Vec<String>,
+    pub integrations: Vec<FileIntegration>,
     pub labels: Vec<String>,
+}
+
+/// One relationship reported by `p4 filelog -i` for a file revision.
+///
+/// These values intentionally stay close to the server record. In particular,
+/// the client must not manufacture an edge when a source path or range is
+/// missing from the record.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileIntegration {
+    pub how: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_start_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_end_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
