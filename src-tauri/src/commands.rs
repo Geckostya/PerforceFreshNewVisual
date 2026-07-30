@@ -4,8 +4,8 @@ use crate::{
         AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
         CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
         CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
-        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, HistoryPage, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        DepotStateComparison, DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff,
+        FileOperationInput, FileRevision, Fix, HistoryPage, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
         OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
         OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
         P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
@@ -523,6 +523,20 @@ pub async fn list_depot_files(
 ) -> Result<Vec<DepotFile>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::list_depot_files(&input, &scope, include_deleted.unwrap_or(false))
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn compare_depot_states(
+    input: ConnectionInput,
+    scope: String,
+    base_change: String,
+    target_change: Option<String>,
+) -> Result<DepotStateComparison, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::compare_depot_states(&input, &scope, &base_change, target_change.as_deref())
     })
     .await
     .map_err(task_error)?

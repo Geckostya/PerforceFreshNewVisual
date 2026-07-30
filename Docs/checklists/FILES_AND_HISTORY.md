@@ -18,7 +18,7 @@ Current status for Local Files, Depot Files, retrieval, file lifecycle, history,
 - [~] Depot/client/local navigation uses bounded server-backed `where` with mapped/excluded/unmapped and partial diagnostics; Depot pagination and broader permission/maxresults coverage remain.
 - [ ] Add date-based retrieval and richer changelist/revision target selection without creating a second sync implementation.
 - [x] Server-side history filters and incremental opaque cursors use bounded pages without a hidden global scan.
-- [ ] Compare folder/changelist states as added/changed/deleted/type-changed sets.
+- [x] Compare a folder-history changelist with the current server state as exact added/changed/deleted/type-changed sets.
 - [ ] Follow rename and integration records without heuristic path joins.
 - [x] Measure exceptional directories/lists and add virtualization only where incremental loading is insufficient; current bounded and lazy paths remain below that threshold and expose partial limits instead.
 

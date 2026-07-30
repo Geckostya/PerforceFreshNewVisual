@@ -33,6 +33,7 @@ import type {
   WorkspaceUpdateInput,
   DepotDirectory,
   DepotFile,
+  DepotStateComparison,
   DepotSummary,
   TrustEntry,
   TrustChallenge,
@@ -212,6 +213,10 @@ export async function listDepots(input: ConnectionInput): Promise<DepotSummary[]
 
 export async function listDepotFiles(input: ConnectionInput, scope: string, includeDeleted = false): Promise<DepotFile[]> {
   return invoke<DepotFile[]>("list_depot_files", { input, scope, includeDeleted });
+}
+
+export async function compareDepotStates(input: ConnectionInput, scope: string, baseChange: string, targetChange?: string): Promise<DepotStateComparison> {
+  return invoke<DepotStateComparison>("compare_depot_states", { input, scope, baseChange, targetChange });
 }
 
 export async function listPendingChanges(input: ConnectionInput): Promise<PendingChange[]> {

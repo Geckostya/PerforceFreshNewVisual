@@ -243,6 +243,22 @@ export interface DepotFile {
   change?: string;
   fileType?: string;
 }
+export interface DepotStateDifference {
+  depotPath: string;
+  beforeRevision?: string;
+  afterRevision?: string;
+  beforeFileType?: string;
+  afterFileType?: string;
+}
+export interface DepotStateComparison {
+  scope: string;
+  baseChange: string;
+  targetChange?: string;
+  added: DepotStateDifference[];
+  changed: DepotStateDifference[];
+  deleted: DepotStateDifference[];
+  typeChanged: DepotStateDifference[];
+}
 
 export interface TrustEntry { server: string; fingerprint: string; }
 

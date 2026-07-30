@@ -50,6 +50,7 @@ pub fn run() {
             commands::list_depots,
             commands::list_depot_directories,
             commands::list_depot_files,
+            commands::compare_depot_states,
             commands::list_pending_changes,
             commands::list_jobs,
             commands::list_labels,

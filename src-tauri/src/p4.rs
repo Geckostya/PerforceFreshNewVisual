@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 use crate::models::{
     AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
-    CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
+    CreateStreamType, DepotDirectory, DepotFile, DepotStateComparison, DepotSummary, DiffMode, ErrorKind, FileDiff,
     FileRevision, HistoryPage, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange,
     ReconcileItem, ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent,
     ResolveContentSide, ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem,
@@ -26,6 +26,16 @@ use crate::models::{
     SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary,
     SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SubmittedHistoryPageInput, SyncPreview, SyncPreviewItem,
+    CreateStreamType, DepotDirectory, DepotFile, DepotStateComparison, DepotStateDifference,
+    DepotSummary, DiffMode, ErrorKind, FileDiff, FileRevision, LoginStatus, OpenedFile,
+    P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem, ResolveApplyResult,
+    ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode, ResolvePreviewItem,
+    ResolveReadBackState, RevertPreviewItem, ShelvedFile, StreamDetail, StreamHistoryEntry,
+    StreamIntegrationDirection, StreamIntegrationHint, StreamIntegrationInput,
+    StreamIntegrationPreview, StreamIntegrationPreviewItem, StreamLocalStrategy, StreamPathKind,
+    StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
+    SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
+    SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SyncPreview, SyncPreviewItem,
     TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
     WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState,
     WorkspaceSpec, WorkspaceSummary,
@@ -1039,6 +1049,156 @@ fn depot_file_arguments(scope: &str, include_deleted: bool) -> Vec<String> {
     }
     arguments.extend(["-m".to_owned(), MAX_RECORDS.to_owned(), scope.to_owned()]);
     arguments
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DepotStateFile {
+    revision: String,
+    file_type: String,
+}
+
+pub fn compare_depot_states(
+    input: &ConnectionInput,
+    scope: &str,
+    base_change: &str,
+    target_change: Option<&str>,
+) -> Result<DepotStateComparison, AppError> {
+    validate_depot_state_scope(scope)?;
+    validate_numbered_change(base_change)?;
+    if let Some(change) = target_change {
+        validate_numbered_change(change)?;
+    }
+
+    let before = read_depot_state(input, scope, Some(base_change))?;
+    let after = read_depot_state(input, scope, target_change)?;
+    Ok(compare_depot_state_maps(
+        scope,
+        base_change,
+        target_change,
+        &before,
+        &after,
+    ))
+}
+
+fn validate_depot_state_scope(scope: &str) -> Result<(), AppError> {
+    let scope = scope.trim();
+    validate_depot_path(scope)?;
+    let is_folder_scope = scope == "//..." || scope.ends_with("/...");
+    let prefix = scope.strip_suffix("...").unwrap_or(scope);
+    if !is_folder_scope || prefix.contains(['*', '@', '#']) || scope.contains(['\r', '\n', '\0']) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "State comparison requires an exact depot folder scope ending in /....",
+        ));
+    }
+    Ok(())
+}
+
+fn depot_state_arguments(scope: &str, change: Option<&str>) -> Vec<String> {
+    let filespec = match change {
+        Some(change) => format!("{}@{change}", scope.trim()),
+        None => format!("{}#head", scope.trim()),
+    };
+    vec![
+        "-ztag".to_owned(),
+        "-Mj".to_owned(),
+        "files".to_owned(),
+        "-e".to_owned(),
+        filespec,
+    ]
+}
+
+fn read_depot_state(
+    input: &ConnectionInput,
+    scope: &str,
+    change: Option<&str>,
+) -> Result<BTreeMap<String, DepotStateFile>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(depot_state_arguments(scope, change));
+    parse_depot_state(&run_json_allowing_empty_match(&path, &mut command)?)
+}
+
+fn parse_depot_state(
+    records: &[Map<String, Value>],
+) -> Result<BTreeMap<String, DepotStateFile>, AppError> {
+    let mut state = BTreeMap::new();
+    for record in records.iter().filter(|record| !is_message_record(record)) {
+        let depot_path = required_field(record, &["depotFile", "file"], "depot file")?;
+        let file = DepotStateFile {
+            revision: required_field(record, &["rev", "revision"], "depot revision")?,
+            file_type: required_field(record, &["type", "filetype"], "depot file type")?,
+        };
+        if state.insert(depot_path.clone(), file).is_some() {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "The server returned duplicate file identity while comparing states.",
+            )
+            .with_diagnostics(depot_path));
+        }
+    }
+    Ok(state)
+}
+
+fn compare_depot_state_maps(
+    scope: &str,
+    base_change: &str,
+    target_change: Option<&str>,
+    before: &BTreeMap<String, DepotStateFile>,
+    after: &BTreeMap<String, DepotStateFile>,
+) -> DepotStateComparison {
+    let mut comparison = DepotStateComparison {
+        scope: scope.trim().to_owned(),
+        base_change: base_change.to_owned(),
+        target_change: target_change.map(str::to_owned),
+        added: Vec::new(),
+        changed: Vec::new(),
+        deleted: Vec::new(),
+        type_changed: Vec::new(),
+    };
+
+    for (depot_path, before_file) in before {
+        let Some(after_file) = after.get(depot_path) else {
+            comparison
+                .deleted
+                .push(depot_state_difference(depot_path, Some(before_file), None));
+            continue;
+        };
+        if before_file.file_type != after_file.file_type {
+            comparison.type_changed.push(depot_state_difference(
+                depot_path,
+                Some(before_file),
+                Some(after_file),
+            ));
+        } else if before_file.revision != after_file.revision {
+            comparison.changed.push(depot_state_difference(
+                depot_path,
+                Some(before_file),
+                Some(after_file),
+            ));
+        }
+    }
+    for (depot_path, after_file) in after {
+        if !before.contains_key(depot_path) {
+            comparison
+                .added
+                .push(depot_state_difference(depot_path, None, Some(after_file)));
+        }
+    }
+    comparison
+}
+
+fn depot_state_difference(
+    depot_path: &str,
+    before: Option<&DepotStateFile>,
+    after: Option<&DepotStateFile>,
+) -> DepotStateDifference {
+    DepotStateDifference {
+        depot_path: depot_path.to_owned(),
+        before_revision: before.map(|file| file.revision.clone()),
+        after_revision: after.map(|file| file.revision.clone()),
+        before_file_type: before.map(|file| file.file_type.clone()),
+        after_file_type: after.map(|file| file.file_type.clone()),
+    }
 }
 
 pub fn list_pending_changes(input: &ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
@@ -5553,6 +5713,106 @@ mod tests {
             "Fix menu"
         );
         assert!(validate_description(Some("  ")).is_err());
+    }
+
+    #[test]
+    fn depot_state_queries_are_read_only_and_server_scoped() {
+        assert_eq!(
+            depot_state_arguments("//Acme/main/...", Some("42")),
+            ["-ztag", "-Mj", "files", "-e", "//Acme/main/...@42"]
+        );
+        assert_eq!(
+            depot_state_arguments("//Acme/main/...", None),
+            ["-ztag", "-Mj", "files", "-e", "//Acme/main/...#head"]
+        );
+        assert!(validate_depot_state_scope("//Acme/main/...").is_ok());
+        assert!(validate_depot_state_scope("//...").is_ok());
+        assert!(validate_depot_state_scope("//Acme/main/file.txt").is_err());
+        assert!(validate_depot_state_scope("//Acme/*/...").is_err());
+        assert!(validate_depot_state_scope("//Acme/main/...@42").is_err());
+    }
+
+    #[test]
+    fn compares_exact_server_file_identities_into_disjoint_sets() {
+        let before = parse_depot_state(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/changed.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/deleted.txt","rev":"4","type":"binary"}
+{"depotFile":"//Acme/main/type.txt","rev":"2","type":"text"}
+{"depotFile":"//Acme/main/unchanged.txt","rev":"7","type":"utf8"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let after = parse_depot_state(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/added.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/changed.txt","rev":"2","type":"text"}
+{"depotFile":"//Acme/main/type.txt","rev":"3","type":"binary+l"}
+{"depotFile":"//Acme/main/unchanged.txt","rev":"7","type":"utf8"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let comparison = compare_depot_state_maps("//Acme/main/...", "42", None, &before, &after);
+
+        assert_eq!(
+            comparison
+                .added
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/added.txt"]
+        );
+        assert_eq!(comparison.added[0].before_revision, None);
+        assert_eq!(comparison.added[0].after_revision.as_deref(), Some("1"));
+        assert_eq!(
+            comparison
+                .changed
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/changed.txt"]
+        );
+        assert_eq!(
+            comparison
+                .deleted
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/deleted.txt"]
+        );
+        assert_eq!(
+            comparison
+                .type_changed
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/type.txt"]
+        );
+        assert_eq!(
+            comparison.type_changed[0].before_file_type.as_deref(),
+            Some("text")
+        );
+        assert_eq!(
+            comparison.type_changed[0].after_file_type.as_deref(),
+            Some("binary+l")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_server_identity_in_a_state_snapshot() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/a.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/a.txt","rev":"2","type":"text"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            parse_depot_state(&records).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
     }
 
     #[test]

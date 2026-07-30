@@ -16,6 +16,7 @@ Local and Depot sources share row hierarchy, selection, search/filter, inspector
 - the inspector scrolls internally and gives description more prominence than revision/user/client/date metadata;
 - single-file diff/export requires exactly one printable revision, while sync may target selected files and folders in one batch;
 - history is paged without prepending rows and displacing the reader; opening a change shows all affected files;
+- a folder-history changelist can be compared with the current folder state through two complete read-only `p4 files -e` snapshots; sets are keyed only by returned depot identity and report added, changed, deleted, and type-changed files without path inference;
 - exact file, folder-at-change, label, and stream-follow-up downloads enter the same safe-sync flow.
 
 Depot/client/local identity is resolved only through a bounded batch `p4 where` command. Its DTO keeps the caller's order, distinguishes mapped, excluded, and unmapped results, and carries server diagnostics/partial state. Copy and cross-source navigation actions appear only for identities returned by the server; an unmapped or excluded depot path never receives an invented local path.

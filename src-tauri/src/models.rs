@@ -520,6 +520,32 @@ pub struct DepotFile {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DepotStateDifference {
+    pub depot_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_file_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_file_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DepotStateComparison {
+    pub scope: String,
+    pub base_change: String,
+    pub target_change: Option<String>,
+    pub added: Vec<DepotStateDifference>,
+    pub changed: Vec<DepotStateDifference>,
+    pub deleted: Vec<DepotStateDifference>,
+    pub type_changed: Vec<DepotStateDifference>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TrustEntry {
     pub server: String,
     pub fingerprint: String,

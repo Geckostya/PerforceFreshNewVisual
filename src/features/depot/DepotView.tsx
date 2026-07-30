@@ -1,10 +1,10 @@
 import { useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { fileHistoryPage, listSubmittedHistoryPage, normalizeAppError, previewSync } from "../../shared/api";
+import { compareDepotStates, fileHistoryPage, listSubmittedHistoryPage, normalizeAppError, previewSync } from "../../shared/api";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { SelectableSurface } from "../../shared/ItemList";
 import { useLocale } from "../../shared/i18n";
-import type { AppError, ConnectionInput, FileRevision, PendingChange, SyncPreview } from "../../shared/models";
+import type { AppError, ConnectionInput, DepotStateComparison, DepotStateDifference, FileRevision, PendingChange, SyncPreview } from "../../shared/models";
 import { PathActions } from "../../shared/PathActions";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
@@ -18,6 +18,7 @@ type DepotResourceTarget = {
   kind: "file" | "folder";
   path: string;
   syncScope: string;
+  change?: string;
 };
 
 type FullHistoryState = {
@@ -33,6 +34,14 @@ type FullHistoryState = {
   error?: AppError;
 };
 
+type ComparisonState = {
+  path: string;
+  change: string;
+  busy: boolean;
+  result?: DepotStateComparison;
+  error?: AppError;
+};
+
 export function DepotView({ connection, initialScope, sourceControl, onNavigateLocal }: { connection: ConnectionInput; initialScope?: string; sourceControl?: ReactNode; onNavigateLocal?: (scope: string) => void }) {
   const { t } = useLocale();
   const [overviewRefreshKey, setOverviewRefreshKey] = useState(0);
@@ -41,6 +50,7 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
   const [error, setError] = useState<AppError>();
   const depotMenu = useContextMenu<DepotResourceTarget>();
   const [fullHistory, setFullHistory] = useState<FullHistoryState>();
+  const [comparison, setComparison] = useState<ComparisonState>();
   const [syncTarget, setSyncTarget] = useState<string>();
   const [syncPreview, setSyncPreview] = useState<SyncPreview>();
   const [syncPreviewOpen, setSyncPreviewOpen] = useState(false);
@@ -71,6 +81,19 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
   async function openFullHistory(target: DepotResourceTarget) {
     depotMenu.close();
     await loadFullHistoryPage(target, 0, true);
+  }
+
+  async function openStateComparison(target: DepotResourceTarget) {
+    if (target.kind !== "folder" || !target.change) return;
+    depotMenu.close();
+    setFullHistory(undefined);
+    setComparison({ path: target.path, change: target.change, busy: true });
+    try {
+      const result = await compareDepotStates(connection, directoryScope(target.path), target.change);
+      setComparison({ path: target.path, change: target.change, busy: false, result });
+    } catch (reason) {
+      setComparison({ path: target.path, change: target.change, busy: false, error: normalizeAppError(reason) });
+    }
   }
 
   async function loadFullHistoryPage(target: DepotResourceTarget, page: number, reset = false, cursor?: string, pageCursors: (string | undefined)[] = [undefined]) {
@@ -113,7 +136,7 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
     if (target.kind === "file") {
       return { kind: "file", path: target.path, syncScope: target.revision ? revisionScope(target.path, target.revision) : target.path };
     }
-    return { kind: "folder", path: target.path, syncScope: target.change ? changeScope(target.path, target.change) : directoryScope(target.path) };
+    return { kind: "folder", path: target.path, syncScope: target.change ? changeScope(target.path, target.change) : directoryScope(target.path), change: target.change };
   }
 
   const visibleRevisions = fullHistory?.kind === "file" ? fullHistory.revisions : [];
@@ -148,6 +171,7 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
 
     {menu && depotMenu.menu && <ContextMenu x={depotMenu.menu.x} y={depotMenu.menu.y} onSelect={depotMenu.close}>
       <MenuButton disabled={safeSync.phase !== "idle"} onClick={() => void showSyncPreview(menu.syncScope)}>{t("depotDownloadToWorkspace")}</MenuButton>
+      {menu.kind === "folder" && menu.change && <MenuButton onClick={() => void openStateComparison(menu)}>{t("depotCompareWithCurrent")}</MenuButton>}
       <MenuButton onClick={() => void openFullHistory(menu)}>{t("depotViewFullHistory")}</MenuButton>
     </ContextMenu>}
 
@@ -168,7 +192,7 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
           busy={fullHistory.busy}
           emptyText={fullHistory.error ? undefined : t("depotNoHistory")}
           agentId={(change) => `depot-full-history-change:${fullHistory.path}@${change.id}`}
-          onContextMenu={(change, position) => depotMenu.openAt({ kind: "folder", path: fullHistory.path, syncScope: changeScope(fullHistory.path, change.id) }, position)}
+          onContextMenu={(change, position) => depotMenu.openAt({ kind: "folder", path: fullHistory.path, syncScope: changeScope(fullHistory.path, change.id), change: change.id }, position)}
         />}
         <div className="depot-history-pagination" aria-label={t("depotHistoryPagination")}>
           <button data-agent-id="depot-history-previous" className="secondary-button" type="button" onClick={() => goToHistoryPage(fullHistory.page - 1)} disabled={fullHistory.busy || fullHistory.page === 0}>{t("depotHistoryPrevious")}</button>
@@ -178,7 +202,42 @@ export function DepotView({ connection, initialScope, sourceControl, onNavigateL
       </div>
     </Modal>}
 
+    {comparison && <Modal title={t("depotCompareTitle")} busy={comparison.busy} wide onClose={() => setComparison(undefined)}>
+      <div className="dialog-body depot-state-comparison" data-agent-id="depot-state-comparison">
+        <div className="depot-full-history-heading"><div><strong>{comparison.path}</strong><small>CL {comparison.change} → {t("depotCompareCurrentState")}</small></div><PathActions depotPath={comparison.path} connection={connection} onNavigateLocal={(mapping) => mapping.depotPath && onNavigateLocal?.(mapping.depotPath)} /></div>
+        {comparison.error && <ErrorBanner error={comparison.error} />}
+        {comparison.busy ? <CompactEmpty text={t("depotCompareLoading")} /> : comparison.result ? <DepotStateComparisonView comparison={comparison.result} /> : null}
+      </div>
+    </Modal>}
+
     {syncPreviewOpen && <SyncPreviewDialog preview={syncPreview} busy={busy} acknowledged={syncAcknowledged} onAcknowledged={setSyncAcknowledged} onClose={() => { setSyncPreviewOpen(false); setSyncTarget(undefined); }} onConfirm={() => void runSync()} />}
     <SafeSyncConflictDialog sync={safeSync} />
   </View>;
+}
+
+function DepotStateComparisonView({ comparison }: { comparison: DepotStateComparison }) {
+  const { t } = useLocale();
+  const groups: Array<{ key: string; title: string; items: DepotStateDifference[] }> = [
+    { key: "added", title: t("depotCompareAdded"), items: comparison.added },
+    { key: "changed", title: t("depotCompareChanged"), items: comparison.changed },
+    { key: "deleted", title: t("depotCompareDeleted"), items: comparison.deleted },
+    { key: "type-changed", title: t("depotCompareTypeChanged"), items: comparison.typeChanged },
+  ];
+  const total = groups.reduce((count, group) => count + group.items.length, 0);
+
+  if (!total) return <CompactEmpty text={t("depotCompareNoChanges")} />;
+  return <div className="depot-state-comparison-groups">
+    {groups.map((group) => <section className="depot-state-comparison-group" key={group.key} data-agent-id={`depot-state-comparison-${group.key}`}>
+      <h3>{group.title}<span>{group.items.length}</span></h3>
+      {group.items.map((item) => <div className="history-compact-row" key={item.depotPath}>
+        <strong title={item.depotPath}>{item.depotPath}</strong>
+        <small>{formatComparedState(t("depotCompareBefore"), item.beforeRevision, item.beforeFileType)} → {formatComparedState(t("depotCompareAfter"), item.afterRevision, item.afterFileType)}</small>
+      </div>)}
+    </section>)}
+  </div>;
+}
+
+function formatComparedState(label: string, revision?: string, fileType?: string): string {
+  if (!revision) return `${label}: —`;
+  return `${label}: #${revision}${fileType ? ` · ${fileType}` : ""}`;
 }

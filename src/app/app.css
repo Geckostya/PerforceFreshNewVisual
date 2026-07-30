@@ -2368,6 +2368,13 @@
 .depot-full-history > .selection-history,
 .depot-full-history > .changelist-history { min-height: 0; }
 .depot-context-history-row { cursor: context-menu; }
+.depot-state-comparison { min-height: min(560px, 70vh); grid-template-rows: auto minmax(0, 1fr); }
+.depot-state-comparison-groups { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 12px; }
+.depot-state-comparison-group { overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.depot-state-comparison-group > h3 { margin: 0; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); font-size: var(--font-body); line-height: var(--line-body); }
+.depot-state-comparison-group > h3 span { color: var(--text-tertiary); font-size: var(--font-caption); }
+.depot-state-comparison-group > .history-compact-row { border-bottom: 1px solid var(--border); }
+.depot-state-comparison-group > .history-compact-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .depot-history-pagination { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
 .depot-history-pagination > span { color: var(--text-secondary); font-size: var(--font-caption); font-weight: 650; text-align: center; }
 .depot-history-pagination > button:first-child { justify-self: start; }
