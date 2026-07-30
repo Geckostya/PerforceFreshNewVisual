@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{self, OpenOptions},
     hash::{DefaultHasher, Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
@@ -3239,6 +3239,134 @@ pub fn save_shelved_file(
             "Не удалось сохранить содержимое shelf на диск.",
         )
         .with_diagnostics(error.to_string())
+    })
+}
+
+pub fn save_shelved_files(
+    input: &ConnectionInput,
+    source_change: &str,
+    depot_paths: &[String],
+    output_directory: &str,
+) -> Result<ChangeExportResult, AppError> {
+    required_client(input)?;
+    validate_numbered_change(source_change)?;
+    validate_depot_paths(depot_paths)?;
+    if depot_paths.is_empty() {
+        return Err(empty_file_selection());
+    }
+    let destination = validated_new_output_directory(output_directory)?;
+    let selected = depot_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let shelved = list_shelved_files(input, source_change)?;
+    let available = shelved
+        .iter()
+        .map(|file| file.depot_path.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(path) = selected
+        .iter()
+        .find(|path| !available.contains(path.as_str()))
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Выбранный файл больше не находится в shelf.",
+        )
+        .with_diagnostics(path));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::new();
+    let mut skipped_files = 0_u32;
+    for file in shelved
+        .into_iter()
+        .filter(|file| selected.contains(&file.depot_path))
+    {
+        if file.action.eq_ignore_ascii_case("delete") || file.action.eq_ignore_ascii_case("purge") {
+            skipped_files = skipped_files.saturating_add(1);
+            continue;
+        }
+        let relative = submitted_export_relative_path(&file.depot_path)?;
+        if !seen.insert(relative.to_string_lossy().to_lowercase()) {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Несколько shelved-файлов совпадают в файловой системе назначения.",
+            ));
+        }
+        files.push((file.depot_path, destination.join(relative)));
+    }
+    if files.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "В выбранных shelved-файлах нет содержимого для экспорта.",
+        ));
+    }
+
+    fs::create_dir_all(&destination).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не удалось создать каталог для экспорта shelf.",
+        )
+        .with_diagnostics(error.to_string())
+    })?;
+
+    let mut saved_files = 0_u32;
+    for (depot_path, output_path) in &files {
+        let result = (|| {
+            let parent = output_path.parent().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Некорректный путь файла экспорта shelf.",
+                )
+            })?;
+            fs::create_dir_all(parent).map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось создать подкаталог для экспорта shelf.",
+                )
+                .with_diagnostics(error.to_string())
+            })?;
+            let (path, mut command) = configured_command(input)?;
+            command.args([
+                "print",
+                "-q",
+                &shelved_revision_spec(depot_path, source_change),
+            ]);
+            let bytes = run_binary(&path, &mut command)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(output_path)
+                .map_err(|error| {
+                    AppError::new(
+                        ErrorKind::CommandFailed,
+                        "Файл назначения уже существует или недоступен.",
+                    )
+                    .with_diagnostics(error.to_string())
+                })?;
+            output.write_all(&bytes).map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось сохранить содержимое shelf на диск.",
+                )
+                .with_diagnostics(error.to_string())
+            })
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(output_path);
+            if saved_files == 0 {
+                let _ = fs::remove_dir_all(&destination);
+                return Err(error);
+            }
+            return Err(AppError::new(
+                ErrorKind::PartialResult,
+                format!("Сохранено файлов: {saved_files}. Экспорт shelf завершён частично."),
+            )
+            .with_hint("Уже сохранённые файлы оставлены в каталоге назначения.")
+            .with_diagnostics(format!("{}\n{:?}", output_path.display(), error)));
+        }
+        saved_files += 1;
+    }
+    Ok(ChangeExportResult {
+        saved_files,
+        skipped_files,
     })
 }
 

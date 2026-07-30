@@ -95,6 +95,7 @@ pub fn run() {
             commands::save_revision,
             commands::save_change_files,
             commands::save_shelved_file,
+            commands::save_shelved_files,
             commands::diff_revisions,
             commands::diff_revision_workspace,
             commands::annotate_file,

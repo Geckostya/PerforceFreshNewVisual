@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarClock, GitBranch, Monitor, Search, UserRound, UsersRound } from "lucide-react";
-import { listPendingChanges, listShelvedChanges, listShelvedFiles, normalizeAppError, previewUnshelve, reshelveFiles, saveShelvedFile, unshelveFiles } from "../../shared/api";
+import { listPendingChanges, listShelvedChanges, listShelvedFiles, normalizeAppError, previewUnshelve, reshelveFiles, saveShelvedFile, saveShelvedFiles, unshelveFiles } from "../../shared/api";
 import { ChangelistDescription, markdownToPlainText } from "../../shared/ChangelistDescription";
 import { useLocale } from "../../shared/i18n";
 import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
-import type { AppError, ConnectionInput, PendingChange, ShelvedFile, UnshelvePreview } from "../../shared/models";
+import type { AppError, ConnectionInput, P4Info, PendingChange, ShelvedFile, UnshelvePreview } from "../../shared/models";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { useMultiSelection } from "../../shared/useMultiSelection";
 import { ActionDialog, BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
 import { canApplyUnshelve, filterShelves, groupShelvesByUser, nextShelfSelection, shelfTimestamp, splitUnshelvePaths, type ShelfAgeFilter } from "./shelves";
 
-type ShelfDialog = { kind: "export"; outputPath: string } | { kind: "reshelve" };
+type ShelfDialog = { kind: "export"; outputPath: string; batch: boolean } | { kind: "reshelve" };
 
 const INITIAL_SHELF_LIMIT = 120;
 
@@ -31,7 +31,7 @@ function formatShelfTime(value: string | undefined, language: string) {
     : new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short" }).format(new Date(timestamp * 1000));
 }
 
-export function ShelvesView({ connection }: { connection: ConnectionInput }) {
+export function ShelvesView({ connection, info }: { connection: ConnectionInput; info: P4Info }) {
   const { t, language } = useLocale();
   const [shelves, setShelves] = useState<PendingChange[]>([]);
   const [targets, setTargets] = useState<PendingChange[]>([]);
@@ -62,6 +62,9 @@ export function ShelvesView({ connection }: { connection: ConnectionInput }) {
   const shelfClients = useMemo(() => uniqueShelfValues(shelves, "client"), [shelves]);
   const shelfStreams = useMemo(() => uniqueShelfValues(shelves, "stream"), [shelves]);
   const visibleShelfIds = visibleShelves.map((shelf) => shelf.id).join(",");
+  const reshelveCapability = info.capabilities?.commands.reshelve;
+  const reshelveUnsupported = reshelveCapability?.state === "unsupported";
+  const topologyUnavailable = !info.capabilities || info.capabilities.facts.topology?.state === "unknown";
 
   function clearSelectedShelf() {
     shelfRequest.current += 1;
@@ -153,8 +156,13 @@ export function ShelvesView({ connection }: { connection: ConnectionInput }) {
     setError(undefined);
     try {
       if (dialog.kind === "export") {
-        await saveShelvedFile(connection, selectedShelf, selectedPaths[0], dialog.outputPath.trim());
-        setNotice(t("shelfExportSucceeded"));
+        if (dialog.batch) {
+          const result = await saveShelvedFiles(connection, selectedShelf, selectedPaths, dialog.outputPath.trim());
+          setNotice(t("shelfExportBatchSucceeded").replace("{saved}", String(result.savedFiles)).replace("{skipped}", String(result.skippedFiles)));
+        } else {
+          await saveShelvedFile(connection, selectedShelf, selectedPaths[0], dialog.outputPath.trim());
+          setNotice(t("shelfExportSucceeded"));
+        }
       } else {
         await reshelveFiles(connection, selectedShelf, targetChange, selectedPaths);
         setNotice(t("reshelveSucceeded"));
@@ -219,13 +227,15 @@ export function ShelvesView({ connection }: { connection: ConnectionInput }) {
           </dl>
           <label className="field"><span className="field-label">{t("targetChangelist")}</span><select data-agent-id="shelves-target-change" value={targetChange} onChange={(event) => { setTargetChange(event.target.value); setPreview(undefined); setOverwritePaths([]); }}><option value="default">{t("defaultChangelist")}</option>{targets.map((target) => <option value={target.id} key={target.id}>{`CL ${target.id} · ${markdownToPlainText(target.description) || t("noDescription")}`}</option>)}</select></label>
           <div className="resource-detail-list shelf-files-list">{files.map((file) => <SelectableRow selected={selectedPaths.includes(file.depotPath)} className="resource-entry preview-select" key={file.depotPath} onClick={(event) => selectFile(file.depotPath, event)}><ItemRowCopy primary={file.depotPath} secondary={<>{file.action}{file.revision ? ` · #${file.revision}` : ""}</>} /></SelectableRow>)}</div>
-          <div className="inspector-actions"><button className="secondary-button" type="button" onClick={() => { fileSelection.replace(files.map((file) => file.depotPath)); setPreview(undefined); setOverwritePaths([]); }} disabled={busy}>{t("selectAllFiles")}</button><button className="primary-button" type="button" onClick={() => void previewSelected()} disabled={busy || !selectedPaths.length}>{t("previewUnshelve")}</button><button className="secondary-button" type="button" onClick={() => setDialog({ kind: "export", outputPath: "" })} disabled={busy || selectedPaths.length !== 1}>{t("exportShelfFile")}</button>{targetChange !== "default" && <button className="secondary-button" type="button" onClick={() => setDialog({ kind: "reshelve" })} disabled={busy || !selectedPaths.length}>{t("reshelveToTarget")}</button>}</div>
+          <div className="inspector-actions"><button className="secondary-button" type="button" onClick={() => { fileSelection.replace(files.map((file) => file.depotPath)); setPreview(undefined); setOverwritePaths([]); }} disabled={busy}>{t("selectAllFiles")}</button><button className="primary-button" type="button" onClick={() => void previewSelected()} disabled={busy || !selectedPaths.length}>{t("previewUnshelve")}</button><button className="secondary-button" type="button" onClick={() => setDialog({ kind: "export", outputPath: "", batch: selectedPaths.length > 1 })} disabled={busy || !selectedPaths.length}>{selectedPaths.length > 1 ? t("exportShelfFiles") : t("exportShelfFile")}</button>{targetChange !== "default" && <button className="secondary-button" type="button" title={reshelveUnsupported ? t("shelfReshelveUnsupported") : undefined} onClick={() => setDialog({ kind: "reshelve" })} disabled={busy || !selectedPaths.length || reshelveUnsupported}>{t("reshelveToTarget")}</button>}</div>
+          {topologyUnavailable && <p className="field-hint" role="status">{t("shelfTopologyUnavailable")}</p>}
+          {!topologyUnavailable && reshelveCapability?.state === "unknown" && <p className="field-hint" role="status">{t("shelfReshelveUnknownTopology")}</p>}
           {preview && <div className="inline-preview"><strong>{t("unshelvePreview")}</strong><p>{preview.conflicts.length ? `${preview.conflicts.length} ${t("unshelveConflicts")}` : t("unshelveNoConflicts")}</p>{preview.conflicts.map((conflict) => <label className="check-field" key={conflict.depotPath}><input type="checkbox" checked={overwritePaths.includes(conflict.depotPath)} onChange={(event) => setOverwritePaths((current) => event.target.checked ? [...current, conflict.depotPath] : current.filter((path) => path !== conflict.depotPath))} /><span><strong>{conflict.depotPath}</strong><small>{conflict.localPath ? `${conflict.localPath} · ${t("unshelveConflictDefaultSkip")}` : t("unshelveConflictDefaultSkip")}</small></span></label>)}<button className="primary-button" type="button" onClick={() => void applyUnshelve()} disabled={busy || !canApplyUnshelve(preview, selectedPaths, overwritePaths)}>{t("applyUnshelve")}</button></div>}
         </div>}
       </aside>
     </div>
 
-    {dialog?.kind === "export" && <ActionDialog title={t("exportShelfFile")} confirmLabel={t("exportShelfFile")} busy={busy} confirmDisabled={!dialog.outputPath.trim()} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{selectedPaths[0]}</p><label className="field"><span className="field-label">{t("shelfExportPathPrompt")}</span><input autoFocus value={dialog.outputPath} onChange={(event) => setDialog({ ...dialog, outputPath: event.target.value })} /></label></ActionDialog>}
+    {dialog?.kind === "export" && <ActionDialog title={dialog.batch ? t("exportShelfFiles") : t("exportShelfFile")} confirmLabel={dialog.batch ? t("exportShelfFiles") : t("exportShelfFile")} busy={busy} confirmDisabled={!dialog.outputPath.trim()} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{dialog.batch ? `${selectedPaths.length} ${t("shelvedFilesCount")}` : selectedPaths[0]}</p><label className="field"><span className="field-label">{dialog.batch ? t("shelfExportDirectoryPrompt") : t("shelfExportPathPrompt")}</span><input autoFocus value={dialog.outputPath} onChange={(event) => setDialog({ ...dialog, outputPath: event.target.value })} /></label></ActionDialog>}
     {dialog?.kind === "reshelve" && <ActionDialog title={t("reshelveToTarget")} confirmLabel={t("reshelveToTarget")} busy={busy} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{t("reshelveConfirm")}</p></ActionDialog>}
   </View>;
 }
