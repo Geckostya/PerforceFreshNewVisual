@@ -2640,11 +2640,17 @@ pub fn save_resolve_result(
         ));
     }
     let temporary = recovery_temporary_path(&target)?;
-    fs::write(&temporary, result.as_bytes()).map_err(|error| {
-        local_file_error("Не удалось записать временный resolve result.", error)
-    })?;
-    replace_recovery_file(&temporary, &target)?;
-    resolve_files(input, &[depot_path.to_owned()], &ResolveMode::EditResult)
+    let saved = (|| {
+        fs::write(&temporary, result.as_bytes()).map_err(|error| {
+            local_file_error("Не удалось записать временный resolve result.", error)
+        })?;
+        replace_recovery_file(&temporary, &target)?;
+        resolve_files(input, &[depot_path.to_owned()], &ResolveMode::EditResult)
+    })();
+    if temporary.exists() {
+        remove_recovery_temporary(&temporary);
+    }
+    saved
 }
 
 fn resolve_mode_flag(mode: &ResolveMode) -> &'static str {
