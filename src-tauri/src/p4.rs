@@ -2859,12 +2859,12 @@ fn mapped_reconcile_scope(batch: &WorkspaceMappingBatch) -> Result<String, AppEr
         )
         .with_hint("Choose a narrower mapped folder and retry."));
     }
-    let mapping = batch.mappings.first().ok_or_else(|| {
-        AppError::new(
+    let [mapping] = batch.mappings.as_slice() else {
+        return Err(AppError::new(
             ErrorKind::InvalidOutput,
-            "The server returned no mapping result for the selected folder.",
-        )
-    })?;
+            "The server returned an unexpected number of mapping results for the selected folder.",
+        ));
+    };
     if !matches!(mapping.state, WorkspaceMappingState::Mapped) {
         return Err(AppError::new(
             ErrorKind::Conflict,
@@ -6471,6 +6471,23 @@ mod tests {
             ErrorKind::PartialResult
         );
 
+        let empty = WorkspaceMappingBatch {
+            mappings: Vec::new(),
+            partial: false,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(
+            mapped_reconcile_scope(&empty).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
+
+        let mut ambiguous = batch.clone();
+        ambiguous.mappings.push(ambiguous.mappings[0].clone());
+        assert_eq!(
+            mapped_reconcile_scope(&ambiguous).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
+
         let mut excluded = batch;
         excluded.mappings[0].state = WorkspaceMappingState::Excluded;
         assert_eq!(
@@ -6657,6 +6674,14 @@ mod tests {
         .unwrap();
         assert_eq!(adds.candidates.len(), 1);
         assert_eq!(adds.candidates[0].action, "add");
+
+        let failed = parse_workspace_scan_output(
+            r#"{"code":"error","severity":"3","generic":"0","data":"workspace unavailable"}"#,
+        )
+        .unwrap();
+        assert!(failed.failed);
+        assert_eq!(failed.diagnostics, ["workspace unavailable"]);
+        assert!(parse_workspace_scan_output("not json").is_err());
     }
 
     #[test]

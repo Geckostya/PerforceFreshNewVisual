@@ -4093,6 +4093,10 @@ mod tests {
             r"C:\work\Source\a.txt",
             &[r"C:\work\Generated".to_owned()]
         ));
+        assert!(!workspace_scan_path_is_excluded(
+            r"C:\work\GeneratedFiles\a.txt",
+            &[r"C:\work\Generated".to_owned()]
+        ));
     }
 
     #[test]
@@ -4223,6 +4227,47 @@ mod tests {
                 super::WorkspaceScanSchedulerMessage::Cancel(_)
             )
         ));
+    }
+
+    #[test]
+    fn workspace_scan_active_child_yields_to_new_foreground_work() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "commands::tests::workspace_scan_sleeping_child_fixture",
+            "--ignored",
+            "--exact",
+        ]);
+        let operations = OperationRegistry::default();
+        let foreground_operations = operations.clone();
+        let foreground = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            let (cancel, _) = mpsc::channel();
+            assert!(foreground_operations.insert_if_kind_idle(
+                "op-foreground".to_owned(),
+                OperationHandle {
+                    kind: "sync",
+                    workspace: "server/alex/main".to_owned(),
+                    started_at_ms: 42,
+                    cancel,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                }
+            ));
+        });
+        let (_sender, receiver) = mpsc::channel();
+
+        assert!(matches!(
+            super::run_workspace_scan_child(
+                command,
+                crate::p4::parse_workspace_scan_output,
+                &receiver,
+                &operations,
+                "server/alex/main",
+                Instant::now(),
+            ),
+            super::WorkspaceScanChildOutcome::Foreground
+        ));
+        foreground.join().unwrap();
+        operations.remove("op-foreground");
     }
 
     #[test]
