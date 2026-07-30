@@ -62,6 +62,21 @@ describe("operation snapshots", () => {
     expect(state[0]).toMatchObject({ status: "unknown", processed: 2, retryable: false });
   });
 
+  it("never exposes retry for an unknown submit", () => {
+    const state = reduceOperationSnapshots([], {
+      ...event("op-submit", "unknown"),
+      operationKind: "submit",
+      retryable: true,
+      submitOutcome: {
+        terminal: "unknown",
+        recoveryActions: ["refresh Changes and rerun preflight"],
+        steps: [{ step: "submit", status: "failed" }],
+      },
+    });
+
+    expect(state[0]).toMatchObject({ operationKind: "submit", status: "unknown", retryable: false });
+  });
+
   it("keeps cancel requested active until a terminal event arrives", () => {
     let state = reduceOperationSnapshots([], event("op-1", "started"));
     state = reduceOperationSnapshots(state, event("op-1", "cancel_requested"));

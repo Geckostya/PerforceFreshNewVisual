@@ -2650,11 +2650,8 @@ pub fn resolve_files(
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "resolve", resolve_mode_flag(mode)]);
     command.args(paths);
-    run_json(&path, &mut command)?;
-    Ok(match preview_resolve(input, paths) {
-        Ok(pending) => resolve_read_back(paths, &pending),
-        Err(error) => resolve_unknown_read_back(paths, &error.message),
-    })
+    let apply_error = run_json(&path, &mut command).err();
+    Ok(resolve_read_back(input, paths, apply_error.as_ref()))
 }
 
 pub fn preview_resolve(
@@ -2666,27 +2663,53 @@ pub fn preview_resolve(
     if paths.is_empty() {
         return Err(empty_file_selection());
     }
+    let mappings = map_workspace_paths(input, paths)?;
+    if mappings.partial
+        || mappings
+            .mappings
+            .iter()
+            .any(|mapping| mapping.state != WorkspaceMappingState::Mapped)
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The server did not return a complete workspace mapping for resolve preview.",
+        ));
+    }
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "resolve", "-n"]);
+    command.args(["-ztag", "-Mj", "resolve", "-n", "-N", "-o"]);
     command.args(paths);
     let records = run_json_allowing_empty_match(&path, &mut command)?;
-    Ok(parse_resolve_preview(&records))
+    parse_resolve_preview(&records, &mappings.mappings)
 }
 
-fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewItem> {
+fn parse_resolve_preview(
+    records: &[Map<String, Value>],
+    mappings: &[WorkspaceMapping],
+) -> Result<Vec<ResolvePreviewItem>, AppError> {
     records
         .iter()
         .filter(|record| !is_message_record(record))
-        .filter_map(|record| {
+        .map(|record| {
+            let mapping = resolve_record_mapping(record, mappings).ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "The server returned a resolve record without a matching workspace identity.",
+                )
+            })?;
             let conflict_kind = classify_resolve_conflict(record);
             let allowed_actions = resolve_allowed_actions(&conflict_kind);
-            Some(ResolvePreviewItem {
-                depot_path: field(record, &["depotFile", "clientFile", "path"])?,
+            Ok(ResolvePreviewItem {
+                depot_path: mapping.depot_path.clone().ok_or_else(|| {
+                    AppError::new(
+                        ErrorKind::InvalidOutput,
+                        "The server omitted the depot identity for a mapped resolve target.",
+                    )
+                })?,
                 action: field(record, &["how", "action", "status"])
                     .unwrap_or_else(|| "resolve".to_owned()),
-                detail: field(record, &["fromFile", "baseFile", "type"]),
-                client_path: field(record, &["clientFile"]),
-                local_path: field(record, &["path"]),
+                detail: field(record, &["fromFile", "baseFile", "resolveType", "type"]),
+                client_path: mapping.client_path.clone(),
+                local_path: mapping.local_path.clone(),
                 conflict_kind,
                 base_identifier: revision_identifier(
                     record,
@@ -2698,13 +2721,40 @@ fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewIt
                     "fromFile",
                     &["endFromRev", "fromRev", "sourceRev"],
                 ),
-                workspace_identifier: field(record, &["path", "clientFile", "depotFile"])
-                    .unwrap_or_else(|| "workspace".to_owned()),
+                workspace_identifier: mapping
+                    .local_path
+                    .clone()
+                    .or_else(|| mapping.client_path.clone())
+                    .unwrap_or_else(|| mapping.query.clone()),
                 allowed_actions,
                 read_back: ResolveReadBackState::Pending,
             })
         })
         .collect()
+}
+
+fn resolve_record_mapping<'a>(
+    record: &Map<String, Value>,
+    mappings: &'a [WorkspaceMapping],
+) -> Option<&'a WorkspaceMapping> {
+    let target_identities = ["depotFile", "clientFile", "path", "toFile"]
+        .into_iter()
+        .filter_map(|name| field(record, &[name]))
+        .collect::<Vec<_>>();
+    mappings.iter().find(|mapping| {
+        [
+            mapping.depot_path.as_deref(),
+            mapping.client_path.as_deref(),
+            mapping.local_path.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|identity| {
+            target_identities
+                .iter()
+                .any(|target| identity.eq_ignore_ascii_case(target))
+        })
+    })
 }
 
 fn revision_identifier(
@@ -2722,6 +2772,31 @@ fn revision_identifier(
 }
 
 fn classify_resolve_conflict(record: &Map<String, Value>) -> ResolveConflictKind {
+    let resolve_type = field(record, &["resolveType"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let content_type = field(record, &["contentResolveType"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if resolve_type.contains("stream") {
+        return ResolveConflictKind::StreamSpec;
+    }
+    if resolve_type.contains("move") || resolve_type.contains("filename") {
+        return ResolveConflictKind::MoveName;
+    }
+    if resolve_type.contains("filetype")
+        || resolve_type.contains("attribute")
+        || resolve_type.contains("charset")
+    {
+        return ResolveConflictKind::FiletypeAttribute;
+    }
+    if resolve_type == "content" {
+        return if content_type.contains("text") {
+            ResolveConflictKind::Text
+        } else {
+            ResolveConflictKind::Binary
+        };
+    }
     let description = ["resolveType", "type", "how", "action", "status"]
         .into_iter()
         .filter_map(|name| field(record, &[name]))
@@ -2760,39 +2835,67 @@ fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
     }
 }
 
-fn resolve_read_back(paths: &[String], pending: &[ResolvePreviewItem]) -> ResolveApplyResult {
+fn resolve_read_back(
+    input: &ConnectionInput,
+    paths: &[String],
+    apply_error: Option<&AppError>,
+) -> ResolveApplyResult {
     ResolveApplyResult {
         items: paths
             .iter()
-            .map(|path| {
-                let unresolved = pending.iter().any(|item| item.depot_path == *path);
-                ResolveApplyItem {
-                    depot_path: path.clone(),
-                    state: if unresolved {
-                        ResolveReadBackState::Pending
-                    } else {
-                        ResolveReadBackState::Resolved
-                    },
-                    reason: unresolved
-                        .then(|| "Server still reports a pending resolve.".to_owned()),
-                }
-            })
+            .map(|path| resolve_path_read_back(input, path, apply_error))
             .collect(),
     }
 }
 
-fn resolve_unknown_read_back(paths: &[String], reason: &str) -> ResolveApplyResult {
-    ResolveApplyResult {
-        items: paths
-            .iter()
-            .map(|path| ResolveApplyItem {
-                depot_path: path.clone(),
+fn resolve_path_read_back(
+    input: &ConnectionInput,
+    depot_path: &str,
+    apply_error: Option<&AppError>,
+) -> ResolveApplyItem {
+    match preview_resolve(input, &[depot_path.to_owned()]) {
+        Ok(pending) if !pending.is_empty() => ResolveApplyItem {
+            depot_path: depot_path.to_owned(),
+            state: ResolveReadBackState::Pending,
+            reason: Some(match apply_error {
+                Some(error) => format!(
+                    "Server still reports a pending resolve after apply failed: {}",
+                    error.message
+                ),
+                None => "Server still reports a pending resolve.".to_owned(),
+            }),
+        },
+        Ok(_) => match resolved_path_is_reported(input, depot_path) {
+            Ok(true) => ResolveApplyItem {
+                depot_path: depot_path.to_owned(),
+                state: ResolveReadBackState::Resolved,
+                reason: None,
+            },
+            Ok(false) => ResolveApplyItem {
+                depot_path: depot_path.to_owned(),
                 state: ResolveReadBackState::Unknown,
-                reason: Some(format!(
-                    "Resolve was applied, but read-back failed: {reason}"
-                )),
-            })
-            .collect(),
+                reason: Some(
+                    "The server reports neither a pending nor a completed resolve.".to_owned(),
+                ),
+            },
+            Err(error) => resolve_unknown_item(depot_path, &error.message),
+        },
+        Err(error) => resolve_unknown_item(depot_path, &error.message),
+    }
+}
+
+fn resolved_path_is_reported(input: &ConnectionInput, depot_path: &str) -> Result<bool, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "resolved", "-o", depot_path]);
+    let records = run_json_allowing_empty_match(&path, &mut command)?;
+    Ok(records.iter().any(|record| !is_message_record(record)))
+}
+
+fn resolve_unknown_item(depot_path: &str, reason: &str) -> ResolveApplyItem {
+    ResolveApplyItem {
+        depot_path: depot_path.to_owned(),
+        state: ResolveReadBackState::Unknown,
+        reason: Some(format!("Resolve read-back failed: {reason}")),
     }
 }
 
@@ -3832,7 +3935,7 @@ fn submit_outcome(
             .iter()
             .map(|step| SubmitStepResult {
                 step: (*step).to_owned(),
-                status: "completed".to_owned(),
+                status: "succeeded".to_owned(),
                 detail: None,
             })
             .collect(),
@@ -5621,6 +5724,17 @@ mod tests {
         }
     }
 
+    fn test_resolve_mapping(depot_path: &str, local_path: &str) -> WorkspaceMapping {
+        WorkspaceMapping {
+            query: depot_path.to_owned(),
+            state: WorkspaceMappingState::Mapped,
+            depot_path: Some(depot_path.to_owned()),
+            client_path: Some(depot_path.replacen("//Acme/main", "//client", 1)),
+            local_path: Some(local_path.to_owned()),
+            diagnostics: Vec::new(),
+        }
+    }
+
     #[test]
     fn derives_child_stream_path_in_the_parent_namespace() {
         assert_eq!(
@@ -6770,13 +6884,19 @@ mod tests {
 
     #[test]
     fn parses_resolve_preview_candidates_and_details() {
+        let mappings = [
+            test_resolve_mapping("//Acme/main/a.txt", "C:/ws/a.txt"),
+            test_resolve_mapping("//Acme/main/b.txt", "C:/ws/b.txt"),
+        ];
         let items = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.txt","how":"vs","fromFile":"//Acme/main/a.txt#8"}
 {"depotFile":"//Acme/main/b.txt","action":"copy"}"#,
             )
             .unwrap(),
-        );
+            &mappings,
+        )
+        .unwrap();
         assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
         assert_eq!(items[0].action, "vs");
         assert_eq!(items[0].detail.as_deref(), Some("//Acme/main/a.txt#8"));
@@ -6789,12 +6909,15 @@ mod tests {
 
     #[test]
     fn resolve_editor_token_rejects_changed_preview_or_workspace_content() {
+        let mappings = [test_resolve_mapping("//Acme/main/a.txt", "C:/ws/a.txt")];
         let mut preview = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.txt","path":"C:/ws/a.txt","type":"text","baseFile":"//Acme/main/a.txt#7","fromFile":"//Acme/main/a.txt#8"}"#,
             )
             .unwrap(),
+            &mappings,
         )
+        .unwrap()
         .remove(0);
         let original = resolve_editor_token(&preview, b"workspace");
 
@@ -6809,6 +6932,12 @@ mod tests {
 
     #[test]
     fn classifies_specialized_resolves_without_exposing_text_editor() {
+        let mappings = [
+            test_resolve_mapping("//Acme/main/a.bin", "C:/ws/a.bin"),
+            test_resolve_mapping("//Acme/main/name.txt", "C:/ws/name.txt"),
+            test_resolve_mapping("//Acme/main/type.txt", "C:/ws/type.txt"),
+            test_resolve_mapping("//Acme/main/stream", "C:/ws/stream"),
+        ];
         let items = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.bin","type":"binary"}
@@ -6817,7 +6946,9 @@ mod tests {
 {"depotFile":"//Acme/main/stream","resolveType":"stream spec"}"#,
             )
             .unwrap(),
-        );
+            &mappings,
+        )
+        .unwrap();
         assert_eq!(items[0].conflict_kind, ResolveConflictKind::Binary);
         assert_eq!(items[1].conflict_kind, ResolveConflictKind::MoveName);
         assert_eq!(
@@ -6833,22 +6964,47 @@ mod tests {
     }
 
     #[test]
-    fn post_mutation_readback_distinguishes_pending_resolved_and_unknown() {
-        let paths = vec![
-            "//Acme/main/a.txt".to_owned(),
-            "//Acme/main/b.txt".to_owned(),
-        ];
-        let pending = parse_resolve_preview(
-            &parse_json_lines(r#"{"depotFile":"//Acme/main/a.txt","type":"text"}"#).unwrap(),
+    fn maps_real_file_resolve_shape_to_server_depot_identity() {
+        let mappings = [test_resolve_mapping(
+            "//Acme/main/a.txt",
+            "C:\\workspace\\a.txt",
+        )];
+        let items = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"baseFile":"//Acme/main/a.txt","baseRev":"7","clientFile":"C:\\workspace\\a.txt","contentResolveType":"3waytext","endFromRev":"8","fromFile":"//Acme/main/a.txt","resolveFlag":"c","resolveType":"content","startFromRev":"7"}"#,
+            )
+            .unwrap(),
+            &mappings,
+        )
+        .unwrap();
+
+        assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
+        assert_eq!(items[0].local_path.as_deref(), Some("C:\\workspace\\a.txt"));
+        assert_eq!(
+            items[0].base_identifier.as_deref(),
+            Some("//Acme/main/a.txt#7")
         );
-        let result = resolve_read_back(&paths, &pending);
-        assert_eq!(result.items[0].state, ResolveReadBackState::Pending);
-        assert_eq!(result.items[1].state, ResolveReadBackState::Resolved);
-        assert!(
-            resolve_unknown_read_back(&paths, "offline")
-                .items
-                .iter()
-                .all(|item| item.state == ResolveReadBackState::Unknown)
+        assert_eq!(
+            items[0].source_identifier.as_deref(),
+            Some("//Acme/main/a.txt#8")
+        );
+        assert_eq!(items[0].conflict_kind, ResolveConflictKind::Text);
+    }
+
+    #[test]
+    fn rejects_resolve_records_without_server_mapping_identity() {
+        let error = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"clientFile":"C:\\other\\a.txt","contentResolveType":"3waytext","resolveType":"content"}"#,
+            )
+            .unwrap(),
+            &[test_resolve_mapping("//Acme/main/a.txt", "C:\\workspace\\a.txt")],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidOutput);
+        assert_eq!(
+            resolve_unknown_item("//Acme/main/a.txt", "offline").state,
+            ResolveReadBackState::Unknown
         );
     }
 
