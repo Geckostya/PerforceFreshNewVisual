@@ -133,6 +133,9 @@ export interface WorkspaceSpec {
   submitOptions?: string;
   lineEnd?: string;
   altRoots: string[];
+  changeView: string[];
+  workspaceType: string;
+  serverId?: string;
   mappings: string[];
 }
 

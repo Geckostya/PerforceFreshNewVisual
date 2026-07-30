@@ -324,7 +324,7 @@ pub async fn inspect_workspace(input: ConnectionInput) -> Result<WorkspaceSpec, 
 }
 
 #[tauri::command]
-pub async fn update_workspace(input: WorkspaceUpdateInput) -> Result<(), AppError> {
+pub async fn update_workspace(input: WorkspaceUpdateInput) -> Result<WorkspaceSpec, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::update_workspace(
             &input.connection,

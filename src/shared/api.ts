@@ -153,8 +153,8 @@ export async function inspectWorkspace(input: ConnectionInput): Promise<Workspac
   return invoke<WorkspaceSpec>("inspect_workspace", { input });
 }
 
-export async function updateWorkspace(connection: ConnectionInput, update: WorkspaceUpdateInput): Promise<void> {
-  return invoke("update_workspace", { input: { connection, ...update } });
+export async function updateWorkspace(connection: ConnectionInput, update: WorkspaceUpdateInput): Promise<WorkspaceSpec> {
+  return invoke<WorkspaceSpec>("update_workspace", { input: { connection, ...update } });
 }
 
 export async function createWorkspace(connection: ConnectionInput, create: WorkspaceCreateInput): Promise<void> {

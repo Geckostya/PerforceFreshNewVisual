@@ -310,6 +310,9 @@ pub struct WorkspaceSpec {
     pub submit_options: Option<String>,
     pub line_end: Option<String>,
     pub alt_roots: Vec<String>,
+    pub change_view: Vec<String>,
+    pub workspace_type: String,
+    pub server_id: Option<String>,
     pub mappings: Vec<String>,
 }
 

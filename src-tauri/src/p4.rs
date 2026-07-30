@@ -183,6 +183,13 @@ pub fn list_workspaces(input: &ConnectionInput) -> Result<Vec<WorkspaceSummary>,
 
 pub fn inspect_workspace(input: &ConnectionInput) -> Result<WorkspaceSpec, AppError> {
     let client = required_client(input)?;
+    inspect_workspace_named(input, client)
+}
+
+fn inspect_workspace_named(
+    input: &ConnectionInput,
+    client: &str,
+) -> Result<WorkspaceSpec, AppError> {
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "client", "-o", client]);
     parse_workspace_spec(&run_json(&path, &mut command)?, client)
@@ -194,7 +201,7 @@ pub fn update_workspace(
     root: &str,
     stream: Option<&str>,
     description: &str,
-) -> Result<(), AppError> {
+) -> Result<WorkspaceSpec, AppError> {
     required_client(input)?;
     let name = validate_form_value(name.trim(), "workspace")?;
     let root = validate_form_value(root.trim(), "workspace root")?;
@@ -222,7 +229,14 @@ pub fn update_workspace(
     if !applied.status.success() {
         return Err(command_error(&applied));
     }
-    Ok(())
+    inspect_workspace_named(input, name).map_err(|error| {
+        AppError::new(
+            ErrorKind::PartialResult,
+            "Workspace specification was saved, but the server read-back failed.",
+        )
+        .with_hint("Refresh Workspace spec before making another change.")
+        .with_diagnostics(error.message)
+    })
 }
 
 pub fn create_workspace(
@@ -4732,12 +4746,32 @@ fn parse_workspace_spec(
         host: optional_field(record, &["Host", "host"]),
         stream: optional_field(record, &["Stream", "stream"]),
         description: optional_field(record, &["Description", "description"]).unwrap_or_default(),
-        options: indexed_fields(record, "Options"),
+        options: workspace_options(record),
         submit_options: optional_field(record, &["SubmitOptions", "submitOptions"]),
         line_end: optional_field(record, &["LineEnd", "lineEnd"]),
         alt_roots: indexed_fields(record, "AltRoots"),
+        change_view: indexed_fields(record, "ChangeView"),
+        workspace_type: optional_field(record, &["Type", "type"])
+            .unwrap_or_else(|| "writeable".to_owned()),
+        server_id: optional_field(record, &["ServerID", "serverID", "serverId"]),
         mappings: indexed_fields(record, "View"),
     })
+}
+
+fn workspace_options(record: &Map<String, Value>) -> Vec<String> {
+    let indexed = indexed_fields(record, "Options");
+    let values = if indexed.is_empty() {
+        optional_field(record, &["Options", "options"])
+            .into_iter()
+            .collect()
+    } else {
+        indexed
+    };
+    values
+        .iter()
+        .flat_map(|value| value.split_whitespace())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn parse_depot_directories(
@@ -5573,7 +5607,7 @@ mod tests {
     fn parses_client_spec_with_ordered_mappings_and_roots() {
         let spec = parse_workspace_spec(
             &parse_json_lines(
-                r#"{"Client":"alex-main","Owner":"alex","Root":"C:\\work","Host":"build01","Stream":"//Acme/main","Description":"Main workspace","Options":"noallwrite","SubmitOptions":"submitunchanged","LineEnd":"local","AltRoots0":"D:\\work","View1":"//Acme/main/... //alex-main/main/...","View0":"//Acme/lib/... //alex-main/lib/..."}"#,
+                r#"{"Client":"alex-main","Owner":"alex","Root":"C:\\work","Host":"build01","Stream":"//Acme/main","Description":"Main workspace","Options":"noallwrite noclobber nocompress unlocked nomodtime normdir","SubmitOptions":"submitunchanged","LineEnd":"local","AltRoots1":"E:\\work","AltRoots0":"D:\\work","ChangeView1":"//Acme/lib/...@200","ChangeView0":"//Acme/main/...@100","Type":"partitioned","ServerID":"edge-1","View1":"//Acme/main/... //alex-main/main/...","View0":"//Acme/lib/... //alex-main/lib/..."}"#,
             )
             .unwrap(),
             "alex-main",
@@ -5581,7 +5615,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(spec.name, "alex-main");
-        assert_eq!(spec.alt_roots, vec!["D:\\work"]);
+        assert_eq!(spec.alt_roots, vec!["D:\\work", "E:\\work"]);
+        assert_eq!(
+            spec.options,
+            vec![
+                "noallwrite",
+                "noclobber",
+                "nocompress",
+                "unlocked",
+                "nomodtime",
+                "normdir",
+            ]
+        );
+        assert_eq!(
+            spec.change_view,
+            vec!["//Acme/main/...@100", "//Acme/lib/...@200"]
+        );
+        assert_eq!(spec.workspace_type, "partitioned");
+        assert_eq!(spec.server_id.as_deref(), Some("edge-1"));
         assert_eq!(
             spec.mappings,
             vec![
@@ -5589,6 +5640,23 @@ mod tests {
                 "//Acme/main/... //alex-main/main/...",
             ]
         );
+    }
+
+    #[test]
+    fn client_spec_defaults_an_omitted_workspace_type_to_writeable() {
+        let spec = parse_workspace_spec(
+            &parse_json_lines(
+                r#"{"Client":"alex-main","Root":"C:\\work","Options":"noallwrite noclobber"}"#,
+            )
+            .unwrap(),
+            "alex-main",
+        )
+        .unwrap();
+
+        assert_eq!(spec.workspace_type, "writeable");
+        assert_eq!(spec.options, vec!["noallwrite", "noclobber"]);
+        assert!(spec.change_view.is_empty());
+        assert!(spec.server_id.is_none());
     }
 
     #[test]
@@ -5667,13 +5735,18 @@ mod tests {
 
     #[test]
     fn updates_workspace_fields_without_dropping_unknown_form_sections() {
-        let original = "Client:\talex-main\n\nRoot:\tC:\\work\n\nDescription:\n\tOld workspace\n\nStream:\t//Acme/main\n\nView:\n\t//Acme/main/... //alex-main/...\n\nCustomField:\tkeep\n";
+        let original = "Client:\talex-main\n\nRoot:\tC:\\work\n\nAltRoots:\n\tD:\\work\n\nDescription:\n\tOld workspace\n\nStream:\t//Acme/main\n\nOptions:\tnoallwrite noclobber\n\nChangeView:\n\t//Acme/main/...@100\n\nType:\tpartitioned\n\nServerID:\tedge-1\n\nView:\n\t//Acme/main/... //alex-main/...\n\nCustomField:\tkeep\n";
         let updated =
             replace_workspace_fields(original, "D:\\new-work", "//Acme/dev", "New workspace")
                 .unwrap();
         assert!(updated.contains("Root:\tD:\\new-work"));
         assert!(updated.contains("Stream:\t//Acme/dev"));
         assert!(updated.contains("Description:\n\tNew workspace"));
+        assert!(updated.contains("AltRoots:\n\tD:\\work"));
+        assert!(updated.contains("Options:\tnoallwrite noclobber"));
+        assert!(updated.contains("ChangeView:\n\t//Acme/main/...@100"));
+        assert!(updated.contains("Type:\tpartitioned"));
+        assert!(updated.contains("ServerID:\tedge-1"));
         assert!(updated.contains("View:\n\t//Acme/main/... //alex-main/..."));
         assert!(updated.contains("CustomField:\tkeep"));
     }
