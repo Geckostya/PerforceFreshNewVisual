@@ -26,9 +26,10 @@ use crate::models::{
     SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
     SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
     UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
-    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceScanCandidate,
-    WorkspaceScanPartialReason, WorkspaceScanRoot, WorkspaceSearchResult, WorkspaceSpec,
-    WorkspaceSummary,
+    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingEdit, WorkspaceMappingEditor,
+    WorkspaceMappingEditorEntry, WorkspaceMappingKind, WorkspaceMappingPreview,
+    WorkspaceMappingState, WorkspaceScanCandidate, WorkspaceScanPartialReason, WorkspaceScanRoot,
+    WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
 };
 
 mod auth;
@@ -53,6 +54,7 @@ use trust::parse_trust_entries;
 use validation::*;
 
 const MAX_RECORDS: &str = "200";
+const MAX_WORKSPACE_MAPPINGS: usize = 1_000;
 const MAX_WORKSPACE_SEARCH_RESULTS: usize = 200;
 pub const MAX_WORKSPACE_SCAN_ROOTS: usize = 32;
 pub const MAX_WORKSPACE_SCAN_CANDIDATES: usize = 2_000;
@@ -219,6 +221,290 @@ pub fn update_workspace(
     })
 }
 
+pub fn inspect_workspace_mapping_editor(
+    input: &ConnectionInput,
+    workspace: &str,
+) -> Result<WorkspaceMappingEditor, AppError> {
+    let workspace = current_workspace_name(input, workspace)?;
+    let form = read_workspace_form(input, workspace)?;
+    ensure_classic_workspace_form(&form)?;
+    let mappings = workspace_form_multiline_values(&form, "View")?;
+    Ok(WorkspaceMappingEditor {
+        workspace: workspace.to_owned(),
+        entries: mappings
+            .into_iter()
+            .enumerate()
+            .map(|(index, mapping)| WorkspaceMappingEditorEntry {
+                index,
+                preserved_only: !is_supported_workspace_mapping(&mapping),
+                mapping,
+            })
+            .collect(),
+    })
+}
+
+pub fn preview_workspace_mappings(
+    input: &ConnectionInput,
+    workspace: &str,
+    entries: &[WorkspaceMappingEdit],
+) -> Result<WorkspaceMappingPreview, AppError> {
+    let workspace = current_workspace_name(input, workspace)?;
+    let form = read_workspace_form(input, workspace)?;
+    build_workspace_mapping_preview(workspace, &form, entries).map(|(preview, _)| preview)
+}
+
+pub fn apply_workspace_mappings(
+    input: &ConnectionInput,
+    workspace: &str,
+    entries: &[WorkspaceMappingEdit],
+    preview_token: &str,
+) -> Result<WorkspaceSpec, AppError> {
+    let workspace = current_workspace_name(input, workspace)?;
+    let form = read_workspace_form(input, workspace)?;
+    let (preview, updated_form) = build_workspace_mapping_preview(workspace, &form, entries)?;
+    if preview_token.trim().is_empty() || preview.preview_token != preview_token {
+        return Err(
+            AppError::new(ErrorKind::Stale, "The workspace mapping preview is stale.")
+                .with_hint("Review the current server form again before saving mappings."),
+        );
+    }
+    if !preview.changed {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The workspace mapping has not changed.",
+        ));
+    }
+    let (path, mut command) = configured_command(input)?;
+    command.args(["client", "-i"]);
+    let output = run_output_with_stdin(&path, &mut command, updated_form.as_bytes())?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    log_stderr_warning(&output, "p4 client -i returned a mapping warning.");
+    inspect_workspace_named(input, workspace).map_err(|error| {
+        AppError::new(
+            ErrorKind::PartialResult,
+            "Workspace mappings were saved, but the server read-back failed.",
+        )
+        .with_hint("Refresh Workspace spec before making another change.")
+        .with_diagnostics(error.message)
+    })
+}
+
+fn current_workspace_name<'a>(
+    input: &'a ConnectionInput,
+    workspace: &'a str,
+) -> Result<&'a str, AppError> {
+    let selected = required_client(input)?;
+    let workspace = validate_form_value(workspace.trim(), "workspace")?;
+    if selected != workspace {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Mappings can be edited only for the current workspace.",
+        ));
+    }
+    Ok(workspace)
+}
+
+fn read_workspace_form(input: &ConnectionInput, workspace: &str) -> Result<String, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["client", "-o", workspace]);
+    let output = command
+        .output()
+        .map_err(|error| launch_error(&path, error))?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    log_stderr_warning(&output, "p4 client -o returned a form warning.");
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn build_workspace_mapping_preview(
+    workspace: &str,
+    form: &str,
+    entries: &[WorkspaceMappingEdit],
+) -> Result<(WorkspaceMappingPreview, String), AppError> {
+    ensure_classic_workspace_form(form)?;
+    if entries.len() > MAX_WORKSPACE_MAPPINGS {
+        return Err(AppError::new(
+            ErrorKind::ServerLimit,
+            "The workspace mapping exceeds the supported editor limit.",
+        ));
+    }
+    let before = workspace_form_multiline_values(form, "View")?;
+    let unknown_indices = before
+        .iter()
+        .enumerate()
+        .filter_map(|(index, mapping)| (!is_supported_workspace_mapping(mapping)).then_some(index))
+        .collect::<Vec<_>>();
+    let mut seen_existing = BTreeSet::new();
+    let mut seen_unknown = Vec::new();
+    let mut after = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match entry {
+            WorkspaceMappingEdit::Existing { index } => {
+                if !seen_existing.insert(*index) {
+                    return Err(AppError::new(
+                        ErrorKind::CommandFailed,
+                        "A server mapping entry was referenced more than once.",
+                    ));
+                }
+                let mapping = before.get(*index).ok_or_else(|| {
+                    AppError::new(ErrorKind::Stale, "A server mapping entry no longer exists.")
+                })?;
+                if !is_supported_workspace_mapping(mapping) {
+                    seen_unknown.push(*index);
+                }
+                after.push(mapping.clone());
+            }
+            WorkspaceMappingEdit::New {
+                kind,
+                depot_path,
+                client_path,
+            } => after.push(format_workspace_mapping(
+                workspace,
+                *kind,
+                depot_path,
+                client_path,
+            )?),
+        }
+    }
+    if seen_unknown != unknown_indices {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Unrecognized server mapping entries must be preserved in their original order.",
+        )
+        .with_hint("Refresh the editor and keep every protected server entry."));
+    }
+    let mut lines = form.lines().map(str::to_owned).collect::<Vec<_>>();
+    replace_multiline_form_field(&mut lines, "View", &after.join("\n"))?;
+    let updated_form = format!("{}\n", lines.join("\n"));
+    let preview_token = workspace_mapping_preview_token(workspace, form, &after);
+    Ok((
+        WorkspaceMappingPreview {
+            workspace: workspace.to_owned(),
+            changed: before != after,
+            preserved_unknown_entries: unknown_indices.len(),
+            before,
+            after,
+            preview_token,
+        },
+        updated_form,
+    ))
+}
+
+fn ensure_classic_workspace_form(form: &str) -> Result<(), AppError> {
+    let stream = workspace_form_single_value(form, "Stream").unwrap_or_default();
+    if stream.trim().is_empty() {
+        return Ok(());
+    }
+    Err(AppError::new(
+        ErrorKind::UnsupportedCapability,
+        "The server generates View mappings for this stream workspace.",
+    )
+    .with_hint("Edit the stream Paths instead of the client View."))
+}
+
+fn workspace_form_single_value(form: &str, field: &str) -> Option<String> {
+    let prefix = format!("{field}:");
+    form.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(|value| value.trim().to_owned())
+    })
+}
+
+fn workspace_form_multiline_values(form: &str, field: &str) -> Result<Vec<String>, AppError> {
+    let prefix = format!("{field}:");
+    let lines = form.lines().collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with(&prefix))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                format!("The client form has no {field} field."),
+            )
+        })?;
+    Ok(lines[start + 1..]
+        .iter()
+        .take_while(|line| line.starts_with([' ', '\t']) || line.is_empty())
+        .map(|line| line.trim_start_matches([' ', '\t']).to_owned())
+        .filter(|line| !line.is_empty())
+        .collect())
+}
+
+fn is_supported_workspace_mapping(mapping: &str) -> bool {
+    let mapping = mapping.trim_start();
+    let mapping = mapping
+        .strip_prefix(['-', '+', '&'])
+        .unwrap_or(mapping)
+        .trim_start();
+    mapping.starts_with("//") || mapping.starts_with("\"//")
+}
+
+fn format_workspace_mapping(
+    workspace: &str,
+    kind: WorkspaceMappingKind,
+    depot_path: &str,
+    client_path: &str,
+) -> Result<String, AppError> {
+    let depot_path = validate_workspace_mapping_path(depot_path, "depot path")?;
+    let client_path = validate_workspace_mapping_path(client_path, "client path")?;
+    let client_name = client_path
+        .strip_prefix("//")
+        .and_then(|path| path.split('/').next())
+        .unwrap_or_default();
+    if client_name != workspace {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The client mapping path must target the current workspace.",
+        ));
+    }
+    let marker = match kind {
+        WorkspaceMappingKind::Include => "",
+        WorkspaceMappingKind::Exclude => "-",
+        WorkspaceMappingKind::Overlay => "+",
+        WorkspaceMappingKind::Ditto => "&",
+    };
+    Ok(format!(
+        "{marker}{} {}",
+        quote_workspace_mapping_path(depot_path),
+        quote_workspace_mapping_path(client_path)
+    ))
+}
+
+fn validate_workspace_mapping_path<'a>(value: &'a str, label: &str) -> Result<&'a str, AppError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 4_096
+        || !value.starts_with("//")
+        || value.contains(['\r', '\n', '\0', '"', '@', '#'])
+        || value.chars().any(char::is_control)
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            format!("The workspace mapping {label} is invalid."),
+        ));
+    }
+    Ok(value)
+}
+
+fn quote_workspace_mapping_path(path: &str) -> String {
+    if path.chars().any(char::is_whitespace) {
+        format!("\"{path}\"")
+    } else {
+        path.to_owned()
+    }
+}
+
+fn workspace_mapping_preview_token(workspace: &str, form: &str, mappings: &[String]) -> String {
+    let mut hasher = DefaultHasher::new();
+    workspace.hash(&mut hasher);
+    form.hash(&mut hasher);
+    mappings.hash(&mut hasher);
+    format!("workspace-mapping-v1-{:016x}", hasher.finish())
+}
+
 pub fn create_workspace(
     input: &ConnectionInput,
     name: &str,
@@ -246,17 +532,9 @@ fn save_workspace_form(
         ));
     }
     let description = validate_description(Some(description))?;
-    let (path, mut output_command) = configured_command(input)?;
-    output_command.args(["client", "-o", &name]);
-    let output = output_command
-        .output()
-        .map_err(|error| launch_error(&path, error))?;
-    if !output.status.success() {
-        return Err(command_error(&output));
-    }
-    let original = String::from_utf8_lossy(&output.stdout);
+    let original = read_workspace_form(input, &name)?;
     let updated = replace_workspace_fields(&original, root, stream, description)?;
-    let (_, mut input_command) = configured_command(input)?;
+    let (path, mut input_command) = configured_command(input)?;
     input_command.args(["client", "-i"]);
     let applied = run_output_with_stdin(&path, &mut input_command, updated.as_bytes())?;
     if !applied.status.success() {
@@ -6259,6 +6537,102 @@ mod tests {
         assert!(updated.contains("ServerID:\tedge-1"));
         assert!(updated.contains("View:\n\t//Acme/main/... //alex-main/..."));
         assert!(updated.contains("CustomField:\tkeep"));
+    }
+
+    #[test]
+    fn workspace_mapping_preview_preserves_form_and_unknown_view_entries() {
+        let original = "Client:\talex-main\n\nRoot:\tC:\\work\n\nStream:\t\n\nView:\n\t//Acme/main/... //alex-main/main/...\n\t## server-owned comment\n\tcustom-extension keep-verbatim\n\nCustomField:\tkeep\n";
+        let entries = vec![
+            WorkspaceMappingEdit::Existing { index: 0 },
+            WorkspaceMappingEdit::Existing { index: 1 },
+            WorkspaceMappingEdit::New {
+                kind: WorkspaceMappingKind::Exclude,
+                depot_path: "//Acme/main/generated/...".to_owned(),
+                client_path: "//alex-main/main/generated/...".to_owned(),
+            },
+            WorkspaceMappingEdit::Existing { index: 2 },
+        ];
+        let (preview, updated) =
+            build_workspace_mapping_preview("alex-main", original, &entries).unwrap();
+
+        assert!(preview.changed);
+        assert_eq!(preview.preserved_unknown_entries, 2);
+        assert_eq!(
+            preview.after[2],
+            "-//Acme/main/generated/... //alex-main/main/generated/..."
+        );
+        assert!(updated.contains("## server-owned comment"));
+        assert!(updated.contains("custom-extension keep-verbatim"));
+        assert!(updated.contains("CustomField:\tkeep"));
+
+        let changed_form = original.replace("Root:\tC:\\work", "Root:\tD:\\work");
+        let (changed_preview, _) =
+            build_workspace_mapping_preview("alex-main", &changed_form, &entries).unwrap();
+        assert_ne!(changed_preview.preview_token, preview.preview_token);
+    }
+
+    #[test]
+    fn workspace_mapping_preview_rejects_dropped_or_reordered_unknown_entries() {
+        let original = "Client:\talex-main\n\nStream:\t\n\nView:\n\t//Acme/main/... //alex-main/...\n\t## first protected entry\n\tcustom protected entry\n";
+        let dropped = [WorkspaceMappingEdit::Existing { index: 0 }];
+        assert_eq!(
+            build_workspace_mapping_preview("alex-main", original, &dropped)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Conflict
+        );
+
+        let reordered = [
+            WorkspaceMappingEdit::Existing { index: 0 },
+            WorkspaceMappingEdit::Existing { index: 2 },
+            WorkspaceMappingEdit::Existing { index: 1 },
+        ];
+        assert_eq!(
+            build_workspace_mapping_preview("alex-main", original, &reordered)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn workspace_mapping_preview_rejects_stream_forms_and_unsafe_new_paths() {
+        let stream_form = "Client:\talex-main\n\nStream:\t//Acme/main\n\nView:\n\t//Acme/main/... //alex-main/...\n";
+        assert_eq!(
+            build_workspace_mapping_preview("alex-main", stream_form, &[])
+                .unwrap_err()
+                .kind,
+            ErrorKind::UnsupportedCapability
+        );
+
+        assert!(
+            format_workspace_mapping(
+                "alex-main",
+                WorkspaceMappingKind::Overlay,
+                "//Acme/shared/...",
+                "//other-client/shared/...",
+            )
+            .is_err()
+        );
+        assert!(
+            format_workspace_mapping(
+                "alex-main",
+                WorkspaceMappingKind::Ditto,
+                "//Acme/shared/...@42",
+                "//alex-main/shared/...",
+            )
+            .is_err()
+        );
+        assert_eq!(
+            format_workspace_mapping(
+                "alex-main",
+                WorkspaceMappingKind::Include,
+                "//Acme/Current Rel/...",
+                "//alex-main/Current Rel/...",
+            )
+            .unwrap(),
+            "\"//Acme/Current Rel/...\" \"//alex-main/Current Rel/...\""
+        );
     }
 
     #[test]

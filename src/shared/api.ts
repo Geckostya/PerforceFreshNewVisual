@@ -28,6 +28,10 @@ import type {
   UnshelvePreview,
   WorkspaceSummary,
   WorkspaceSpec,
+  WorkspaceMappingApplyInput,
+  WorkspaceMappingEditor,
+  WorkspaceMappingPreview,
+  WorkspaceMappingPreviewInput,
   WorkspaceCreateInput,
   WorkspaceUpdateInput,
   DepotDirectory,
@@ -157,6 +161,18 @@ export async function inspectWorkspace(input: ConnectionInput): Promise<Workspac
 
 export async function updateWorkspace(connection: ConnectionInput, update: WorkspaceUpdateInput): Promise<WorkspaceSpec> {
   return invoke<WorkspaceSpec>("update_workspace", { input: { connection, ...update } });
+}
+
+export async function inspectWorkspaceMappingEditor(connection: ConnectionInput, workspace: string): Promise<WorkspaceMappingEditor> {
+  return invoke<WorkspaceMappingEditor>("inspect_workspace_mapping_editor", { input: connection, workspace });
+}
+
+export async function previewWorkspaceMappings(connection: ConnectionInput, input: WorkspaceMappingPreviewInput): Promise<WorkspaceMappingPreview> {
+  return invoke<WorkspaceMappingPreview>("preview_workspace_mappings", { input: { connection, ...input } });
+}
+
+export async function applyWorkspaceMappings(connection: ConnectionInput, input: WorkspaceMappingApplyInput): Promise<WorkspaceSpec> {
+  return invoke<WorkspaceSpec>("apply_workspace_mappings", { input: { connection, ...input } });
 }
 
 export async function createWorkspace(connection: ConnectionInput, create: WorkspaceCreateInput): Promise<void> {

@@ -16,11 +16,12 @@ use crate::{
         SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
         SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
         TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
-        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
-        WorkspaceScanCandidate, WorkspaceScanCoverage, WorkspaceScanCoverageState,
-        WorkspaceScanIdentity, WorkspaceScanPartialReason, WorkspaceScanRoot,
-        WorkspaceScanSnapshot, WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
-        WorkspaceUpdateInput,
+        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingApplyInput,
+        WorkspaceMappingBatch, WorkspaceMappingEditor, WorkspaceMappingPreview,
+        WorkspaceMappingPreviewInput, WorkspaceScanCandidate, WorkspaceScanCoverage,
+        WorkspaceScanCoverageState, WorkspaceScanIdentity, WorkspaceScanPartialReason,
+        WorkspaceScanRoot, WorkspaceScanSnapshot, WorkspaceSearchResult, WorkspaceSpec,
+        WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -1099,6 +1100,45 @@ pub async fn update_workspace(input: WorkspaceUpdateInput) -> Result<WorkspaceSp
             &input.root,
             input.stream.as_deref(),
             &input.description,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_workspace_mapping_editor(
+    input: ConnectionInput,
+    workspace: String,
+) -> Result<WorkspaceMappingEditor, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::inspect_workspace_mapping_editor(&input, &workspace)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_workspace_mappings(
+    input: WorkspaceMappingPreviewInput,
+) -> Result<WorkspaceMappingPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_workspace_mappings(&input.connection, &input.workspace, &input.entries)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn apply_workspace_mappings(
+    input: WorkspaceMappingApplyInput,
+) -> Result<WorkspaceSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::apply_workspace_mappings(
+            &input.connection,
+            &input.workspace,
+            &input.entries,
+            &input.preview_token,
         )
     })
     .await

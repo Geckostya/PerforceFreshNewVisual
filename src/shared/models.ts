@@ -139,6 +139,23 @@ export interface WorkspaceSpec {
   mappings: string[];
 }
 
+export type WorkspaceMappingKind = "include" | "exclude" | "overlay" | "ditto";
+export interface WorkspaceMappingEditorEntry { index: number; mapping: string; preservedOnly: boolean; }
+export interface WorkspaceMappingEditor { workspace: string; entries: WorkspaceMappingEditorEntry[]; }
+export type WorkspaceMappingEdit =
+  | { source: "existing"; index: number }
+  | { source: "new"; kind: WorkspaceMappingKind; depotPath: string; clientPath: string };
+export interface WorkspaceMappingPreviewInput { workspace: string; entries: WorkspaceMappingEdit[]; }
+export interface WorkspaceMappingApplyInput extends WorkspaceMappingPreviewInput { previewToken: string; }
+export interface WorkspaceMappingPreview {
+  workspace: string;
+  before: string[];
+  after: string[];
+  preservedUnknownEntries: number;
+  changed: boolean;
+  previewToken: string;
+}
+
 export interface StreamSummary {
   path: string;
   name: string;

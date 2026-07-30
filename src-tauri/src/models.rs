@@ -316,6 +316,75 @@ pub struct WorkspaceSpec {
     pub mappings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMappingKind {
+    Include,
+    Exclude,
+    Overlay,
+    Ditto,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingEditorEntry {
+    pub index: usize,
+    pub mapping: String,
+    pub preserved_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingEditor {
+    pub workspace: String,
+    pub entries: Vec<WorkspaceMappingEditorEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "source",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum WorkspaceMappingEdit {
+    Existing {
+        index: usize,
+    },
+    New {
+        kind: WorkspaceMappingKind,
+        depot_path: String,
+        client_path: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingPreviewInput {
+    pub connection: ConnectionInput,
+    pub workspace: String,
+    pub entries: Vec<WorkspaceMappingEdit>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingApplyInput {
+    pub connection: ConnectionInput,
+    pub workspace: String,
+    pub entries: Vec<WorkspaceMappingEdit>,
+    pub preview_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingPreview {
+    pub workspace: String,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    pub preserved_unknown_entries: usize,
+    pub changed: bool,
+    pub preview_token: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamSummary {
