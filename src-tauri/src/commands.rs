@@ -3277,6 +3277,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn integration_readback_ignores_opened_files_from_another_changelist() {
+        let expected = BTreeSet::from(["//acme/dev/a.txt".to_owned()]);
+        let opened = OpenedFile {
+            change: "456".to_owned(),
+            ..opened_file("//Acme/dev/a.txt")
+        };
+
+        assert!(
+            confirmed_integration_paths(&expected, &BTreeSet::new(), &expected, &[opened], "123",)
+                .is_empty()
+        );
+    }
+
     fn opened_file(path: &str) -> OpenedFile {
         OpenedFile {
             depot_path: path.to_owned(),

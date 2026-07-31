@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { CapabilitySnapshot, StreamSummary } from "../../shared/models";
-import { buildStreamForest, childStreamPath, flattenStreamForest, isValidStreamName, layoutStreamGraph, mergeSelectedStreamViewPaths, streamDescendantPaths, streamIntegrationAllowed, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
+import type { CapabilitySnapshot, OperationEvent, StreamSummary } from "../../shared/models";
+import { buildStreamForest, childStreamPath, flattenStreamForest, isValidStreamName, layoutStreamGraph, mergeSelectedStreamViewPaths, streamDescendantPaths, streamIntegrationAllowed, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamIntegrationHandoff, streamSubtreePaths, updateArchivedStreamPaths, updateStreamVisibility } from "./streams";
 
 const stream = (path: string, parent?: string): StreamSummary => ({
   path,
@@ -112,5 +112,48 @@ describe("stream hierarchy", () => {
     expect(streamIntegrationCandidatesForSelection(candidates, "//Acme/main")).toEqual([candidates[0]]);
     expect(streamIntegrationCandidatesForSelection(candidates, "//Acme/dev")).toEqual(candidates);
     expect(streamIntegrationCandidatesForSelection(candidates, "//Acme/other")).toEqual([]);
+  });
+
+  it("offers terminal handoffs only for server-confirmed integration results", () => {
+    const operation = {
+      kind: "completed",
+      readBack: { status: "succeeded", affectedState: ["opened_files"] },
+      itemResults: [
+        { itemId: "1", path: "//Acme/dev/a.txt", status: "succeeded", compensation: "not_required" },
+        { itemId: "2", path: "//Acme/dev/a.txt", status: "succeeded", compensation: "not_required" },
+        { itemId: "3", path: "//Acme/dev/b.txt", status: "failed", compensation: "not_required" },
+      ],
+    } as OperationEvent;
+
+    expect(streamIntegrationHandoff(operation)).toEqual({
+      succeededPaths: ["//Acme/dev/a.txt"],
+      canResolve: true,
+      canReview: true,
+      canOpenSubmit: true,
+    });
+    expect(streamIntegrationHandoff({ ...operation, kind: "unknown", readBack: { status: "unknown", affectedState: [] } })).toEqual({
+      succeededPaths: ["//Acme/dev/a.txt"],
+      canResolve: false,
+      canReview: false,
+      canOpenSubmit: false,
+    });
+  });
+
+  it("keeps partial integration available for resolve and review but not submit", () => {
+    const operation = {
+      kind: "partial",
+      readBack: { status: "succeeded", affectedState: ["opened_files"] },
+      itemResults: [
+        { itemId: "1", path: "//Acme/dev/a.txt", status: "succeeded", compensation: "not_required" },
+        { itemId: "2", path: "//Acme/dev/b.txt", status: "skipped", compensation: "not_required" },
+      ],
+    } as OperationEvent;
+
+    expect(streamIntegrationHandoff(operation)).toEqual({
+      succeededPaths: ["//Acme/dev/a.txt"],
+      canResolve: true,
+      canReview: true,
+      canOpenSubmit: false,
+    });
   });
 });

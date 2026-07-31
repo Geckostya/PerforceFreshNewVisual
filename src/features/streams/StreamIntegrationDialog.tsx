@@ -4,7 +4,7 @@ import { useLocale } from "../../shared/i18n";
 import type { AppError, ConnectionInput, OperationEvent, PendingChange, StreamIntegrationInput, StreamIntegrationPreview } from "../../shared/models";
 import { isOperationTerminal, startObservedOperation } from "../../shared/operations";
 import { CompactEmpty, Modal } from "../../shared/View";
-import type { StreamIntegrationCandidate } from "./streams";
+import { streamIntegrationHandoff, type StreamIntegrationCandidate } from "./streams";
 
 interface Props {
   connection: ConnectionInput;
@@ -30,7 +30,11 @@ export function StreamIntegrationDialog({ connection, candidates, initialSource,
   const [error, setError] = useState<AppError>();
   const candidate = candidates[candidateIndex];
   const operationActive = operation ? !isOperationTerminal(operation.kind) : false;
-  const succeededPaths = operation?.itemResults?.filter((item) => item.status === "succeeded" && item.path).map((item) => item.path!) || [];
+  const handoff = streamIntegrationHandoff(operation);
+  const itemCounts = operation?.itemResults?.reduce((counts, item) => {
+    counts[item.status] += 1;
+    return counts;
+  }, { succeeded: 0, failed: 0, skipped: 0 }) || { succeeded: 0, failed: 0, skipped: 0 };
 
   useEffect(() => {
     let active = true;
@@ -133,12 +137,22 @@ export function StreamIntegrationDialog({ connection, candidates, initialSource,
         {(preview.partial || preview.truncated || preview.warnings.length > 0) && <div className="notice-banner" role="status">{preview.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
         {preview.items.length === 0 ? <CompactEmpty text={t("streamIntegrationEmpty")} /> : <div className="file-selection-summary">{preview.items.slice(0, 200).map((item) => <span key={`${item.targetPath}-${item.action}`}><strong>{item.action}</strong> {item.sourcePath} → {item.targetPath}{item.sourceStartRevision || item.sourceEndRevision ? ` (${item.sourceStartRevision || "?"}..${item.sourceEndRevision || "?"})` : ""}</span>)}</div>}
       </section>}
-      {operation && <div className={`notice-banner${operation.kind === "failed" || operation.kind === "unknown" || operation.kind === "partial" ? " warning" : ""}`}><strong>{t(`operationStatus.${operation.kind}`)}</strong><span>{operation.message}</span><span>{operation.processed} / {operation.totalFiles ?? preview?.items.length ?? 0}</span></div>}
+      {operation && <div className={`notice-banner${operation.kind === "failed" || operation.kind === "unknown" || operation.kind === "partial" ? " warning" : ""}`}>
+        <strong>{t(`operationStatus.${operation.kind}`)}</strong>
+        {operation.message && <span>{operation.message}</span>}
+        <span>{operation.processed} / {operation.totalFiles ?? preview?.items.length ?? 0}</span>
+        {operation.itemResults && operation.itemResults.length > 0 && <span>{t("operationSucceeded")}: {itemCounts.succeeded} · {t("operationFailedItems")}: {itemCounts.failed} · {t("operationSkipped")}: {itemCounts.skipped}</span>}
+        {operation.readBack && <span>{t("operationReadBack")}: {operation.readBack.status}{operation.readBack.message ? ` · ${operation.readBack.message}` : ""}</span>}
+      </div>}
     </div>
     <div className="dialog-actions">
       <button className="secondary-button" type="button" disabled={busy || operationActive} onClick={onClose}>{t("close")}</button>
       {operationActive && <button className="secondary-button" type="button" disabled={cancelling} onClick={() => void cancel()}>{cancelling ? t("operationCancelling") : t("cancelOperation")}</button>}
-      {!operationActive && succeededPaths.length > 0 && operationTargetChange && <><button type="button" onClick={() => onResolve(operationTargetChange, succeededPaths)}>{t("streamIntegrationResolve")}</button><button type="button" onClick={() => onReview(operationTargetChange, false)}>{t("streamIntegrationReview")}</button><button className="primary-button" type="button" onClick={() => onReview(operationTargetChange, true)}>{t("streamIntegrationSubmit")}</button></>}
+      {!operationActive && operationTargetChange && <>
+        {handoff.canResolve && <button type="button" onClick={() => onResolve(operationTargetChange, handoff.succeededPaths)}>{t("streamIntegrationResolve")}</button>}
+        {handoff.canReview && <button type="button" onClick={() => onReview(operationTargetChange, false)}>{t("streamIntegrationReview")}</button>}
+        {handoff.canOpenSubmit && <button className="primary-button" type="button" onClick={() => onReview(operationTargetChange, true)}>{t("streamIntegrationSubmit")}</button>}
+      </>}
       {!operation && !preview && <button className="primary-button" type="button" disabled={busy || !candidate} onClick={() => void runPreview()}>{t("preview")}</button>}
       {!operation && preview && <><button type="button" disabled={busy} onClick={() => void runPreview()}>{t("refreshPreview")}</button><button className="primary-button" type="button" disabled={busy || preview.partial || preview.truncated || preview.items.length === 0} onClick={() => void apply()}>{t("streamIntegrationApply")}</button></>}
     </div>
