@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Minimal permissions for the main P4FNV window","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open",{"identifier":"opener:allow-open-url","allow":[{"url":"https://*"},{"url":"http://*"}]}]}}
+{"default":{"identifier":"default","description":"Minimal permissions for the main P4FNV window","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-set-size","dialog:allow-open",{"identifier":"opener:allow-open-url","allow":[{"url":"https://*"},{"url":"http://*"}]}]}}

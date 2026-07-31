@@ -2507,6 +2507,21 @@
   .depot-overview-workbench { grid-template-columns: minmax(300px, .85fr) minmax(380px, 1.15fr); }
 }
 
+@media (max-width: 920px) {
+  .workspace-workbench {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(280px, 1fr) minmax(280px, 1fr);
+    overflow: auto;
+  }
+
+  .workspace-workbench .resource-list,
+  .workspace-workbench .resource-inspector {
+    min-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tree-item-disclosure svg { transition: none; }
 }

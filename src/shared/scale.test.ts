@@ -19,4 +19,10 @@ describe("100/125/200% scale layout evidence", () => {
     expect(css).toContain(".view-heading { grid-template-columns: minmax(0, 1fr); align-items: stretch; }");
     expect(css).toContain(".resource-workbench.three-pane,\n  .streams-workbench,\n  .depot-overview-workbench { grid-template-columns: minmax(0, 1fr); overflow: auto; }");
   });
+
+  it("stacks Files panes before the minimum desktop width can squeeze their content", () => {
+    expect(css).toContain("@media (max-width: 920px)");
+    expect(css).toContain(".workspace-workbench {\n    grid-template-columns: minmax(0, 1fr);\n    grid-template-rows: minmax(280px, 1fr) minmax(280px, 1fr);");
+    expect(css).toContain(".workspace-workbench .resource-list,\n  .workspace-workbench .resource-inspector");
+  });
 });
