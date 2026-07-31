@@ -655,6 +655,7 @@ export interface FileDiff {
   text: string;
   truncated: boolean;
   binary: boolean;
+  invalidEncoding: boolean;
 }
 
 export interface AnnotationLine { change: string; user?: string; date?: string; text: string; }

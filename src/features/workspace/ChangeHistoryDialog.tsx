@@ -111,7 +111,7 @@ export function ChangeHistoryDialog({ connection, change, onClose }: { connectio
             onKeyDown={(event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openMenu(event, file); }}
           ><ItemRowCopy primary={file.depotPath.split("/").at(-1) || file.depotPath} secondary={file.depotPath} /><ItemRowCopy primary={file.action || "—"} secondary={<>{file.revision ? `#${file.revision}` : "—"}{file.fileType ? ` · ${file.fileType}` : ""}</>} /></SelectableRow>)}
         </div>
-        {diff && <div className="history-diff"><h2>{diffTitle}</h2><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}
+        {diff && <div className="history-diff"><h2>{diffTitle}</h2><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} binary={diff.binary} invalidEncoding={diff.invalidEncoding} /></div>}
         {saveTarget && <div className="inline-preview"><p>{saveTarget === "all" ? t("saveChangeFilesBody") : `${saveTarget.depotPath}#${saveTarget.revision}`}</p><label className="field"><span className="field-label">{saveTarget === "all" ? t("saveChangeDirectoryPrompt") : t("saveRevisionPathPrompt")}</span><input autoFocus value={outputPath} onChange={(event) => setOutputPath(event.target.value)} /></label></div>}
       </>}
     </div>

@@ -696,7 +696,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
                   <button className="secondary-button" type="button" disabled={diffLoading} onClick={() => void showDiff("shelved", currentShelved.depotPath, true)}>{t("compareLocalShelf")}</button>
                 )}
               </div>
-              <label className="field diff-mode-field"><span className="field-label">{t("diffMode")}</span><select value={diffMode} onChange={(event) => setDiffMode(event.target.value as DiffMode)}><option value="default">{t("diffModeDefault")}</option><option value="ignoreWhitespaceChanges">{t("diffModeWhitespaceChanges")}</option><option value="ignoreWhitespace">{t("diffModeWhitespace")}</option><option value="ignoreLineEndings">{t("diffModeLineEndings")}</option></select></label>{diff && <div className="diff-panel"><strong>{diffTitle}</strong><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}
+              <label className="field diff-mode-field"><span className="field-label">{t("diffMode")}</span><select value={diffMode} onChange={(event) => setDiffMode(event.target.value as DiffMode)}><option value="default">{t("diffModeDefault")}</option><option value="ignoreWhitespaceChanges">{t("diffModeWhitespaceChanges")}</option><option value="ignoreWhitespace">{t("diffModeWhitespace")}</option><option value="ignoreLineEndings">{t("diffModeLineEndings")}</option></select></label>{diff && <div className="diff-panel"><strong>{diffTitle}</strong><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} binary={diff.binary} invalidEncoding={diff.invalidEncoding} /></div>}
             </div>
           )}
         </aside>

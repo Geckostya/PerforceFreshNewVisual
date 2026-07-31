@@ -1007,6 +1007,7 @@ pub struct FileDiff {
     pub text: String,
     pub truncated: bool,
     pub binary: bool,
+    pub invalid_encoding: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

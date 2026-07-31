@@ -5461,20 +5461,21 @@ fn create_shelf_from_all(input: &ConnectionInput, change: &str) -> Result<(), Ap
 }
 
 fn run_text_diff(path: &Path, command: &mut Command) -> Result<FileDiff, AppError> {
-    let output = command
-        .output()
-        .map_err(|error| launch_error(path, error))?;
+    let (output, truncated) = run_bounded_output(path, command, MAX_DIFF_BYTES)?;
     if !output.status.success() {
         return Err(command_error(&output));
     }
     log_stderr_warning(&output, "p4 diff вернул предупреждение.");
-    let truncated = output.stdout.len() > MAX_DIFF_BYTES;
-    let binary = output.stdout.contains(&0) || is_binary_diff_marker(&output.stdout);
-    let bytes = &output.stdout[..output.stdout.len().min(MAX_DIFF_BYTES)];
+    let invalid_encoding = std::str::from_utf8(&output.stdout).is_err();
+    let binary =
+        output.stdout.contains(&0) || invalid_encoding || is_binary_diff_marker(&output.stdout);
     Ok(FileDiff {
-        text: String::from_utf8_lossy(bytes).into_owned(),
+        text: (!binary)
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default(),
         truncated,
         binary,
+        invalid_encoding,
     })
 }
 
