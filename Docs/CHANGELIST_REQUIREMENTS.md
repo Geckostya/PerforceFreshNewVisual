@@ -21,6 +21,8 @@ Descriptions use the shared safe Markdown renderer/editor. Raw HTML and non-HTTP
 
 Numbered changes may be placed in local `Unactual` presentation per server/user/workspace. This never changes the server object; Default is excluded, stale IDs are cleaned only after a successful refresh, and archived changes remain selectable and usable.
 
+My Changes also exposes a read-only `Unopened changes` group for local files discovered below explicitly configured scan roots. The group keeps its discovery status visible, explains when it is not configured, and provides an icon-only Configure discovery action beside the group. Configuration chooses one or more local roots and optional exclusions through the native folder picker; roots and exclusions are validated against the current workspace client view before background discovery starts. Discovery never opens, edits, or overwrites files.
+
 The Shelves screen is a bounded catalog of every shelved changelist visible to the connected user, not a second view of only the current user's current-workspace shelves. It groups the returned page by owner and supports local search plus owner, workspace, stream, and age filters. Stream is derived from the first visible shelved path and the server stream catalog; an unknown mapping remains explicit. Selecting a shelf loads only that shelf's files into the persistent inspector, and restricted shelves continue to follow server permissions.
 
 ## Actions

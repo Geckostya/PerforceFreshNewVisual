@@ -4,7 +4,7 @@ import {
   useState,
   type DragEvent,
 } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Settings2 } from "lucide-react";
 import {
   createChange,
   deleteChange,
@@ -80,6 +80,7 @@ import { useChangeDragDrop } from "./useChangeDragDrop";
 import { useChangesData } from "./useChangesData";
 import { useFileSelection } from "./useFileSelection";
 import { ChangeIdentityDialog } from "./ChangeIdentityDialog";
+import { UnopenedChangesConfigDialog } from "./UnopenedChangesConfigDialog";
 
 interface Props {
   connection: ConnectionInput;
@@ -172,6 +173,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   const changeMenu = useContextMenu<MenuTarget>();
   const [changeQuery, setChangeQuery] = useState("");
   const [selectedUnopenedCandidate, setSelectedUnopenedCandidate] = useState<string>();
+  const [unopenedConfigOpen, setUnopenedConfigOpen] = useState(false);
   const [unactualOpen, setUnactualOpen] = useState(true);
   const { archivedIds: archivedChanges, setArchived } = useLocalArchive(
     "changes",
@@ -634,6 +636,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       <div className="change-toolbar">
         {isUnopenedSelected ? <>
           <div><strong>{t("unopenedChanges")}</strong><span id="unopened-read-only-reason">{t("unopenedPresentationOnly")}</span></div>
+          <button data-agent-id="changes-unopened-configure-selected" className="icon-button unopened-configure-button" type="button" aria-label={t("unopenedConfigure")} title={t("unopenedConfigure")} onClick={() => setUnopenedConfigOpen(true)}><Settings2 className="ui-icon" aria-hidden="true" /></button>
           <span className="source-badge local" role="status">{unopenedCoverageLabel}</span>
         </> : <>
           <div>
@@ -667,7 +670,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
               className="change-item"
               onClick={selectUnopenedChanges}
             >
-              <span className="change-title-row"><span className="change-title">{t("unopenedChanges")}</span><span className="source-badge local">{unopenedCoverageLabel}</span></span>
+              <span className="change-title-row"><span className="change-title">{t("unopenedChanges")}</span><span className="source-badge local">{unopenedCoverageLabel}</span><button data-agent-id="changes-unopened-configure" className="icon-button unopened-configure-button" type="button" aria-label={t("unopenedConfigure")} title={t("unopenedConfigure")} onClick={(event) => { event.stopPropagation(); setUnopenedConfigOpen(true); }}><Settings2 className="ui-icon" aria-hidden="true" /></button></span>
               <span className="change-meta">{unopenedGroup.candidates.length} {t("unopenedFilesCount")} · {unopenedGroup.coverage.completedRoots} / {unopenedGroup.coverage.totalRoots} {t("unopenedRootsCount")}</span>
             </SelectableSurface>}
             {partitionedGroups.current.map(renderChange)}
@@ -856,6 +859,18 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       </ContextMenu>}
 
       <SafeSyncConflictDialog sync={safeSync} />
+
+      {unopenedConfigOpen && workspaceScan && <UnopenedChangesConfigDialog
+        connection={connection}
+        info={info}
+        snapshot={workspaceScan}
+        onClose={() => setUnopenedConfigOpen(false)}
+        onSaved={() => {
+          setUnopenedConfigOpen(false);
+          setNotice(t("unopenedConfigurationSaved"));
+          void refreshData();
+        }}
+      />}
 
       {(dialog === "create" || dialog === "edit") && <ActionDialog title={dialog === "create" ? t("newChangelistTitle") : t("editChangelist")} confirmLabel={actionRunning ? t(dialog === "create" ? "creating" : "saving") : t(dialog === "create" ? "createChangelist" : "save")} busy={actionRunning} confirmDisabled={!description.trim()} onClose={() => setDialog(undefined)} onConfirm={() => void execute(() => dialog === "create" ? createChange(connection, description).then((id) => { selectChange(id); }) : editChange(connection, currentGroup.id, description), t(dialog === "create" ? "changeCreated" : "changeUpdated"))}>
         {dialog === "create" && <p>{t("newChangelistBody")}</p>}<DescriptionField value={description} onChange={setDescription} />
