@@ -354,6 +354,16 @@ export async function resolveFiles(connection: ConnectionInput, depotPaths: stri
   return invoke<ResolveApplyResult>("resolve_files", { input: { connection, depotPaths, mode } });
 }
 
+export async function resolveSpecialized(connection: ConnectionInput, items: ResolvePreviewItem[], mode: ResolveMode): Promise<ResolveApplyResult> {
+  return invoke<ResolveApplyResult>("resolve_specialized", {
+    input: {
+      connection,
+      items: items.map(({ depotPath, previewToken, scope }) => ({ depotPath, previewToken, scope })),
+      mode,
+    },
+  });
+}
+
 export async function previewResolve(connection: ConnectionInput, depotPaths: string[]): Promise<ResolvePreviewItem[]> {
   return invoke<ResolvePreviewItem[]>("preview_resolve", { input: connection, depotPaths });
 }

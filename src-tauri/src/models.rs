@@ -906,11 +906,13 @@ pub struct ResolvePreviewItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub conflict_kind: ResolveConflictKind,
+    pub scope: ResolveScope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_identifier: Option<String>,
     pub workspace_identifier: String,
+    pub preview_token: String,
     pub allowed_actions: Vec<ResolveMode>,
     pub read_back: ResolveReadBackState,
 }
@@ -922,6 +924,17 @@ pub enum ResolveConflictKind {
     Binary,
     MoveName,
     FiletypeAttribute,
+    StreamSpec,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveScope {
+    Content,
+    Move,
+    Filetype,
+    Attribute,
     StreamSpec,
     Unknown,
 }
@@ -1377,6 +1390,22 @@ pub struct FileOperationInput {
 pub struct ResolveInput {
     pub connection: ConnectionInput,
     pub depot_paths: Vec<String>,
+    pub mode: ResolveMode,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecializedResolveItemInput {
+    pub depot_path: String,
+    pub preview_token: String,
+    pub scope: ResolveScope,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecializedResolveInput {
+    pub connection: ConnectionInput,
+    pub items: Vec<SpecializedResolveItemInput>,
     pub mode: ResolveMode,
 }
 

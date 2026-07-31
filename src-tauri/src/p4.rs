@@ -21,15 +21,16 @@ use crate::models::{
     DepotSummary, DiffMode, ErrorKind, FileDiff, FileIntegrationRecord, FileRevision, HistoryPage,
     LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem,
     ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode,
-    ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile, StreamDetail,
-    StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint, StreamIntegrationInput,
-    StreamIntegrationPreview, StreamIntegrationPreviewItem, StreamLocalStrategy, StreamPathKind,
-    StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
-    SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
-    SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SubmittedHistoryPageInput,
-    SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict,
-    UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch,
-    WorkspaceMappingState, WorkspaceSpec, WorkspaceSummary,
+    ResolvePreviewItem, ResolveReadBackState, ResolveScope, RevertPreviewItem, ShelvedFile,
+    StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
+    StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
+    StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
+    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
+    SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
+    SubmittedFilterOptions, SubmittedHistoryPageInput, SyncPreview, SyncPreviewItem,
+    TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
+    WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState,
+    WorkspaceSpec, WorkspaceSummary,
 };
 
 mod auth;
@@ -2648,39 +2649,154 @@ pub fn resolve_files(
     if paths.is_empty() {
         return Err(empty_file_selection());
     }
+    let preview = preview_resolve(input, paths)?;
+    if preview.is_empty()
+        || preview
+            .iter()
+            .any(|item| item.conflict_kind != ResolveConflictKind::Text)
+    {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "This selection includes a specialized resolve. Open its category-specific flow.",
+        ));
+    }
+    if preview
+        .iter()
+        .any(|item| !item.allowed_actions.contains(mode))
+    {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The selected resolve action is not valid for the current preview.",
+        ));
+    }
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "resolve", resolve_mode_flag(mode)]);
+    command.args(["-ztag", "-Mj", "resolve", "-Ac", resolve_mode_flag(mode)]);
     command.args(paths);
     let apply_error = run_json(&path, &mut command).err();
     Ok(resolve_read_back(input, paths, apply_error.as_ref()))
+}
+
+pub fn resolve_specialized(
+    input: &ConnectionInput,
+    items: &[crate::models::SpecializedResolveItemInput],
+    mode: &ResolveMode,
+) -> Result<ResolveApplyResult, AppError> {
+    required_client(input)?;
+    if items.is_empty() {
+        return Err(empty_file_selection());
+    }
+    let scope = &items[0].scope;
+    if *scope == ResolveScope::Unknown || items.iter().any(|item| item.scope != *scope) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Specialized resolve items must use one known conflict category.",
+        ));
+    }
+    let paths = items
+        .iter()
+        .map(|item| item.depot_path.clone())
+        .collect::<Vec<_>>();
+    let fresh = preview_resolve_scoped(input, scope, &paths)?;
+    for item in items {
+        let current = fresh
+            .iter()
+            .find(|candidate| candidate.depot_path == item.depot_path);
+        if current.is_none_or(|candidate| {
+            candidate.preview_token != item.preview_token || candidate.scope != item.scope
+        }) {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "The resolve preview changed. Refresh it before applying.",
+            ));
+        }
+        if current.is_some_and(|candidate| !candidate.allowed_actions.contains(mode)) {
+            return Err(AppError::new(
+                ErrorKind::Conflict,
+                "That action is not valid for this conflict category.",
+            ));
+        }
+    }
+    let (path, mut command) = configured_command(input)?;
+    command.args([
+        "-ztag",
+        "-Mj",
+        "resolve",
+        resolve_scope_flag(scope),
+        resolve_mode_flag(mode),
+    ]);
+    if *scope != ResolveScope::StreamSpec {
+        validate_depot_paths(&paths)?;
+        command.args(&paths);
+    }
+    let apply_error = run_json(&path, &mut command).err();
+    Ok(resolve_read_back(input, &paths, apply_error.as_ref()))
 }
 
 pub fn preview_resolve(
     input: &ConnectionInput,
     paths: &[String],
 ) -> Result<Vec<ResolvePreviewItem>, AppError> {
+    preview_resolve_scoped(input, &ResolveScope::Unknown, paths)
+}
+
+pub fn preview_resolve_scoped(
+    input: &ConnectionInput,
+    scope: &ResolveScope,
+    paths: &[String],
+) -> Result<Vec<ResolvePreviewItem>, AppError> {
     required_client(input)?;
-    validate_depot_paths(paths)?;
     if paths.is_empty() {
         return Err(empty_file_selection());
     }
-    let mappings = map_workspace_paths(input, paths)?;
-    if mappings.partial
-        || mappings
-            .mappings
-            .iter()
-            .any(|mapping| mapping.state != WorkspaceMappingState::Mapped)
-    {
-        return Err(AppError::new(
-            ErrorKind::InvalidOutput,
-            "The server did not return a complete workspace mapping for resolve preview.",
-        ));
+    if *scope != ResolveScope::StreamSpec {
+        validate_depot_paths(paths)?;
     }
+    let mappings = if *scope == ResolveScope::StreamSpec {
+        paths
+            .iter()
+            .map(|path| WorkspaceMapping {
+                query: path.clone(),
+                state: WorkspaceMappingState::Mapped,
+                depot_path: Some(path.clone()),
+                client_path: None,
+                local_path: None,
+                diagnostics: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let mappings = map_workspace_paths(input, paths)?;
+        if mappings.partial
+            || mappings
+                .mappings
+                .iter()
+                .any(|mapping| mapping.state != WorkspaceMappingState::Mapped)
+        {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "The server did not return a complete workspace mapping for resolve preview.",
+            ));
+        }
+        mappings.mappings
+    };
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "resolve", "-n", "-N", "-o"]);
+    if *scope != ResolveScope::Unknown {
+        command.arg(resolve_scope_flag(scope));
+    }
     command.args(paths);
     let records = run_json_allowing_empty_match(&path, &mut command)?;
-    parse_resolve_preview(&records, &mappings.mappings)
+    parse_resolve_preview(&records, &mappings)
+}
+
+fn resolve_scope_flag(scope: &ResolveScope) -> &'static str {
+    match scope {
+        ResolveScope::Content => "-Ac",
+        ResolveScope::Move => "-Am",
+        ResolveScope::Filetype => "-At",
+        ResolveScope::Attribute => "-Aa",
+        ResolveScope::StreamSpec => "-So",
+        ResolveScope::Unknown => "-Ac",
+    }
 }
 
 fn parse_resolve_preview(
@@ -2698,6 +2814,7 @@ fn parse_resolve_preview(
                 )
             })?;
             let conflict_kind = classify_resolve_conflict(record);
+            let scope = classify_resolve_scope(record, &conflict_kind);
             let allowed_actions = resolve_allowed_actions(&conflict_kind);
             Ok(ResolvePreviewItem {
                 depot_path: mapping.depot_path.clone().ok_or_else(|| {
@@ -2712,6 +2829,7 @@ fn parse_resolve_preview(
                 client_path: mapping.client_path.clone(),
                 local_path: mapping.local_path.clone(),
                 conflict_kind,
+                scope,
                 base_identifier: revision_identifier(
                     record,
                     "baseFile",
@@ -2727,6 +2845,7 @@ fn parse_resolve_preview(
                     .clone()
                     .or_else(|| mapping.client_path.clone())
                     .unwrap_or_else(|| mapping.query.clone()),
+                preview_token: resolve_preview_token(record),
                 allowed_actions,
                 read_back: ResolveReadBackState::Pending,
             })
@@ -2756,6 +2875,25 @@ fn resolve_record_mapping<'a>(
                 .any(|target| identity.eq_ignore_ascii_case(target))
         })
     })
+}
+
+fn resolve_preview_token(record: &Map<String, Value>) -> String {
+    let mut hasher = DefaultHasher::new();
+    for key in [
+        "depotFile",
+        "clientFile",
+        "path",
+        "fromFile",
+        "baseFile",
+        "type",
+        "how",
+        "resolveType",
+        "action",
+    ] {
+        key.hash(&mut hasher);
+        field(record, &[key]).unwrap_or_default().hash(&mut hasher);
+    }
+    format!("resolve-v2-{:016x}", hasher.finish())
 }
 
 fn revision_identifier(
@@ -2823,6 +2961,31 @@ fn classify_resolve_conflict(record: &Map<String, Value>) -> ResolveConflictKind
     }
 }
 
+fn classify_resolve_scope(record: &Map<String, Value>, kind: &ResolveConflictKind) -> ResolveScope {
+    let description = ["resolveType", "type", "how", "action", "status"]
+        .into_iter()
+        .filter_map(|name| field(record, &[name]))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if description.contains("stream") {
+        ResolveScope::StreamSpec
+    } else if description.contains("move") || description.contains("rename") {
+        ResolveScope::Move
+    } else if description.contains("attribute") {
+        ResolveScope::Attribute
+    } else if description.contains("filetype") {
+        ResolveScope::Filetype
+    } else if matches!(
+        kind,
+        ResolveConflictKind::Binary | ResolveConflictKind::Text
+    ) {
+        ResolveScope::Content
+    } else {
+        ResolveScope::Unknown
+    }
+}
+
 fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
     match kind {
         ResolveConflictKind::Text => vec![
@@ -2832,7 +2995,19 @@ fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
             ResolveMode::AutoMerge,
             ResolveMode::EditResult,
         ],
-        _ => vec![ResolveMode::Yours, ResolveMode::Theirs],
+        ResolveConflictKind::Binary => vec![ResolveMode::Yours, ResolveMode::Theirs],
+        ResolveConflictKind::MoveName | ResolveConflictKind::FiletypeAttribute => vec![
+            ResolveMode::Yours,
+            ResolveMode::Theirs,
+            ResolveMode::AutoMerge,
+        ],
+        ResolveConflictKind::StreamSpec => vec![
+            ResolveMode::Yours,
+            ResolveMode::Theirs,
+            ResolveMode::AutoSafe,
+            ResolveMode::AutoMerge,
+        ],
+        ResolveConflictKind::Unknown => Vec::new(),
     }
 }
 
@@ -7428,12 +7603,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(items[0].conflict_kind, ResolveConflictKind::Binary);
+        assert_eq!(items[0].scope, ResolveScope::Content);
         assert_eq!(items[1].conflict_kind, ResolveConflictKind::MoveName);
+        assert_eq!(items[1].scope, ResolveScope::Move);
         assert_eq!(
             items[2].conflict_kind,
             ResolveConflictKind::FiletypeAttribute
         );
+        assert_eq!(items[2].scope, ResolveScope::Filetype);
         assert_eq!(items[3].conflict_kind, ResolveConflictKind::StreamSpec);
+        assert_eq!(items[3].scope, ResolveScope::StreamSpec);
+        assert!(items.iter().all(|item| !item.preview_token.is_empty()));
         assert!(
             items
                 .iter()
@@ -7467,6 +7647,15 @@ mod tests {
             Some("//Acme/main/a.txt#8")
         );
         assert_eq!(items[0].conflict_kind, ResolveConflictKind::Text);
+    }
+
+    #[test]
+    fn specialized_scopes_use_distinct_server_flags() {
+        assert_eq!(resolve_scope_flag(&ResolveScope::Content), "-Ac");
+        assert_eq!(resolve_scope_flag(&ResolveScope::Move), "-Am");
+        assert_eq!(resolve_scope_flag(&ResolveScope::Filetype), "-At");
+        assert_eq!(resolve_scope_flag(&ResolveScope::Attribute), "-Aa");
+        assert_eq!(resolve_scope_flag(&ResolveScope::StreamSpec), "-So");
     }
 
     #[test]

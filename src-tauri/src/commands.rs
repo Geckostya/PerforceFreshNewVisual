@@ -13,9 +13,9 @@ use crate::{
         PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
         ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput, RevertInput,
         RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
-        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
-        StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
-        SubmitOutcome, SubmitPreflightSummary, SubmitReadBack, SubmitStepResult,
+        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, SpecializedResolveInput,
+        StreamDetail, StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput,
+        SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmitReadBack, SubmitStepResult,
         SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFilterOptions,
         SubmittedHistoryPageInput, SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge,
         TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput,
@@ -1967,6 +1967,17 @@ async fn run_file_operation(
 pub async fn resolve_files(input: ResolveInput) -> Result<ResolveApplyResult, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::resolve_files(&input.connection, &input.depot_paths, &input.mode)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn resolve_specialized(
+    input: SpecializedResolveInput,
+) -> Result<ResolveApplyResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::resolve_specialized(&input.connection, &input.items, &input.mode)
     })
     .await
     .map_err(task_error)?
