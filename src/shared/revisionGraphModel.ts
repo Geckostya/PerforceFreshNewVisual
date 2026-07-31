@@ -1,4 +1,4 @@
-import type { FileRevision } from "../../shared/models";
+import type { FileRevision } from "./models";
 
 export const REVISION_GRAPH_NODE_LIMIT = 100;
 export const REVISION_GRAPH_EDGE_LIMIT = 200;
@@ -22,7 +22,6 @@ export function buildRevisionGraph(revisions: FileRevision[], historyMayBePartia
   const edges: RevisionGraphEdge[] = [];
   for (const revision of visibleRevisions) {
     for (const integration of revision.integrationRecords) {
-      // A relationship with no server-provided source path cannot become a graph edge.
       if (!integration.filePath) {
         omittedRecords += 1;
         continue;

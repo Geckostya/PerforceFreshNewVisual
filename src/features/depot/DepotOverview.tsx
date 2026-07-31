@@ -4,7 +4,7 @@ import { fileHistory, listDepotDirectories, listDepotFiles, listDepots, listSubm
 import { DiffViewer } from "../../shared/DiffViewer";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
-import { RevisionGraph } from "../history/RevisionGraphView";
+import { RevisionGraph } from "../../shared/RevisionGraph";
 import { useLocale } from "../../shared/i18n";
 import { SelectableSurface, TreeItemRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, DepotFile, DepotSummary, FileDiff, FileIntegrationRecord, FileRevision, PendingChange } from "../../shared/models";

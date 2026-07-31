@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import type { FileRevision } from "../../shared/models";
-import { useLocale } from "../../shared/i18n";
-import { buildRevisionGraph } from "./revisionGraph";
+import { useLocale } from "./i18n";
+import type { FileRevision } from "./models";
+import { buildRevisionGraph } from "./revisionGraphModel";
 
 export function RevisionGraph({ revisions, historyMayBePartial = false }: { revisions: FileRevision[]; historyMayBePartial?: boolean }) {
   const { t } = useLocale();

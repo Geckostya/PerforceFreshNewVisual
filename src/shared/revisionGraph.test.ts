@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRevisionGraph, REVISION_GRAPH_EDGE_LIMIT, REVISION_GRAPH_NODE_LIMIT } from "./revisionGraph";
+import { buildRevisionGraph, REVISION_GRAPH_EDGE_LIMIT, REVISION_GRAPH_NODE_LIMIT } from "./revisionGraphModel";
 
 describe("buildRevisionGraph", () => {
   it("uses only server integration records as edges", () => {

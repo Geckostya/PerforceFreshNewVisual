@@ -505,7 +505,7 @@ const MAX_STREAM_OPTION_ITEMS: usize = 32;
 const MAX_STREAM_HISTORY_ITEMS: usize = 20;
 const MAX_STREAM_HISTORY_QUERY_ITEMS: usize = MAX_STREAM_HISTORY_ITEMS + 1;
 const MAX_STREAM_DETAIL_WARNINGS: usize = 20;
-const MAX_STREAM_DETAIL_TEXT_CHARS: usize = 2_048;
+const MAX_DETAIL_TEXT_CHARS: usize = 2_048;
 
 #[derive(Debug, PartialEq, Eq)]
 struct ParsedStreamSpec {
@@ -517,8 +517,8 @@ struct ParsedStreamSpec {
     truncated: bool,
 }
 
-fn bounded_stream_text(value: &str) -> String {
-    value.chars().take(MAX_STREAM_DETAIL_TEXT_CHARS).collect()
+fn bounded_detail_text(value: &str) -> String {
+    value.chars().take(MAX_DETAIL_TEXT_CHARS).collect()
 }
 
 fn form_single_value(lines: &[String], field: &str) -> Option<String> {
@@ -527,7 +527,7 @@ fn form_single_value(lines: &[String], field: &str) -> Option<String> {
         .iter()
         .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
         .filter(|value| !value.is_empty())
-        .map(bounded_stream_text)
+        .map(bounded_detail_text)
 }
 
 fn form_multiline_values(lines: &[String], field: &str) -> (Vec<String>, bool) {
@@ -538,7 +538,7 @@ fn form_multiline_values(lines: &[String], field: &str) -> (Vec<String>, bool) {
     let mut values = lines[start + 1..]
         .iter()
         .take_while(|line| line.starts_with('\t') || line.starts_with(' '))
-        .map(|line| bounded_stream_text(line.trim()))
+        .map(|line| bounded_detail_text(line.trim()))
         .filter(|line| !line.is_empty())
         .take(MAX_STREAM_SPEC_ITEMS + 1)
         .collect::<Vec<_>>();
@@ -580,7 +580,7 @@ fn stream_history_entry(
         index
             .and_then(|index| numbered_field(record, names, index))
             .or_else(|| index.is_none().then(|| field(record, names)).flatten())
-            .map(|value| bounded_stream_text(&value))
+            .map(|value| bounded_detail_text(&value))
     };
     Some(StreamHistoryEntry {
         revision: value(&["rev", "Rev"])?,
@@ -637,7 +637,7 @@ fn append_stream_warning(warnings: &mut Vec<String>, warning: impl AsRef<str>) {
     if warnings.len() >= MAX_STREAM_DETAIL_WARNINGS {
         return;
     }
-    let warning = bounded_stream_text(warning.as_ref().trim());
+    let warning = bounded_detail_text(warning.as_ref().trim());
     if !warning.is_empty() && !warnings.contains(&warning) {
         warnings.push(warning);
     }
@@ -712,7 +712,7 @@ pub fn inspect_stream(
                         .iter()
                         .find_map(|record| field(record, &["data", "fmt"]))
                         .or_else(|| diagnostics.first().cloned())
-                        .map(|message| bounded_stream_text(&message))
+                        .map(|message| bounded_detail_text(&message))
                         .unwrap_or_else(|| "Server reported no pending integrations.".to_owned());
                     hints.push(StreamIntegrationHint {
                         direction,
@@ -736,7 +736,7 @@ pub fn inspect_stream(
                     target_stream,
                     state: CapabilityState::Unknown,
                     partial: true,
-                    message: bounded_stream_text(&error.message),
+                    message: bounded_detail_text(&error.message),
                 }),
             }
         }
@@ -5748,9 +5748,11 @@ fn run_text_diff(path: &Path, command: &mut Command) -> Result<FileDiff, AppErro
     let binary =
         output.stdout.contains(&0) || invalid_encoding || is_binary_diff_marker(&output.stdout);
     Ok(FileDiff {
-        text: (!binary)
-            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-            .unwrap_or_default(),
+        text: if binary {
+            String::new()
+        } else {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        },
         truncated,
         binary,
         invalid_encoding,
@@ -6328,7 +6330,7 @@ fn parse_file_lock_topology(record: &Map<String, Value>) -> FileLockTopology {
         },
         owner,
         owner_detail: optional_field(record, &["otherLock", "ourLock", "globalLock"])
-            .map(|value| bounded_stream_text(&value)),
+            .map(|value| bounded_detail_text(&value)),
     }
 }
 
