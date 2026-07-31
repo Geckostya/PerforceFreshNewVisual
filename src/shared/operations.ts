@@ -5,8 +5,10 @@ import type {
   OperationDiagnostic,
   OperationEvent,
   OperationEventKind,
+  OperationActiveState,
   OperationItemResult,
   OperationReadBack,
+  OperationTerminalState,
 } from "./models";
 
 export interface OperationSnapshot {
@@ -28,6 +30,7 @@ export interface OperationSnapshot {
   itemResults: OperationItemResult[];
   readBack?: OperationReadBack;
   retryable: boolean;
+  cancellable: boolean;
   connectionKey?: string;
 }
 
@@ -47,7 +50,7 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
   const next = [...current];
   const index = next.findIndex((item) => item.operationId === event.operationId);
   const previous = index < 0 ? undefined : next[index];
-  if (previous && isOperationTerminal(previous.status) && !isOperationTerminal(event.kind)) {
+  if (previous && isOperationTerminal(previous.status)) {
     return current;
   }
   const now = Date.now();
@@ -73,6 +76,7 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
     itemResults: event.itemResults ?? previous?.itemResults ?? [],
     readBack: event.readBack ?? previous?.readBack,
     retryable,
+    cancellable: event.cancellable ?? previous?.cancellable ?? true,
     connectionKey: previous?.connectionKey ?? connectionKey,
   };
   if (index < 0) next.push(snapshot);
@@ -99,12 +103,16 @@ export function formatEta(seconds: number): string {
   return `~${Math.floor(seconds / 3600)}h ${Math.ceil((seconds % 3600) / 60)}m`;
 }
 
-export function isOperationActive(status: OperationEventKind): boolean {
+export function isOperationActive(status: OperationEventKind): status is OperationActiveState {
   return status === "started" || status === "progress" || status === "cancel_requested";
 }
 
-export function isOperationTerminal(status: OperationEventKind): boolean {
-  return !isOperationActive(status);
+export function isOperationTerminal(status: OperationEventKind): status is OperationTerminalState {
+  return status === "completed"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "partial"
+    || status === "unknown";
 }
 
 export function operationAnnouncementPriority(status: OperationEventKind): "none" | "polite" | "assertive" {

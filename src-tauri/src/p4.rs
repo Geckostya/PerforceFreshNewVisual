@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{self, OpenOptions},
     hash::{DefaultHasher, Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
@@ -10,23 +10,30 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::models::{
-    AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
+    AnnotationLine, AppError, AuthStage, CapabilityFlag, CapabilityState, ChangeExportResult,
+    ChangeIdentityBlocker, ChangeIdentityPreflight, ChangeIdentityState, ChangeVisibility,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
-    CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
-    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
-    ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide,
-    ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile,
+    CreateStreamType, DateSyncPreview, DepotDirectory, DepotFile, DepotStateComparison,
+    DepotStateDifference, DepotSummary, DiffMode, ErrorKind, FileDiff, FileIntegrationRecord,
+    FileLockOwner, FileLockPresence, FileLockScope, FileLockTopology, FileRevision, HistoryPage,
+    LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem,
+    ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode,
+    ResolvePreviewItem, ResolveReadBackState, ResolveScope, RevertPreviewItem, ShelvedFile,
     StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
     StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
     StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
     SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
     SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
-    SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
-    UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
-    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSpec,
+    SubmittedFilterOptions, SubmittedHistoryPageInput, SyncPreview, SyncPreviewItem,
+    TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile,
+    WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingEdit,
+    WorkspaceMappingEditor, WorkspaceMappingEditorEntry, WorkspaceMappingKind,
+    WorkspaceMappingPreview, WorkspaceMappingState, WorkspaceScanCandidate,
+    WorkspaceScanPartialReason, WorkspaceScanRoot, WorkspaceSearchResult, WorkspaceSpec,
     WorkspaceSummary,
 };
 
@@ -41,10 +48,13 @@ mod validation;
 use jobs::parse_fixes;
 #[cfg(test)]
 use jobs::parse_jobs;
-pub use jobs::{fix_job, list_fixes, list_jobs};
-pub use labels::list_labels;
+pub use jobs::{fix_job, inspect_job_form, list_fixes, list_jobs, save_job};
 #[cfg(test)]
 use labels::parse_labels;
+pub use labels::{
+    apply_label_tag, create_label, delete_label, inspect_label, list_labels, preview_label_tag,
+    update_label,
+};
 use runner::*;
 pub use runner::{clear_cli_log, cli_log};
 #[cfg(test)]
@@ -52,9 +62,14 @@ use trust::parse_trust_entries;
 use validation::*;
 
 const MAX_RECORDS: &str = "200";
+const MAX_WORKSPACE_MAPPINGS: usize = 1_000;
+const MAX_WORKSPACE_SEARCH_RESULTS: usize = 200;
+pub const MAX_WORKSPACE_SCAN_ROOTS: usize = 32;
+pub const MAX_WORKSPACE_SCAN_CANDIDATES: usize = 2_000;
 const MAX_INTEGRATION_PREVIEW_ITEMS: usize = 200;
 const MAX_HISTORY_RECORDS: &str = "5000";
 const MAX_SUBMITTED_DETAIL_PREVIEW_FILES: u32 = 1000;
+const WORKSPACE_FSTAT_FIELDS: &str = "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,ourLock,otherLock,globalLock,resolveStatus";
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RECOVERY_WORKERS: usize = 4;
 const IGNORE_DIRECTORY_PROBE: &str = "__p4fnv_ignore_probe__";
@@ -86,12 +101,16 @@ pub fn detect(explicit_path: Option<&str>) -> Result<P4Detection, AppError> {
 }
 
 pub fn info(input: &ConnectionInput) -> Result<P4Info, AppError> {
+    let mut info = read_info(input)?;
+    info.capabilities = Some(capabilities::build(input, &info));
+    Ok(info)
+}
+
+fn read_info(input: &ConnectionInput) -> Result<P4Info, AppError> {
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "info"]);
     let records = run_json(&path, &mut command)?;
-    let mut info = parse_info_records(&records)?;
-    info.capabilities = Some(capabilities::build(input, &info));
-    Ok(info)
+    parse_info_records(&records)
 }
 
 pub fn open_workspace(input: &ConnectionInput) -> Result<P4Info, AppError> {
@@ -183,6 +202,13 @@ pub fn list_workspaces(input: &ConnectionInput) -> Result<Vec<WorkspaceSummary>,
 
 pub fn inspect_workspace(input: &ConnectionInput) -> Result<WorkspaceSpec, AppError> {
     let client = required_client(input)?;
+    inspect_workspace_named(input, client)
+}
+
+fn inspect_workspace_named(
+    input: &ConnectionInput,
+    client: &str,
+) -> Result<WorkspaceSpec, AppError> {
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "client", "-o", client]);
     parse_workspace_spec(&run_json(&path, &mut command)?, client)
@@ -194,35 +220,276 @@ pub fn update_workspace(
     root: &str,
     stream: Option<&str>,
     description: &str,
-) -> Result<(), AppError> {
+) -> Result<WorkspaceSpec, AppError> {
     required_client(input)?;
-    let name = validate_form_value(name.trim(), "workspace")?;
-    let root = validate_form_value(root.trim(), "workspace root")?;
-    let stream = stream.unwrap_or_default().trim();
-    if stream.contains(['\r', '\n']) {
+    let name = save_workspace_form(input, name, root, stream, description)?;
+    inspect_workspace_named(input, &name).map_err(|error| {
+        AppError::new(
+            ErrorKind::PartialResult,
+            "Workspace specification was saved, but the server read-back failed.",
+        )
+        .with_hint("Refresh Workspace spec before making another change.")
+        .with_diagnostics(error.message)
+    })
+}
+
+pub fn inspect_workspace_mapping_editor(
+    input: &ConnectionInput,
+    workspace: &str,
+) -> Result<WorkspaceMappingEditor, AppError> {
+    let workspace = current_workspace_name(input, workspace)?;
+    let form = read_workspace_form(input, workspace)?;
+    ensure_classic_workspace_form(&form)?;
+    let lines = form.lines().collect::<Vec<_>>();
+    let mappings = required_form_multiline_values(&lines, "View")?;
+    Ok(WorkspaceMappingEditor {
+        workspace: workspace.to_owned(),
+        entries: mappings
+            .into_iter()
+            .enumerate()
+            .map(|(index, mapping)| WorkspaceMappingEditorEntry {
+                index,
+                preserved_only: !is_supported_workspace_mapping(&mapping),
+                mapping,
+            })
+            .collect(),
+    })
+}
+
+pub fn preview_workspace_mappings(
+    input: &ConnectionInput,
+    workspace: &str,
+    entries: &[WorkspaceMappingEdit],
+) -> Result<WorkspaceMappingPreview, AppError> {
+    let workspace = current_workspace_name(input, workspace)?;
+    let form = read_workspace_form(input, workspace)?;
+    build_workspace_mapping_preview(workspace, &form, entries).map(|(preview, _)| preview)
+}
+
+pub fn apply_workspace_mappings(
+    input: &ConnectionInput,
+    workspace: &str,
+    entries: &[WorkspaceMappingEdit],
+    preview_token: &str,
+) -> Result<WorkspaceSpec, AppError> {
+    let workspace = current_workspace_name(input, workspace)?;
+    let form = read_workspace_form(input, workspace)?;
+    let (preview, updated_form) = build_workspace_mapping_preview(workspace, &form, entries)?;
+    if preview_token.trim().is_empty() || preview.preview_token != preview_token {
+        return Err(
+            AppError::new(ErrorKind::Stale, "The workspace mapping preview is stale.")
+                .with_hint("Review the current server form again before saving mappings."),
+        );
+    }
+    if !preview.changed {
         return Err(AppError::new(
             ErrorKind::CommandFailed,
-            "Некорректный stream.",
+            "The workspace mapping has not changed.",
         ));
     }
-    let description = validate_description(Some(description))?;
-    let (path, mut output_command) = configured_command(input)?;
-    output_command.args(["client", "-o", name]);
-    let output = output_command
+    let (path, mut command) = configured_command(input)?;
+    command.args(["client", "-i"]);
+    let output = run_output_with_stdin(&path, &mut command, updated_form.as_bytes())?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    log_stderr_warning(&output, "p4 client -i returned a mapping warning.");
+    inspect_workspace_named(input, workspace).map_err(|error| {
+        AppError::new(
+            ErrorKind::PartialResult,
+            "Workspace mappings were saved, but the server read-back failed.",
+        )
+        .with_hint("Refresh Workspace spec before making another change.")
+        .with_diagnostics(error.message)
+    })
+}
+
+fn current_workspace_name<'a>(
+    input: &'a ConnectionInput,
+    workspace: &'a str,
+) -> Result<&'a str, AppError> {
+    let selected = required_client(input)?;
+    let workspace = validate_form_value(workspace.trim(), "workspace")?;
+    if selected != workspace {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Mappings can be edited only for the current workspace.",
+        ));
+    }
+    Ok(workspace)
+}
+
+fn read_workspace_form(input: &ConnectionInput, workspace: &str) -> Result<String, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["client", "-o", workspace]);
+    let output = command
         .output()
         .map_err(|error| launch_error(&path, error))?;
     if !output.status.success() {
         return Err(command_error(&output));
     }
-    let original = String::from_utf8_lossy(&output.stdout);
-    let updated = replace_workspace_fields(&original, root, stream, description)?;
-    let (_, mut input_command) = configured_command(input)?;
-    input_command.args(["client", "-i"]);
-    let applied = run_output_with_stdin(&path, &mut input_command, updated.as_bytes())?;
-    if !applied.status.success() {
-        return Err(command_error(&applied));
+    log_stderr_warning(&output, "p4 client -o returned a form warning.");
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn build_workspace_mapping_preview(
+    workspace: &str,
+    form: &str,
+    entries: &[WorkspaceMappingEdit],
+) -> Result<(WorkspaceMappingPreview, String), AppError> {
+    ensure_classic_workspace_form(form)?;
+    if entries.len() > MAX_WORKSPACE_MAPPINGS {
+        return Err(AppError::new(
+            ErrorKind::ServerLimit,
+            "The workspace mapping exceeds the supported editor limit.",
+        ));
     }
-    Ok(())
+    let lines = form.lines().collect::<Vec<_>>();
+    let before = required_form_multiline_values(&lines, "View")?;
+    let unknown_indices = before
+        .iter()
+        .enumerate()
+        .filter_map(|(index, mapping)| (!is_supported_workspace_mapping(mapping)).then_some(index))
+        .collect::<Vec<_>>();
+    let mut seen_existing = BTreeSet::new();
+    let mut seen_unknown = Vec::new();
+    let mut after = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match entry {
+            WorkspaceMappingEdit::Existing { index } => {
+                if !seen_existing.insert(*index) {
+                    return Err(AppError::new(
+                        ErrorKind::CommandFailed,
+                        "A server mapping entry was referenced more than once.",
+                    ));
+                }
+                let mapping = before.get(*index).ok_or_else(|| {
+                    AppError::new(ErrorKind::Stale, "A server mapping entry no longer exists.")
+                })?;
+                if !is_supported_workspace_mapping(mapping) {
+                    seen_unknown.push(*index);
+                }
+                after.push(mapping.clone());
+            }
+            WorkspaceMappingEdit::New {
+                kind,
+                depot_path,
+                client_path,
+            } => after.push(format_workspace_mapping(
+                workspace,
+                *kind,
+                depot_path,
+                client_path,
+            )?),
+        }
+    }
+    if seen_unknown != unknown_indices {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Unrecognized server mapping entries must be preserved in their original order.",
+        )
+        .with_hint("Refresh the editor and keep every protected server entry."));
+    }
+    let mut lines = form.lines().map(str::to_owned).collect::<Vec<_>>();
+    replace_multiline_form_field(&mut lines, "View", &after.join("\n"))?;
+    let updated_form = format!("{}\n", lines.join("\n"));
+    let preview_token = workspace_mapping_preview_token(workspace, form, &after);
+    Ok((
+        WorkspaceMappingPreview {
+            workspace: workspace.to_owned(),
+            changed: before != after,
+            preserved_unknown_entries: unknown_indices.len(),
+            before,
+            after,
+            preview_token,
+        },
+        updated_form,
+    ))
+}
+
+fn ensure_classic_workspace_form(form: &str) -> Result<(), AppError> {
+    let lines = form.lines().collect::<Vec<_>>();
+    let stream = form_single_value(&lines, "Stream").unwrap_or_default();
+    if stream.trim().is_empty() {
+        return Ok(());
+    }
+    Err(AppError::new(
+        ErrorKind::UnsupportedCapability,
+        "The server generates View mappings for this stream workspace.",
+    )
+    .with_hint("Edit the stream Paths instead of the client View."))
+}
+
+fn is_supported_workspace_mapping(mapping: &str) -> bool {
+    let mapping = mapping.trim_start();
+    let mapping = mapping
+        .strip_prefix(['-', '+', '&'])
+        .unwrap_or(mapping)
+        .trim_start();
+    mapping.starts_with("//") || mapping.starts_with("\"//")
+}
+
+fn format_workspace_mapping(
+    workspace: &str,
+    kind: WorkspaceMappingKind,
+    depot_path: &str,
+    client_path: &str,
+) -> Result<String, AppError> {
+    let depot_path = validate_workspace_mapping_path(depot_path, "depot path")?;
+    let client_path = validate_workspace_mapping_path(client_path, "client path")?;
+    let client_name = client_path
+        .strip_prefix("//")
+        .and_then(|path| path.split('/').next())
+        .unwrap_or_default();
+    if client_name != workspace {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The client mapping path must target the current workspace.",
+        ));
+    }
+    let marker = match kind {
+        WorkspaceMappingKind::Include => "",
+        WorkspaceMappingKind::Exclude => "-",
+        WorkspaceMappingKind::Overlay => "+",
+        WorkspaceMappingKind::Ditto => "&",
+    };
+    Ok(format!(
+        "{marker}{} {}",
+        quote_workspace_mapping_path(depot_path),
+        quote_workspace_mapping_path(client_path)
+    ))
+}
+
+fn validate_workspace_mapping_path<'a>(value: &'a str, label: &str) -> Result<&'a str, AppError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 4_096
+        || !value.starts_with("//")
+        || value.contains(['\r', '\n', '\0', '"', '@', '#'])
+        || value.chars().any(char::is_control)
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            format!("The workspace mapping {label} is invalid."),
+        ));
+    }
+    Ok(value)
+}
+
+fn quote_workspace_mapping_path(path: &str) -> String {
+    if path.chars().any(char::is_whitespace) {
+        format!("\"{path}\"")
+    } else {
+        path.to_owned()
+    }
+}
+
+fn workspace_mapping_preview_token(workspace: &str, form: &str, mappings: &[String]) -> String {
+    let mut hasher = DefaultHasher::new();
+    workspace.hash(&mut hasher);
+    form.hash(&mut hasher);
+    mappings.hash(&mut hasher);
+    format!("workspace-mapping-v1-{:016x}", hasher.finish())
 }
 
 pub fn create_workspace(
@@ -232,7 +499,17 @@ pub fn create_workspace(
     stream: Option<&str>,
     description: &str,
 ) -> Result<(), AppError> {
-    let name = validate_form_value(name.trim(), "workspace")?;
+    save_workspace_form(input, name, root, stream, description).map(|_| ())
+}
+
+fn save_workspace_form(
+    input: &ConnectionInput,
+    name: &str,
+    root: &str,
+    stream: Option<&str>,
+    description: &str,
+) -> Result<String, AppError> {
+    let name = validate_form_value(name.trim(), "workspace")?.to_owned();
     let root = validate_form_value(root.trim(), "workspace root")?;
     let stream = stream.unwrap_or_default().trim();
     if stream.contains(['\r', '\n']) {
@@ -242,23 +519,15 @@ pub fn create_workspace(
         ));
     }
     let description = validate_description(Some(description))?;
-    let (path, mut output_command) = configured_command(input)?;
-    output_command.args(["client", "-o", name]);
-    let output = output_command
-        .output()
-        .map_err(|error| launch_error(&path, error))?;
-    if !output.status.success() {
-        return Err(command_error(&output));
-    }
-    let original = String::from_utf8_lossy(&output.stdout);
+    let original = read_workspace_form(input, &name)?;
     let updated = replace_workspace_fields(&original, root, stream, description)?;
-    let (_, mut input_command) = configured_command(input)?;
+    let (path, mut input_command) = configured_command(input)?;
     input_command.args(["client", "-i"]);
     let applied = run_output_with_stdin(&path, &mut input_command, updated.as_bytes())?;
     if !applied.status.success() {
         return Err(command_error(&applied));
     }
-    Ok(())
+    Ok(name)
 }
 
 pub fn delete_workspace(input: &ConnectionInput, name: &str) -> Result<(), AppError> {
@@ -496,26 +765,186 @@ fn quote_stream_view_path(path: &str) -> String {
     }
 }
 
-fn form_single_value(lines: &[String], field: &str) -> Option<String> {
+const MAX_STREAM_SPEC_ITEMS: usize = 200;
+const MAX_STREAM_OPTION_ITEMS: usize = 32;
+const MAX_STREAM_HISTORY_ITEMS: usize = 20;
+const MAX_STREAM_HISTORY_QUERY_ITEMS: usize = MAX_STREAM_HISTORY_ITEMS + 1;
+const MAX_STREAM_DETAIL_WARNINGS: usize = 20;
+const MAX_DETAIL_TEXT_CHARS: usize = 2_048;
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedStreamSpec {
+    parent_view: String,
+    options: Vec<String>,
+    paths: Vec<String>,
+    remapped: Vec<String>,
+    ignored: Vec<String>,
+    truncated: bool,
+}
+
+fn bounded_detail_text(value: &str) -> String {
+    value.chars().take(MAX_DETAIL_TEXT_CHARS).collect()
+}
+
+fn form_single_value<T: AsRef<str>>(lines: &[T], field: &str) -> Option<String> {
     let prefix = format!("{field}:");
     lines
         .iter()
-        .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
+        .find_map(|line| line.as_ref().strip_prefix(&prefix).map(str::trim))
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
 
-fn form_multiline_values(lines: &[String], field: &str) -> Vec<String> {
+fn form_multiline_values<T: AsRef<str>>(
+    lines: &[T],
+    field: &str,
+    preserve_trailing: bool,
+) -> Vec<String> {
     let prefix = format!("{field}:");
-    let Some(start) = lines.iter().position(|line| line.starts_with(&prefix)) else {
+    let Some(start) = lines
+        .iter()
+        .position(|line| line.as_ref().starts_with(&prefix))
+    else {
         return Vec::new();
     };
     lines[start + 1..]
         .iter()
-        .take_while(|line| line.starts_with('\t') || line.starts_with(' '))
-        .map(|line| line.trim().to_owned())
+        .map(AsRef::as_ref)
+        .take_while(|line| line.starts_with([' ', '\t']) || line.is_empty())
+        .map(|line| {
+            if preserve_trailing {
+                line.trim_start_matches([' ', '\t'])
+            } else {
+                line.trim()
+            }
+            .to_owned()
+        })
         .filter(|line| !line.is_empty())
         .collect()
+}
+
+fn bounded_stream_multiline_values(lines: &[String], field: &str) -> (Vec<String>, bool) {
+    let mut values = form_multiline_values(lines, field, false)
+        .into_iter()
+        .map(|line| bounded_detail_text(&line))
+        .take(MAX_STREAM_SPEC_ITEMS + 1)
+        .collect::<Vec<_>>();
+    let truncated = values.len() > MAX_STREAM_SPEC_ITEMS;
+    values.truncate(MAX_STREAM_SPEC_ITEMS);
+    (values, truncated)
+}
+
+fn parse_stream_spec(lines: &[String]) -> ParsedStreamSpec {
+    let mut options = form_single_value(lines, "Options")
+        .map(|value| {
+            bounded_detail_text(&value)
+                .split_whitespace()
+                .take(MAX_STREAM_OPTION_ITEMS + 1)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let options_truncated = options.len() > MAX_STREAM_OPTION_ITEMS;
+    options.truncate(MAX_STREAM_OPTION_ITEMS);
+    let (paths, paths_truncated) = bounded_stream_multiline_values(lines, "Paths");
+    let (remapped, remapped_truncated) = bounded_stream_multiline_values(lines, "Remapped");
+    let (ignored, ignored_truncated) = bounded_stream_multiline_values(lines, "Ignored");
+    ParsedStreamSpec {
+        parent_view: form_single_value(lines, "ParentView")
+            .map(|value| bounded_detail_text(&value))
+            .unwrap_or_else(|| "inherit".to_owned()),
+        options,
+        paths,
+        remapped,
+        ignored,
+        truncated: options_truncated || paths_truncated || remapped_truncated || ignored_truncated,
+    }
+}
+
+fn stream_history_entry(
+    record: &Map<String, Value>,
+    index: Option<usize>,
+) -> Option<StreamHistoryEntry> {
+    let value = |names: &[&str]| {
+        index
+            .and_then(|index| numbered_field(record, names, index))
+            .or_else(|| index.is_none().then(|| field(record, names)).flatten())
+            .map(|value| bounded_detail_text(&value))
+    };
+    Some(StreamHistoryEntry {
+        revision: value(&["rev", "Rev"])?,
+        action: value(&["action", "Action"])?,
+        change: value(&["change", "Change"]),
+        user: value(&["user", "User"]),
+        client: value(&["client", "Client"]),
+        time: value(&["time", "date", "Date"]),
+        description: value(&["desc", "description", "Description"]),
+    })
+}
+
+fn parse_stream_history(records: &[Map<String, Value>]) -> (Vec<StreamHistoryEntry>, bool, bool) {
+    let mut entries = Vec::new();
+    let mut malformed = false;
+    for record in records.iter().filter(|record| !is_message_record(record)) {
+        let indices = indexed_field_indices(record, "rev");
+        if indices.is_empty() {
+            if let Some(entry) = stream_history_entry(record, None) {
+                entries.push(entry);
+            } else {
+                malformed = true;
+            }
+        } else {
+            for index in indices {
+                if let Some(entry) = stream_history_entry(record, Some(index)) {
+                    entries.push(entry);
+                } else {
+                    malformed = true;
+                }
+            }
+        }
+    }
+    let truncated = entries.len() > MAX_STREAM_HISTORY_ITEMS;
+    entries.truncate(MAX_STREAM_HISTORY_ITEMS);
+    (entries, truncated, malformed)
+}
+
+fn stream_istat_arguments(direction: StreamIntegrationDirection, stream_path: &str) -> Vec<String> {
+    let mut arguments = vec![
+        "-ztag".to_owned(),
+        "-Mj".to_owned(),
+        "istat".to_owned(),
+        "-Af".to_owned(),
+    ];
+    if direction == StreamIntegrationDirection::MergeDown {
+        arguments.push("-r".to_owned());
+    }
+    arguments.push(stream_path.to_owned());
+    arguments
+}
+
+fn append_stream_warning(warnings: &mut Vec<String>, warning: impl AsRef<str>) {
+    if warnings.len() >= MAX_STREAM_DETAIL_WARNINGS {
+        return;
+    }
+    let warning = bounded_detail_text(warning.as_ref().trim());
+    if !warning.is_empty() && !warnings.contains(&warning) {
+        warnings.push(warning);
+    }
+}
+
+fn required_form_multiline_values<T: AsRef<str>>(
+    lines: &[T],
+    field: &str,
+) -> Result<Vec<String>, AppError> {
+    let prefix = format!("{field}:");
+    if lines.iter().any(|line| line.as_ref().starts_with(&prefix)) {
+        Ok(form_multiline_values(lines, field, true))
+    } else {
+        Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            format!("The client form has no {field} field."),
+        ))
+    }
 }
 
 pub fn inspect_stream(
@@ -539,82 +968,102 @@ pub fn inspect_stream(
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    let spec = parse_stream_spec(&lines);
 
     let mut warnings = Vec::new();
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "streamlog", "-m", "20", &stream.path]);
-    let history = match run_json_collecting_diagnostics(&path, &mut command) {
-        Ok((records, diagnostics, _)) => {
-            warnings.extend(diagnostics);
-            records
-                .into_iter()
-                .filter(|record| !is_message_record(record))
-                .map(|record| StreamHistoryEntry {
-                    revision: field(&record, &["rev", "Rev"]).unwrap_or_else(|| "?".to_owned()),
-                    action: field(&record, &["action", "Action"])
-                        .unwrap_or_else(|| "edit".to_owned()),
-                    change: field(&record, &["change", "Change"]),
-                    user: field(&record, &["user", "User"]),
-                    time: field(&record, &["time", "date", "Date"]),
-                    description: field(&record, &["desc", "Description"]),
-                })
-                .collect()
-        }
-        Err(error) => {
-            warnings.push(error.message);
-            Vec::new()
-        }
-    };
+    let history_limit = MAX_STREAM_HISTORY_QUERY_ITEMS.to_string();
+    command.args([
+        "-ztag",
+        "-Mj",
+        "streamlog",
+        "-L",
+        "-t",
+        "-m",
+        &history_limit,
+        &stream.path,
+    ]);
+    let (history, history_truncated, history_partial) =
+        match run_json_collecting_diagnostics(&path, &mut command) {
+            Ok((records, diagnostics, command_partial)) => {
+                for diagnostic in diagnostics {
+                    append_stream_warning(&mut warnings, diagnostic);
+                }
+                let (history, truncated, malformed) = parse_stream_history(&records);
+                (history, truncated, command_partial || malformed)
+            }
+            Err(error) => {
+                append_stream_warning(&mut warnings, &error.message);
+                (Vec::new(), false, true)
+            }
+        };
 
     let mut hints = Vec::new();
-    for (direction, reverse) in [
-        (StreamIntegrationDirection::CopyUp, false),
-        (StreamIntegrationDirection::MergeDown, true),
-    ] {
-        let (path, mut command) = configured_command(input)?;
-        command.args(["-ztag", "-Mj", "istat", "-Af"]);
-        if reverse {
-            command.arg("-r");
-        }
-        command.arg(&stream.path);
-        match run_json_collecting_diagnostics(&path, &mut command) {
-            Ok((records, diagnostics, partial)) => {
-                let message = records
-                    .iter()
-                    .find_map(|record| field(record, &["data", "fmt"]))
-                    .or_else(|| diagnostics.first().cloned())
-                    .unwrap_or_else(|| "Server returned no integration status details.".to_owned());
-                hints.push(StreamIntegrationHint {
+    if let Some(parent) = stream.parent.as_deref() {
+        for direction in [
+            StreamIntegrationDirection::CopyUp,
+            StreamIntegrationDirection::MergeDown,
+        ] {
+            let (source_stream, target_stream) = match direction {
+                StreamIntegrationDirection::CopyUp => (stream.path.clone(), parent.to_owned()),
+                StreamIntegrationDirection::MergeDown => (parent.to_owned(), stream.path.clone()),
+            };
+            let (path, mut command) = configured_command(input)?;
+            command.args(stream_istat_arguments(direction, &stream.path));
+            match run_json_collecting_diagnostics(&path, &mut command) {
+                Ok((records, diagnostics, partial)) => {
+                    let message = records
+                        .iter()
+                        .find_map(|record| field(record, &["data", "fmt"]))
+                        .or_else(|| diagnostics.first().cloned())
+                        .map(|message| bounded_detail_text(&message))
+                        .unwrap_or_else(|| "Server reported no pending integrations.".to_owned());
+                    hints.push(StreamIntegrationHint {
+                        direction,
+                        source_stream,
+                        target_stream,
+                        state: if partial {
+                            CapabilityState::Unknown
+                        } else {
+                            CapabilityState::Supported
+                        },
+                        partial,
+                        message,
+                    });
+                    for diagnostic in diagnostics {
+                        append_stream_warning(&mut warnings, diagnostic);
+                    }
+                }
+                Err(error) => hints.push(StreamIntegrationHint {
                     direction,
-                    state: if partial {
-                        CapabilityState::Unknown
-                    } else {
-                        CapabilityState::Supported
-                    },
-                    message,
-                });
-                warnings.extend(diagnostics);
+                    source_stream,
+                    target_stream,
+                    state: CapabilityState::Unknown,
+                    partial: true,
+                    message: bounded_detail_text(&error.message),
+                }),
             }
-            Err(error) => hints.push(StreamIntegrationHint {
-                direction,
-                state: CapabilityState::Unknown,
-                message: error.message,
-            }),
         }
     }
 
+    let partial = spec.truncated
+        || history_truncated
+        || history_partial
+        || hints.iter().any(|hint| hint.partial);
+
     Ok(StreamDetail {
         stream,
-        parent_view: form_single_value(&lines, "ParentView")
-            .unwrap_or_else(|| "inherit".to_owned()),
-        options: form_single_value(&lines, "Options")
-            .map(|value| value.split_whitespace().map(str::to_owned).collect())
-            .unwrap_or_default(),
-        paths: form_multiline_values(&lines, "Paths"),
-        remapped: form_multiline_values(&lines, "Remapped"),
-        ignored: form_multiline_values(&lines, "Ignored"),
+        parent_view: spec.parent_view,
+        options: spec.options,
+        paths: spec.paths,
+        remapped: spec.remapped,
+        ignored: spec.ignored,
+        spec_truncated: spec.truncated,
         history,
+        history_truncated,
+        history_partial,
         hints,
+        partial,
         warnings,
     })
 }
@@ -1040,6 +1489,156 @@ fn depot_file_arguments(scope: &str, include_deleted: bool) -> Vec<String> {
     arguments
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DepotStateFile {
+    revision: String,
+    file_type: String,
+}
+
+pub fn compare_depot_states(
+    input: &ConnectionInput,
+    scope: &str,
+    base_change: &str,
+    target_change: Option<&str>,
+) -> Result<DepotStateComparison, AppError> {
+    validate_depot_state_scope(scope)?;
+    validate_numbered_change(base_change)?;
+    if let Some(change) = target_change {
+        validate_numbered_change(change)?;
+    }
+
+    let before = read_depot_state(input, scope, Some(base_change))?;
+    let after = read_depot_state(input, scope, target_change)?;
+    Ok(compare_depot_state_maps(
+        scope,
+        base_change,
+        target_change,
+        &before,
+        &after,
+    ))
+}
+
+fn validate_depot_state_scope(scope: &str) -> Result<(), AppError> {
+    let scope = scope.trim();
+    validate_depot_path(scope)?;
+    let is_folder_scope = scope == "//..." || scope.ends_with("/...");
+    let prefix = scope.strip_suffix("...").unwrap_or(scope);
+    if !is_folder_scope || prefix.contains(['*', '@', '#']) || scope.contains(['\r', '\n', '\0']) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "State comparison requires an exact depot folder scope ending in /....",
+        ));
+    }
+    Ok(())
+}
+
+fn depot_state_arguments(scope: &str, change: Option<&str>) -> Vec<String> {
+    let filespec = match change {
+        Some(change) => format!("{}@{change}", scope.trim()),
+        None => format!("{}#head", scope.trim()),
+    };
+    vec![
+        "-ztag".to_owned(),
+        "-Mj".to_owned(),
+        "files".to_owned(),
+        "-e".to_owned(),
+        filespec,
+    ]
+}
+
+fn read_depot_state(
+    input: &ConnectionInput,
+    scope: &str,
+    change: Option<&str>,
+) -> Result<BTreeMap<String, DepotStateFile>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(depot_state_arguments(scope, change));
+    parse_depot_state(&run_json_allowing_empty_match(&path, &mut command)?)
+}
+
+fn parse_depot_state(
+    records: &[Map<String, Value>],
+) -> Result<BTreeMap<String, DepotStateFile>, AppError> {
+    let mut state = BTreeMap::new();
+    for record in records.iter().filter(|record| !is_message_record(record)) {
+        let depot_path = required_field(record, &["depotFile", "file"], "depot file")?;
+        let file = DepotStateFile {
+            revision: required_field(record, &["rev", "revision"], "depot revision")?,
+            file_type: required_field(record, &["type", "filetype"], "depot file type")?,
+        };
+        if state.insert(depot_path.clone(), file).is_some() {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "The server returned duplicate file identity while comparing states.",
+            )
+            .with_diagnostics(depot_path));
+        }
+    }
+    Ok(state)
+}
+
+fn compare_depot_state_maps(
+    scope: &str,
+    base_change: &str,
+    target_change: Option<&str>,
+    before: &BTreeMap<String, DepotStateFile>,
+    after: &BTreeMap<String, DepotStateFile>,
+) -> DepotStateComparison {
+    let mut comparison = DepotStateComparison {
+        scope: scope.trim().to_owned(),
+        base_change: base_change.to_owned(),
+        target_change: target_change.map(str::to_owned),
+        added: Vec::new(),
+        changed: Vec::new(),
+        deleted: Vec::new(),
+        type_changed: Vec::new(),
+    };
+
+    for (depot_path, before_file) in before {
+        let Some(after_file) = after.get(depot_path) else {
+            comparison
+                .deleted
+                .push(depot_state_difference(depot_path, Some(before_file), None));
+            continue;
+        };
+        if before_file.file_type != after_file.file_type {
+            comparison.type_changed.push(depot_state_difference(
+                depot_path,
+                Some(before_file),
+                Some(after_file),
+            ));
+        } else if before_file.revision != after_file.revision {
+            comparison.changed.push(depot_state_difference(
+                depot_path,
+                Some(before_file),
+                Some(after_file),
+            ));
+        }
+    }
+    for (depot_path, after_file) in after {
+        if !before.contains_key(depot_path) {
+            comparison
+                .added
+                .push(depot_state_difference(depot_path, None, Some(after_file)));
+        }
+    }
+    comparison
+}
+
+fn depot_state_difference(
+    depot_path: &str,
+    before: Option<&DepotStateFile>,
+    after: Option<&DepotStateFile>,
+) -> DepotStateDifference {
+    DepotStateDifference {
+        depot_path: depot_path.to_owned(),
+        before_revision: before.map(|file| file.revision.clone()),
+        after_revision: after.map(|file| file.revision.clone()),
+        before_file_type: before.map(|file| file.file_type.clone()),
+        after_file_type: after.map(|file| file.file_type.clone()),
+    }
+}
+
 pub fn list_pending_changes(input: &ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
     let client = required_client(input)?;
     let (path, mut command) = configured_command(input)?;
@@ -1112,6 +1711,146 @@ pub fn list_submitted_changes(
         enrich_submitted_streams(input, &mut changes)?;
     }
     Ok(changes)
+}
+
+const HISTORY_PAGE_LIMIT: u32 = 100;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryCursor {
+    kind: String,
+    scope: String,
+    boundary: String,
+    user: Option<String>,
+    client: Option<String>,
+    job: Option<String>,
+}
+
+fn encode_history_cursor(cursor: &HistoryCursor) -> Result<String, AppError> {
+    Ok(serde_json::to_vec(cursor)
+        .map_err(|error| {
+            AppError::new(ErrorKind::InvalidOutput, "Unable to create history cursor.")
+                .with_diagnostics(error.to_string())
+        })?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn decode_history_cursor(
+    cursor: Option<&str>,
+    expected: &HistoryCursor,
+) -> Result<Option<String>, AppError> {
+    let Some(cursor) = cursor.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if cursor.len() > 2048
+        || cursor.len() % 2 != 0
+        || !cursor.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The history cursor is invalid.",
+        ));
+    }
+    let bytes = (0..cursor.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&cursor[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| AppError::new(ErrorKind::InvalidOutput, "The history cursor is invalid."))?;
+    let decoded: HistoryCursor = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::new(ErrorKind::InvalidOutput, "The history cursor is invalid."))?;
+    if decoded.kind != expected.kind
+        || decoded.scope != expected.scope
+        || decoded.user != expected.user
+        || decoded.client != expected.client
+        || decoded.job != expected.job
+        || !decoded.boundary.chars().all(|value| value.is_ascii_digit())
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The history cursor does not match this request.",
+        ));
+    }
+    Ok(Some(decoded.boundary))
+}
+
+pub fn list_submitted_history_page(
+    request: SubmittedHistoryPageInput,
+) -> Result<HistoryPage<PendingChange>, AppError> {
+    let SubmittedHistoryPageInput {
+        connection: input,
+        scope,
+        limit,
+        cursor,
+        job,
+        user,
+        client,
+        include_streams,
+    } = request;
+    required_client(&input)?;
+    validate_depot_path(&scope)?;
+    if !(1..=HISTORY_PAGE_LIMIT).contains(&limit) {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "History page limit must be between 1 and 100.",
+        ));
+    }
+    let clean = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let expected = HistoryCursor {
+        kind: "submitted".to_owned(),
+        scope: scope.to_owned(),
+        boundary: String::new(),
+        user: clean(user.as_deref()),
+        client: clean(client.as_deref()),
+        job: clean(job.as_deref()),
+    };
+    let boundary = decode_history_cursor(cursor.as_deref(), &expected)?;
+    let query_scope = boundary
+        .as_ref()
+        .map_or_else(|| scope.to_owned(), |value| format!("{scope}@{value}"));
+    let (path, mut command) = configured_command(&input)?;
+    let mut arguments = submitted_change_arguments(
+        &query_scope,
+        &(limit + 1).to_string(),
+        user.as_deref(),
+        client.as_deref(),
+    )?;
+    if let Some(job) = expected.job.as_deref() {
+        arguments.splice(
+            9..9,
+            ["-j".to_owned(), validate_form_value(job, "job")?.to_owned()],
+        );
+    }
+    command.args(arguments);
+    let mut items = parse_pending_changes(&run_json(&path, &mut command)?)?;
+    if let Some(boundary) = boundary {
+        items.retain(|item| item.id != boundary);
+    }
+    let partial = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    if include_streams && !items.is_empty() {
+        enrich_submitted_streams(&input, &mut items)?;
+    }
+    let next_cursor = if partial {
+        encode_history_cursor(&HistoryCursor {
+            boundary: items.last().map(|item| item.id.clone()).unwrap_or_default(),
+            ..expected
+        })?
+        .into()
+    } else {
+        None
+    };
+    Ok(HistoryPage {
+        items,
+        next_cursor,
+        partial,
+    })
 }
 
 fn enrich_submitted_streams(
@@ -1489,6 +2228,32 @@ pub fn list_workspace_files(
     Ok(files)
 }
 
+pub fn search_workspace_files(
+    input: &ConnectionInput,
+    scope: &str,
+    query: &str,
+) -> Result<WorkspaceSearchResult, AppError> {
+    required_client(input)?;
+    let arguments = workspace_search_arguments(scope, query)?;
+    let (path, mut command) = configured_command(input)?;
+    command.args(arguments);
+    let (records, diagnostics, server_partial) =
+        run_json_collecting_diagnostics_allowing_empty_match(&path, &mut command)?;
+    let result = workspace_search_result(&records, diagnostics, server_partial)?;
+    if result.partial && result.files.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            result
+                .diagnostics
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Workspace search did not complete.".to_owned()),
+        )
+        .with_hint("Narrow the scope or search text and try again."));
+    }
+    Ok(result)
+}
+
 pub fn list_local_workspace_directory(
     input: &ConnectionInput,
     root: &Path,
@@ -1543,6 +2308,7 @@ fn read_local_workspace_directory(
                 mapped: true,
                 other_open: false,
                 other_lock: false,
+                lock_topology: unknown_file_lock_topology(),
                 unresolved: false,
                 untracked: false,
                 ignored: false,
@@ -1722,19 +2488,86 @@ fn workspace_client_path(root: &Path, path: &Path, client: &str) -> Result<Strin
 }
 
 fn workspace_fstat_arguments(scope: &str) -> Vec<String> {
-    [
-        "-ztag",
-        "-Mj",
-        "fstat",
-        "-Rc",
-        "-Ol",
-        "-T",
-        "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,otherLock,resolveStatus",
-        scope,
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+    let mut arguments = workspace_fstat_base_arguments();
+    arguments.extend([
+        "-T".to_owned(),
+        WORKSPACE_FSTAT_FIELDS.to_owned(),
+        scope.to_owned(),
+    ]);
+    arguments
+}
+
+fn workspace_fstat_base_arguments() -> Vec<String> {
+    ["-ztag", "-Mj", "fstat", "-Rc", "-Ol"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn workspace_search_arguments(scope: &str, query: &str) -> Result<Vec<String>, AppError> {
+    let scope = scope.trim();
+    validate_depot_path(scope)?;
+    let query = query.trim();
+    if query.is_empty()
+        || query.chars().count() > 128
+        || query.contains(['\r', '\n', '\0'])
+        || query.chars().any(|character| character.is_control())
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Workspace search text must contain between 1 and 128 visible characters.",
+        ));
+    }
+    let filter = query
+        .split_whitespace()
+        .map(|term| {
+            let escaped = escape_fstat_filter_term(term);
+            format!("(depotFile~=*{escaped}* | clientFile~=*{escaped}*)")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut arguments = workspace_fstat_base_arguments();
+    arguments.extend([
+        "-m".to_owned(),
+        (MAX_WORKSPACE_SEARCH_RESULTS + 1).to_string(),
+        "-F".to_owned(),
+        filter,
+        "-T".to_owned(),
+        WORKSPACE_FSTAT_FIELDS.to_owned(),
+        scope.to_owned(),
+    ]);
+    Ok(arguments)
+}
+
+fn escape_fstat_filter_term(term: &str) -> String {
+    let term = term.replace('\\', "\\\\").replace("...", "\\...");
+    let mut escaped = String::with_capacity(term.len());
+    for character in term.chars() {
+        if matches!(
+            character,
+            '&' | '|' | '(' | ')' | '=' | '<' | '>' | '^' | '*' | '"'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+fn workspace_search_result(
+    records: &[Map<String, Value>],
+    diagnostics: Vec<String>,
+    server_partial: bool,
+) -> Result<WorkspaceSearchResult, AppError> {
+    let mut files = parse_workspace_files(records)?;
+    let partial = server_partial || files.len() > MAX_WORKSPACE_SEARCH_RESULTS;
+    files.truncate(MAX_WORKSPACE_SEARCH_RESULTS);
+    Ok(WorkspaceSearchResult {
+        files,
+        partial,
+        limit: MAX_WORKSPACE_SEARCH_RESULTS,
+        diagnostics,
+    })
 }
 
 fn merge_untracked_workspace_files(
@@ -1767,6 +2600,7 @@ fn merge_untracked_workspace_files(
                 mapped: true,
                 other_open: false,
                 other_lock: false,
+                lock_topology: unknown_file_lock_topology(),
                 unresolved: false,
                 untracked: true,
                 ignored: !visible.contains(item.depot_path.as_str()),
@@ -1789,6 +2623,144 @@ pub fn preview_sync_scopes(
     preview.writable_files = workspace_files.writable;
     preview.missing_have_files = workspace_files.missing_have;
     Ok(preview)
+}
+
+pub fn preview_sync_at_date(
+    input: &ConnectionInput,
+    scopes: &[String],
+    target_date_time: &str,
+) -> Result<DateSyncPreview, AppError> {
+    let target_date_spec = normalize_date_sync_target(target_date_time)?;
+    let info = read_info(input)?;
+    let server_date = info.server_date.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "The server did not report its date and time zone.",
+        )
+        .with_hint("Refresh the connection and try the date preview again.")
+    })?;
+    let (server_now, server_time_zone) = parse_server_date_context(&server_date)?;
+    if target_date_spec > server_now {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The retrieval date cannot be later than the current server time.",
+        ));
+    }
+    let dated_scopes = date_sync_scopes(scopes, &target_date_spec)?;
+    let preview = preview_sync_scopes(input, &dated_scopes)?;
+    Ok(DateSyncPreview {
+        scopes: dated_scopes,
+        target_date_time: format!("{} {}", &target_date_spec[..10], &target_date_spec[11..]),
+        server_date,
+        server_time_zone,
+        preview,
+    })
+}
+
+fn normalize_date_sync_target(value: &str) -> Result<String, AppError> {
+    let value = value.trim();
+    let (date, time) = value.split_once('T').ok_or_else(invalid_date_sync_target)?;
+    if date.len() != 10 || !matches!(time.len(), 5 | 8) {
+        return Err(invalid_date_sync_target());
+    }
+    let date = parse_fixed_date_parts(date, '-', 3).ok_or_else(invalid_date_sync_target)?;
+    let time = parse_fixed_date_parts(time, ':', if time.len() == 5 { 2 } else { 3 })
+        .ok_or_else(invalid_date_sync_target)?;
+    if date.len() != 3 || time.len() < 2 || time.len() > 3 {
+        return Err(invalid_date_sync_target());
+    }
+    let (year, month, day) = (date[0], date[1], date[2]);
+    let (hour, minute) = (time[0], time[1]);
+    let second = *time.get(2).unwrap_or(&0);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if year < 1970 || day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
+        return Err(invalid_date_sync_target());
+    }
+    Ok(format!(
+        "{year:04}/{month:02}/{day:02}:{hour:02}:{minute:02}:{second:02}"
+    ))
+}
+
+fn parse_fixed_date_parts(value: &str, separator: char, expected: usize) -> Option<Vec<u32>> {
+    let parts = value.split(separator).collect::<Vec<_>>();
+    if parts.len() != expected
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    parts.into_iter().map(|part| part.parse().ok()).collect()
+}
+
+fn invalid_date_sync_target() -> AppError {
+    AppError::new(
+        ErrorKind::CommandFailed,
+        "Enter a valid server date and time.",
+    )
+}
+
+fn parse_server_date_context(server_date: &str) -> Result<(String, String), AppError> {
+    let mut parts = server_date.split_whitespace();
+    let date = parts.next().ok_or_else(invalid_server_date_context)?;
+    let time = parts.next().ok_or_else(invalid_server_date_context)?;
+    let offset = parts.next().ok_or_else(invalid_server_date_context)?;
+    if date.len() != 10
+        || time.len() != 8
+        || offset.len() != 5
+        || !matches!(offset.as_bytes().first(), Some(b'+') | Some(b'-'))
+        || !offset.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    {
+        return Err(invalid_server_date_context());
+    }
+    let offset_hour = offset[1..3]
+        .parse::<u8>()
+        .map_err(|_| invalid_server_date_context())?;
+    let offset_minute = offset[3..5]
+        .parse::<u8>()
+        .map_err(|_| invalid_server_date_context())?;
+    if offset_hour > 23 || offset_minute > 59 {
+        return Err(invalid_server_date_context());
+    }
+    let normalized = normalize_date_sync_target(&format!("{}T{time}", date.replace('/', "-")))?;
+    let zone_name = parts.collect::<Vec<_>>().join(" ");
+    let zone = if zone_name.is_empty() {
+        offset.to_owned()
+    } else {
+        format!("{offset} {zone_name}")
+    };
+    Ok((normalized, zone))
+}
+
+fn invalid_server_date_context() -> AppError {
+    AppError::new(
+        ErrorKind::InvalidOutput,
+        "The server returned an invalid date or time-zone context.",
+    )
+}
+
+fn date_sync_scopes(scopes: &[String], target_date_spec: &str) -> Result<Vec<String>, AppError> {
+    if scopes.is_empty() || scopes.len() > 1_000 {
+        return Err(empty_file_selection());
+    }
+    validate_depot_paths(scopes)?;
+    if scopes.iter().any(|scope| scope.contains(['@', '#', '\0'])) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Date retrieval requires depot paths without another revision specifier.",
+        ));
+    }
+    Ok(scopes
+        .iter()
+        .map(|scope| format!("{}@{target_date_spec}", scope.trim()))
+        .collect())
 }
 
 pub fn preview_sync_items(
@@ -2356,47 +3328,187 @@ pub fn resolve_files(
     if paths.is_empty() {
         return Err(empty_file_selection());
     }
+    let preview = preview_resolve(input, paths)?;
+    if preview.is_empty()
+        || preview
+            .iter()
+            .any(|item| item.conflict_kind != ResolveConflictKind::Text)
+    {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "This selection includes a specialized resolve. Open its category-specific flow.",
+        ));
+    }
+    if preview
+        .iter()
+        .any(|item| !item.allowed_actions.contains(mode))
+    {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The selected resolve action is not valid for the current preview.",
+        ));
+    }
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "resolve", resolve_mode_flag(mode)]);
+    command.args(["-ztag", "-Mj", "resolve", "-Ac", resolve_mode_flag(mode)]);
     command.args(paths);
-    run_json(&path, &mut command)?;
-    Ok(match preview_resolve(input, paths) {
-        Ok(pending) => resolve_read_back(paths, &pending),
-        Err(error) => resolve_unknown_read_back(paths, &error.message),
-    })
+    let apply_error = run_json(&path, &mut command).err();
+    Ok(resolve_read_back(input, paths, apply_error.as_ref()))
+}
+
+pub fn resolve_specialized(
+    input: &ConnectionInput,
+    items: &[crate::models::SpecializedResolveItemInput],
+    mode: &ResolveMode,
+) -> Result<ResolveApplyResult, AppError> {
+    required_client(input)?;
+    if items.is_empty() {
+        return Err(empty_file_selection());
+    }
+    let scope = &items[0].scope;
+    if *scope == ResolveScope::Unknown || items.iter().any(|item| item.scope != *scope) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Specialized resolve items must use one known conflict category.",
+        ));
+    }
+    let paths = items
+        .iter()
+        .map(|item| item.depot_path.clone())
+        .collect::<Vec<_>>();
+    let fresh = preview_resolve_scoped(input, scope, &paths)?;
+    for item in items {
+        let current = fresh
+            .iter()
+            .find(|candidate| candidate.depot_path == item.depot_path);
+        if current.is_none_or(|candidate| {
+            candidate.preview_token != item.preview_token || candidate.scope != item.scope
+        }) {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "The resolve preview changed. Refresh it before applying.",
+            ));
+        }
+        if current.is_some_and(|candidate| !candidate.allowed_actions.contains(mode)) {
+            return Err(AppError::new(
+                ErrorKind::Conflict,
+                "That action is not valid for this conflict category.",
+            ));
+        }
+    }
+    let (path, mut command) = configured_command(input)?;
+    command.args([
+        "-ztag",
+        "-Mj",
+        "resolve",
+        resolve_scope_flag(scope),
+        resolve_mode_flag(mode),
+    ]);
+    if *scope != ResolveScope::StreamSpec {
+        validate_depot_paths(&paths)?;
+        command.args(&paths);
+    }
+    let apply_error = run_json(&path, &mut command).err();
+    Ok(resolve_read_back(input, &paths, apply_error.as_ref()))
 }
 
 pub fn preview_resolve(
     input: &ConnectionInput,
     paths: &[String],
 ) -> Result<Vec<ResolvePreviewItem>, AppError> {
+    preview_resolve_scoped(input, &ResolveScope::Unknown, paths)
+}
+
+pub fn preview_resolve_scoped(
+    input: &ConnectionInput,
+    scope: &ResolveScope,
+    paths: &[String],
+) -> Result<Vec<ResolvePreviewItem>, AppError> {
     required_client(input)?;
-    validate_depot_paths(paths)?;
     if paths.is_empty() {
         return Err(empty_file_selection());
     }
+    if *scope != ResolveScope::StreamSpec {
+        validate_depot_paths(paths)?;
+    }
+    let mappings = if *scope == ResolveScope::StreamSpec {
+        paths
+            .iter()
+            .map(|path| WorkspaceMapping {
+                query: path.clone(),
+                state: WorkspaceMappingState::Mapped,
+                depot_path: Some(path.clone()),
+                client_path: None,
+                local_path: None,
+                diagnostics: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let mappings = map_workspace_paths(input, paths)?;
+        if mappings.partial
+            || mappings
+                .mappings
+                .iter()
+                .any(|mapping| mapping.state != WorkspaceMappingState::Mapped)
+        {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "The server did not return a complete workspace mapping for resolve preview.",
+            ));
+        }
+        mappings.mappings
+    };
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "resolve", "-n"]);
+    command.args(["-ztag", "-Mj", "resolve", "-n", "-N", "-o"]);
+    if *scope != ResolveScope::Unknown {
+        command.arg(resolve_scope_flag(scope));
+    }
     command.args(paths);
     let records = run_json_allowing_empty_match(&path, &mut command)?;
-    Ok(parse_resolve_preview(&records))
+    parse_resolve_preview(&records, &mappings)
 }
 
-fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewItem> {
+fn resolve_scope_flag(scope: &ResolveScope) -> &'static str {
+    match scope {
+        ResolveScope::Content => "-Ac",
+        ResolveScope::Move => "-Am",
+        ResolveScope::Filetype => "-At",
+        ResolveScope::Attribute => "-Aa",
+        ResolveScope::StreamSpec => "-So",
+        ResolveScope::Unknown => "-Ac",
+    }
+}
+
+fn parse_resolve_preview(
+    records: &[Map<String, Value>],
+    mappings: &[WorkspaceMapping],
+) -> Result<Vec<ResolvePreviewItem>, AppError> {
     records
         .iter()
         .filter(|record| !is_message_record(record))
-        .filter_map(|record| {
+        .map(|record| {
+            let mapping = resolve_record_mapping(record, mappings).ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "The server returned a resolve record without a matching workspace identity.",
+                )
+            })?;
             let conflict_kind = classify_resolve_conflict(record);
+            let scope = classify_resolve_scope(record, &conflict_kind);
             let allowed_actions = resolve_allowed_actions(&conflict_kind);
-            Some(ResolvePreviewItem {
-                depot_path: field(record, &["depotFile", "clientFile", "path"])?,
+            Ok(ResolvePreviewItem {
+                depot_path: mapping.depot_path.clone().ok_or_else(|| {
+                    AppError::new(
+                        ErrorKind::InvalidOutput,
+                        "The server omitted the depot identity for a mapped resolve target.",
+                    )
+                })?,
                 action: field(record, &["how", "action", "status"])
                     .unwrap_or_else(|| "resolve".to_owned()),
-                detail: field(record, &["fromFile", "baseFile", "type"]),
-                client_path: field(record, &["clientFile"]),
-                local_path: field(record, &["path"]),
+                detail: field(record, &["fromFile", "baseFile", "resolveType", "type"]),
+                client_path: mapping.client_path.clone(),
+                local_path: mapping.local_path.clone(),
                 conflict_kind,
+                scope,
                 base_identifier: revision_identifier(
                     record,
                     "baseFile",
@@ -2407,13 +3519,60 @@ fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewIt
                     "fromFile",
                     &["endFromRev", "fromRev", "sourceRev"],
                 ),
-                workspace_identifier: field(record, &["path", "clientFile", "depotFile"])
-                    .unwrap_or_else(|| "workspace".to_owned()),
+                workspace_identifier: mapping
+                    .local_path
+                    .clone()
+                    .or_else(|| mapping.client_path.clone())
+                    .unwrap_or_else(|| mapping.query.clone()),
+                preview_token: resolve_preview_token(record),
                 allowed_actions,
                 read_back: ResolveReadBackState::Pending,
             })
         })
         .collect()
+}
+
+fn resolve_record_mapping<'a>(
+    record: &Map<String, Value>,
+    mappings: &'a [WorkspaceMapping],
+) -> Option<&'a WorkspaceMapping> {
+    let target_identities = ["depotFile", "clientFile", "path", "toFile"]
+        .into_iter()
+        .filter_map(|name| field(record, &[name]))
+        .collect::<Vec<_>>();
+    mappings.iter().find(|mapping| {
+        [
+            mapping.depot_path.as_deref(),
+            mapping.client_path.as_deref(),
+            mapping.local_path.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|identity| {
+            target_identities
+                .iter()
+                .any(|target| identity.eq_ignore_ascii_case(target))
+        })
+    })
+}
+
+fn resolve_preview_token(record: &Map<String, Value>) -> String {
+    let mut hasher = DefaultHasher::new();
+    for key in [
+        "depotFile",
+        "clientFile",
+        "path",
+        "fromFile",
+        "baseFile",
+        "type",
+        "how",
+        "resolveType",
+        "action",
+    ] {
+        key.hash(&mut hasher);
+        field(record, &[key]).unwrap_or_default().hash(&mut hasher);
+    }
+    format!("resolve-v2-{:016x}", hasher.finish())
 }
 
 fn revision_identifier(
@@ -2431,6 +3590,31 @@ fn revision_identifier(
 }
 
 fn classify_resolve_conflict(record: &Map<String, Value>) -> ResolveConflictKind {
+    let resolve_type = field(record, &["resolveType"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let content_type = field(record, &["contentResolveType"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if resolve_type.contains("stream") {
+        return ResolveConflictKind::StreamSpec;
+    }
+    if resolve_type.contains("move") || resolve_type.contains("filename") {
+        return ResolveConflictKind::MoveName;
+    }
+    if resolve_type.contains("filetype")
+        || resolve_type.contains("attribute")
+        || resolve_type.contains("charset")
+    {
+        return ResolveConflictKind::FiletypeAttribute;
+    }
+    if resolve_type == "content" {
+        return if content_type.contains("text") {
+            ResolveConflictKind::Text
+        } else {
+            ResolveConflictKind::Binary
+        };
+    }
     let description = ["resolveType", "type", "how", "action", "status"]
         .into_iter()
         .filter_map(|name| field(record, &[name]))
@@ -2456,6 +3640,31 @@ fn classify_resolve_conflict(record: &Map<String, Value>) -> ResolveConflictKind
     }
 }
 
+fn classify_resolve_scope(record: &Map<String, Value>, kind: &ResolveConflictKind) -> ResolveScope {
+    let description = ["resolveType", "type", "how", "action", "status"]
+        .into_iter()
+        .filter_map(|name| field(record, &[name]))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if description.contains("stream") {
+        ResolveScope::StreamSpec
+    } else if description.contains("move") || description.contains("rename") {
+        ResolveScope::Move
+    } else if description.contains("attribute") {
+        ResolveScope::Attribute
+    } else if description.contains("filetype") {
+        ResolveScope::Filetype
+    } else if matches!(
+        kind,
+        ResolveConflictKind::Binary | ResolveConflictKind::Text
+    ) {
+        ResolveScope::Content
+    } else {
+        ResolveScope::Unknown
+    }
+}
+
 fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
     match kind {
         ResolveConflictKind::Text => vec![
@@ -2465,43 +3674,83 @@ fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
             ResolveMode::AutoMerge,
             ResolveMode::EditResult,
         ],
-        _ => vec![ResolveMode::Yours, ResolveMode::Theirs],
+        ResolveConflictKind::Binary => vec![ResolveMode::Yours, ResolveMode::Theirs],
+        ResolveConflictKind::MoveName | ResolveConflictKind::FiletypeAttribute => vec![
+            ResolveMode::Yours,
+            ResolveMode::Theirs,
+            ResolveMode::AutoMerge,
+        ],
+        ResolveConflictKind::StreamSpec => vec![
+            ResolveMode::Yours,
+            ResolveMode::Theirs,
+            ResolveMode::AutoSafe,
+            ResolveMode::AutoMerge,
+        ],
+        ResolveConflictKind::Unknown => Vec::new(),
     }
 }
 
-fn resolve_read_back(paths: &[String], pending: &[ResolvePreviewItem]) -> ResolveApplyResult {
+fn resolve_read_back(
+    input: &ConnectionInput,
+    paths: &[String],
+    apply_error: Option<&AppError>,
+) -> ResolveApplyResult {
     ResolveApplyResult {
         items: paths
             .iter()
-            .map(|path| {
-                let unresolved = pending.iter().any(|item| item.depot_path == *path);
-                ResolveApplyItem {
-                    depot_path: path.clone(),
-                    state: if unresolved {
-                        ResolveReadBackState::Pending
-                    } else {
-                        ResolveReadBackState::Resolved
-                    },
-                    reason: unresolved
-                        .then(|| "Server still reports a pending resolve.".to_owned()),
-                }
-            })
+            .map(|path| resolve_path_read_back(input, path, apply_error))
             .collect(),
     }
 }
 
-fn resolve_unknown_read_back(paths: &[String], reason: &str) -> ResolveApplyResult {
-    ResolveApplyResult {
-        items: paths
-            .iter()
-            .map(|path| ResolveApplyItem {
-                depot_path: path.clone(),
+fn resolve_path_read_back(
+    input: &ConnectionInput,
+    depot_path: &str,
+    apply_error: Option<&AppError>,
+) -> ResolveApplyItem {
+    match preview_resolve(input, &[depot_path.to_owned()]) {
+        Ok(pending) if !pending.is_empty() => ResolveApplyItem {
+            depot_path: depot_path.to_owned(),
+            state: ResolveReadBackState::Pending,
+            reason: Some(match apply_error {
+                Some(error) => format!(
+                    "Server still reports a pending resolve after apply failed: {}",
+                    error.message
+                ),
+                None => "Server still reports a pending resolve.".to_owned(),
+            }),
+        },
+        Ok(_) => match resolved_path_is_reported(input, depot_path) {
+            Ok(true) => ResolveApplyItem {
+                depot_path: depot_path.to_owned(),
+                state: ResolveReadBackState::Resolved,
+                reason: None,
+            },
+            Ok(false) => ResolveApplyItem {
+                depot_path: depot_path.to_owned(),
                 state: ResolveReadBackState::Unknown,
-                reason: Some(format!(
-                    "Resolve was applied, but read-back failed: {reason}"
-                )),
-            })
-            .collect(),
+                reason: Some(
+                    "The server reports neither a pending nor a completed resolve.".to_owned(),
+                ),
+            },
+            Err(error) => resolve_unknown_item(depot_path, &error.message),
+        },
+        Err(error) => resolve_unknown_item(depot_path, &error.message),
+    }
+}
+
+fn resolved_path_is_reported(input: &ConnectionInput, depot_path: &str) -> Result<bool, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "resolved", "-o", depot_path]);
+    let records = run_json_allowing_empty_match(&path, &mut command)?;
+    Ok(records.iter().any(|record| !is_message_record(record)))
+}
+
+fn resolve_unknown_item(depot_path: &str, reason: &str) -> ResolveApplyItem {
+    ResolveApplyItem {
+        depot_path: depot_path.to_owned(),
+        state: ResolveReadBackState::Unknown,
+        reason: Some(format!("Resolve read-back failed: {reason}")),
     }
 }
 
@@ -2640,11 +3889,17 @@ pub fn save_resolve_result(
         ));
     }
     let temporary = recovery_temporary_path(&target)?;
-    fs::write(&temporary, result.as_bytes()).map_err(|error| {
-        local_file_error("Не удалось записать временный resolve result.", error)
-    })?;
-    replace_recovery_file(&temporary, &target)?;
-    resolve_files(input, &[depot_path.to_owned()], &ResolveMode::EditResult)
+    let saved = (|| {
+        fs::write(&temporary, result.as_bytes()).map_err(|error| {
+            local_file_error("Не удалось записать временный resolve result.", error)
+        })?;
+        replace_recovery_file(&temporary, &target)?;
+        resolve_files(input, &[depot_path.to_owned()], &ResolveMode::EditResult)
+    })();
+    if temporary.exists() {
+        remove_recovery_temporary(&temporary);
+    }
+    saved
 }
 
 fn resolve_mode_flag(mode: &ResolveMode) -> &'static str {
@@ -2710,6 +3965,90 @@ pub fn reconcile_command(
     Ok((path, command))
 }
 
+fn local_directory_reconcile_query(directory: &str) -> Result<String, AppError> {
+    let directory = directory.trim();
+    if directory.is_empty()
+        || directory.len() > 4096
+        || directory.contains(['\r', '\n', '\0'])
+        || directory.chars().any(|character| character.is_control())
+    {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile folder path is invalid.",
+        ));
+    }
+    let directory = Path::new(directory);
+    if !directory.is_absolute() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile folder must use an absolute path.",
+        ));
+    }
+    let metadata = fs::metadata(directory).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile folder is unavailable.",
+        )
+        .with_diagnostics(error.to_string())
+    })?;
+    if !metadata.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The selected reconcile path is not a folder.",
+        ));
+    }
+    directory
+        .join("...")
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::CommandFailed,
+                "The selected reconcile folder cannot be represented safely.",
+            )
+        })
+}
+
+fn mapped_reconcile_scope(batch: &WorkspaceMappingBatch) -> Result<String, AppError> {
+    if batch.partial {
+        return Err(AppError::new(
+            ErrorKind::PartialResult,
+            "The selected folder mapping is incomplete.",
+        )
+        .with_hint("Choose a narrower mapped folder and retry."));
+    }
+    let [mapping] = batch.mappings.as_slice() else {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The server returned an unexpected number of mapping results for the selected folder.",
+        ));
+    };
+    if !matches!(mapping.state, WorkspaceMappingState::Mapped) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "The selected folder is not mapped by the current workspace.",
+        )
+        .with_hint("Choose a folder included by the current client view."));
+    }
+    let scope = mapping.depot_path.as_deref().ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "The mapped folder response has no depot scope.",
+        )
+    })?;
+    validate_depot_path(scope)?;
+    Ok(scope.to_owned())
+}
+
+pub fn reconcile_scope_from_local_directory(
+    input: &ConnectionInput,
+    directory: &str,
+) -> Result<String, AppError> {
+    let query = local_directory_reconcile_query(directory)?;
+    let batch = map_workspace_paths(input, &[query])?;
+    mapped_reconcile_scope(&batch)
+}
+
 pub fn parse_reconcile_output_record(line: &str) -> Option<ReconcileItem> {
     let record = serde_json::from_str::<Map<String, Value>>(line).ok()?;
     reconcile_item(&record)
@@ -2765,15 +4104,102 @@ fn reconcile_local_metadata(item: &mut ReconcileItem) {
 }
 
 fn reconcile_preview_token(scope: &str, items: &[ReconcileItem]) -> String {
+    let mut canonical_items = items.to_vec();
+    for item in &mut canonical_items {
+        item.preview_token.clear();
+    }
+    canonical_items.sort_by(|left, right| {
+        serde_json::to_vec(left)
+            .unwrap_or_default()
+            .cmp(&serde_json::to_vec(right).unwrap_or_default())
+    });
     let mut hash = 0xcbf29ce484222325_u64;
-    for byte in scope
-        .bytes()
-        .chain(serde_json::to_vec(items).unwrap_or_default())
+    for byte in (scope.len() as u64)
+        .to_le_bytes()
+        .into_iter()
+        .chain(scope.bytes())
+        .chain(serde_json::to_vec(&canonical_items).unwrap_or_default())
     {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    format!("reconcile-v1-{hash:016x}")
+    format!("reconcile-v2-{hash:016x}")
+}
+
+fn reconcile_move_partner_index(items: &[ReconcileItem], item_index: usize) -> Option<usize> {
+    let item = items.get(item_index)?;
+    let partner = item.move_partner.as_deref()?;
+    items
+        .iter()
+        .enumerate()
+        .find_map(|(candidate_index, candidate)| {
+            (candidate_index != item_index
+                && candidate.action == "move"
+                && candidate.depot_path == partner
+                && candidate.move_partner.as_deref() == Some(item.depot_path.as_str()))
+            .then_some(candidate_index)
+        })
+}
+
+fn mark_unsafe_reconcile_move_pairs(items: &mut [ReconcileItem]) {
+    let base_unsafe = items
+        .iter()
+        .map(|item| item.ignored || item.unsafe_item)
+        .collect::<Vec<_>>();
+    let unsafe_pairs = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            item.action == "move"
+                && reconcile_move_partner_index(items, index)
+                    .is_none_or(|partner_index| base_unsafe[partner_index])
+        })
+        .collect::<Vec<_>>();
+    for (item, unsafe_pair) in items.iter_mut().zip(unsafe_pairs) {
+        if unsafe_pair {
+            if !item
+                .reasons
+                .iter()
+                .any(|reason| reason == "incomplete_move_pair")
+            {
+                item.reasons.push("incomplete_move_pair".to_owned());
+            }
+            item.unsafe_item = true;
+        }
+    }
+}
+
+pub fn validate_reconcile_selection(items: &[ReconcileItem]) -> Result<(), AppError> {
+    if items.iter().any(|item| {
+        item.ignored
+            || item.unsafe_item
+            || item.action == "unsafe"
+            || !matches!(item.mapping_state, WorkspaceMappingState::Mapped)
+    }) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Ignored, unmapped, or unsafe reconcile candidates cannot be applied.",
+        ));
+    }
+    let stable_ids = items
+        .iter()
+        .map(|item| item.stable_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if stable_ids.len() != items.len() {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "A reconcile candidate can be selected only once.",
+        ));
+    }
+    if items.iter().enumerate().any(|(index, item)| {
+        item.action == "move" && reconcile_move_partner_index(items, index).is_none()
+    }) {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            "Both server-reported halves of a move must be selected together.",
+        ));
+    }
+    Ok(())
 }
 
 pub fn reconcile_preview_snapshot(
@@ -2843,6 +4269,7 @@ pub fn reconcile_preview_snapshot(
             || (item.action == "move" && item.move_partner.is_none());
         reconcile_local_metadata(item);
     }
+    mark_unsafe_reconcile_move_pairs(&mut items);
     let token = reconcile_preview_token(scope, &items);
     for item in &mut items {
         item.preview_token.clone_from(&token);
@@ -3034,7 +4461,76 @@ pub fn file_history(
     command.args([
         "-ztag", "-Mj", "filelog", "-i", "-l", "-t", "-m", &limit, depot_path,
     ]);
-    parse_file_history(&run_json_allowing_empty_match(&path, &mut command)?)
+    parse_file_history(
+        &run_json_allowing_empty_match(&path, &mut command)?,
+        depot_path,
+    )
+}
+
+pub fn file_history_page(
+    input: &ConnectionInput,
+    depot_path: &str,
+    limit: u32,
+    cursor: Option<&str>,
+) -> Result<HistoryPage<FileRevision>, AppError> {
+    required_client(input)?;
+    validate_depot_path(depot_path)?;
+    if !(1..=HISTORY_PAGE_LIMIT).contains(&limit) {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "History page limit must be between 1 and 100.",
+        ));
+    }
+    let expected = HistoryCursor {
+        kind: "file".to_owned(),
+        scope: depot_path.to_owned(),
+        boundary: String::new(),
+        user: None,
+        client: None,
+        job: None,
+    };
+    let boundary = decode_history_cursor(cursor, &expected)?;
+    let spec = boundary.as_ref().map_or_else(
+        || depot_path.to_owned(),
+        |value| format!("{depot_path}#{value}"),
+    );
+    let (path, mut command) = configured_command(input)?;
+    command.args([
+        "-ztag",
+        "-Mj",
+        "filelog",
+        "-i",
+        "-l",
+        "-t",
+        "-m",
+        &(limit + 1).to_string(),
+        &spec,
+    ]);
+    let mut items = parse_file_history(
+        &run_json_allowing_empty_match(&path, &mut command)?,
+        depot_path,
+    )?;
+    if let Some(boundary) = boundary {
+        items.retain(|item| item.revision != boundary);
+    }
+    let partial = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    let next_cursor = if partial {
+        Some(encode_history_cursor(&HistoryCursor {
+            boundary: items
+                .last()
+                .map(|item| item.revision.clone())
+                .unwrap_or_default(),
+            ..expected
+        })?)
+    } else {
+        None
+    };
+    Ok(HistoryPage {
+        items,
+        next_cursor,
+        partial,
+    })
 }
 
 pub fn print_revision(
@@ -3239,6 +4735,134 @@ pub fn save_shelved_file(
             "Не удалось сохранить содержимое shelf на диск.",
         )
         .with_diagnostics(error.to_string())
+    })
+}
+
+pub fn save_shelved_files(
+    input: &ConnectionInput,
+    source_change: &str,
+    depot_paths: &[String],
+    output_directory: &str,
+) -> Result<ChangeExportResult, AppError> {
+    required_client(input)?;
+    validate_numbered_change(source_change)?;
+    validate_depot_paths(depot_paths)?;
+    if depot_paths.is_empty() {
+        return Err(empty_file_selection());
+    }
+    let destination = validated_new_output_directory(output_directory)?;
+    let selected = depot_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let shelved = list_shelved_files(input, source_change)?;
+    let available = shelved
+        .iter()
+        .map(|file| file.depot_path.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(path) = selected
+        .iter()
+        .find(|path| !available.contains(path.as_str()))
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Выбранный файл больше не находится в shelf.",
+        )
+        .with_diagnostics(path));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::new();
+    let mut skipped_files = 0_u32;
+    for file in shelved
+        .into_iter()
+        .filter(|file| selected.contains(&file.depot_path))
+    {
+        if file.action.eq_ignore_ascii_case("delete") || file.action.eq_ignore_ascii_case("purge") {
+            skipped_files = skipped_files.saturating_add(1);
+            continue;
+        }
+        let relative = submitted_export_relative_path(&file.depot_path)?;
+        if !seen.insert(relative.to_string_lossy().to_lowercase()) {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                "Несколько shelved-файлов совпадают в файловой системе назначения.",
+            ));
+        }
+        files.push((file.depot_path, destination.join(relative)));
+    }
+    if files.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "В выбранных shelved-файлах нет содержимого для экспорта.",
+        ));
+    }
+
+    fs::create_dir_all(&destination).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не удалось создать каталог для экспорта shelf.",
+        )
+        .with_diagnostics(error.to_string())
+    })?;
+
+    let mut saved_files = 0_u32;
+    for (depot_path, output_path) in &files {
+        let result = (|| {
+            let parent = output_path.parent().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Некорректный путь файла экспорта shelf.",
+                )
+            })?;
+            fs::create_dir_all(parent).map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось создать подкаталог для экспорта shelf.",
+                )
+                .with_diagnostics(error.to_string())
+            })?;
+            let (path, mut command) = configured_command(input)?;
+            command.args([
+                "print",
+                "-q",
+                &shelved_revision_spec(depot_path, source_change),
+            ]);
+            let bytes = run_binary(&path, &mut command)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(output_path)
+                .map_err(|error| {
+                    AppError::new(
+                        ErrorKind::CommandFailed,
+                        "Файл назначения уже существует или недоступен.",
+                    )
+                    .with_diagnostics(error.to_string())
+                })?;
+            output.write_all(&bytes).map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось сохранить содержимое shelf на диск.",
+                )
+                .with_diagnostics(error.to_string())
+            })
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(output_path);
+            if saved_files == 0 {
+                let _ = fs::remove_dir_all(&destination);
+                return Err(error);
+            }
+            return Err(AppError::new(
+                ErrorKind::PartialResult,
+                format!("Сохранено файлов: {saved_files}. Экспорт shelf завершён частично."),
+            )
+            .with_hint("Уже сохранённые файлы оставлены в каталоге назначения.")
+            .with_diagnostics(format!("{}\n{:?}", output_path.display(), error)));
+        }
+        saved_files += 1;
+    }
+    Ok(ChangeExportResult {
+        saved_files,
+        skipped_files,
     })
 }
 
@@ -3472,7 +5096,7 @@ fn submit_outcome(
             .iter()
             .map(|step| SubmitStepResult {
                 step: (*step).to_owned(),
-                status: "completed".to_owned(),
+                status: "succeeded".to_owned(),
                 detail: None,
             })
             .collect(),
@@ -3533,7 +5157,7 @@ pub fn submit_preflight(
         "-Ro",
         "-Ol",
         "-T",
-        "depotFile,clientFile,path,action,haveRev,headRev,headAction,isMapped,resolveStatus,otherOpen,otherLock",
+        "depotFile,clientFile,path,action,haveRev,headRev,headAction,type,isMapped,resolveStatus,otherOpen,ourLock,otherLock,globalLock",
     ]);
     command.args(&paths);
     let records = run_json(&path, &mut command)?;
@@ -3974,11 +5598,366 @@ fn workspace_paths(
     input: &ConnectionInput,
     depot_paths: &[String],
 ) -> Result<Vec<(String, String)>, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "where"]);
-    command.args(depot_paths);
+    let (path, mut command) = workspace_where_command(input, depot_paths)?;
     let records = run_json(&path, &mut command)?;
     Ok(parse_workspace_paths(&records))
+}
+
+fn workspace_where_command(
+    input: &ConnectionInput,
+    paths: &[String],
+) -> Result<(PathBuf, Command), AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "where"]);
+    command.args(paths);
+    Ok((path, command))
+}
+
+pub struct WorkspaceScanConfiguration {
+    pub roots: Vec<WorkspaceScanRoot>,
+    pub exclusions: Vec<String>,
+    pub partial_reasons: Vec<WorkspaceScanPartialReason>,
+}
+
+pub fn configure_workspace_scan(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    requested_roots: &[String],
+    requested_exclusions: &[String],
+) -> Result<WorkspaceScanConfiguration, AppError> {
+    let roots = workspace_scan_directories(requested_roots)?;
+    let queries = roots
+        .iter()
+        .map(|root| workspace_cli_path(&root.join("...").to_string_lossy()))
+        .collect::<Vec<_>>();
+    let mappings = map_workspace_paths(input, &queries)?;
+    let mut scan_roots = mapped_workspace_scan_roots(&roots, &mappings)?;
+    let exclusions = workspace_scan_exclusions(requested_exclusions, &roots)?;
+    let mut partial_reasons = Vec::new();
+    for root in &mut scan_roots {
+        match workspace_scan_ignore_sources(input, workspace_root, Path::new(&root.local_path)) {
+            Ok(sources) => root.ignore_sources = sources,
+            Err(_) => {
+                if !partial_reasons.contains(&WorkspaceScanPartialReason::IgnoreRulesUnavailable) {
+                    partial_reasons.push(WorkspaceScanPartialReason::IgnoreRulesUnavailable);
+                }
+            }
+        }
+    }
+    Ok(WorkspaceScanConfiguration {
+        roots: scan_roots,
+        exclusions,
+        partial_reasons,
+    })
+}
+
+fn workspace_scan_directories(directories: &[String]) -> Result<Vec<PathBuf>, AppError> {
+    if directories.is_empty() || directories.len() > MAX_WORKSPACE_SCAN_ROOTS {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            format!("Допустимо от 1 до {MAX_WORKSPACE_SCAN_ROOTS} корней сканирования."),
+        ));
+    }
+    let mut result = Vec::with_capacity(directories.len());
+    let mut seen = BTreeSet::new();
+    for directory in directories {
+        let path = Path::new(directory.trim());
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                format!("Папка сканирования не существует: {directory}"),
+            ));
+        }
+        let path = fs::canonicalize(path)
+            .map_err(|error| local_file_error("Не удалось прочитать папку сканирования.", error))?;
+        let key = workspace_path_key(&path.to_string_lossy());
+        if seen.insert(key) {
+            result.push(path);
+        }
+    }
+    Ok(result)
+}
+
+fn mapped_workspace_scan_roots(
+    local_roots: &[PathBuf],
+    batch: &WorkspaceMappingBatch,
+) -> Result<Vec<WorkspaceScanRoot>, AppError> {
+    if batch.partial {
+        return Err(AppError::new(
+            ErrorKind::PartialResult,
+            "Perforce вернул неполный результат проверки корней сканирования.",
+        )
+        .with_diagnostics(batch.diagnostics.join("\n")));
+    }
+    if batch.mappings.len() != local_roots.len() {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "Perforce вернул неожиданный набор корней сканирования.",
+        ));
+    }
+    local_roots
+        .iter()
+        .zip(&batch.mappings)
+        .map(|(local_root, mapping)| {
+            if mapping.state != WorkspaceMappingState::Mapped {
+                return Err(AppError::new(
+                    ErrorKind::Conflict,
+                    "Папка сканирования не входит в client view текущего workspace.",
+                )
+                .with_diagnostics(mapping.diagnostics.join("\n")));
+            }
+            let depot_scope = mapping.depot_path.clone().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "Не получен depot scope корня сканирования.",
+                )
+            })?;
+            let client_scope = mapping.client_path.clone().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "Не получен client scope корня сканирования.",
+                )
+            })?;
+            let local_scope = mapping.local_path.clone().ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "Не получен local scope корня сканирования.",
+                )
+            })?;
+            Ok(WorkspaceScanRoot {
+                local_path: workspace_cli_path(&local_root.to_string_lossy()),
+                local_scope,
+                client_scope,
+                depot_scope,
+                ignore_sources: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+fn workspace_scan_exclusions(
+    requested: &[String],
+    roots: &[PathBuf],
+) -> Result<Vec<String>, AppError> {
+    if requested.len() > MAX_WORKSPACE_SCAN_ROOTS {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            format!("Допустимо не более {MAX_WORKSPACE_SCAN_ROOTS} исключений сканера."),
+        ));
+    }
+    let mut exclusions = Vec::with_capacity(requested.len());
+    let mut seen = BTreeSet::new();
+    for exclusion in requested {
+        let path = Path::new(exclusion.trim());
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(AppError::new(
+                ErrorKind::CommandFailed,
+                format!("Папка исключения не существует: {exclusion}"),
+            ));
+        }
+        let path = fs::canonicalize(path)
+            .map_err(|error| local_file_error("Не удалось прочитать исключение сканера.", error))?;
+        if !roots.iter().any(|root| path.starts_with(root)) {
+            return Err(AppError::new(
+                ErrorKind::Conflict,
+                "Исключение сканера находится вне выбранных корней.",
+            ));
+        }
+        let display = workspace_cli_path(&path.to_string_lossy());
+        if seen.insert(workspace_path_key(&display)) {
+            exclusions.push(display);
+        }
+    }
+    Ok(exclusions)
+}
+
+fn workspace_scan_ignore_sources(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    scan_root: &Path,
+) -> Result<Vec<String>, AppError> {
+    let (path, mut command) = workspace_scan_ignore_command(input, workspace_root, scan_root)?;
+    let output = run_binary(&path, &mut command)?;
+    Ok(parse_workspace_scan_ignore_sources(
+        &String::from_utf8_lossy(&output),
+    ))
+}
+
+fn workspace_scan_ignore_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    scan_root: &Path,
+) -> Result<(PathBuf, Command), AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.current_dir(scan_root);
+    if let Some(ignore_file) = workspace_ignore_file(workspace_root) {
+        command.env("P4IGNORE", ignore_file);
+    }
+    command.args(workspace_scan_ignore_arguments());
+    Ok((path, command))
+}
+
+fn workspace_scan_ignore_arguments() -> [&'static str; 2] {
+    ["ignores", "-v"]
+}
+
+fn parse_workspace_scan_ignore_sources(output: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("#FILE"))
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .filter(|source| seen.insert((*source).to_owned()))
+        .map(str::to_owned)
+        .collect()
+}
+
+pub fn workspace_scan_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+) -> Result<(PathBuf, Command), AppError> {
+    validate_depot_path(&root.depot_scope)?;
+    let (path, mut command) = workspace_scan_base_command(input, workspace_root, root)?;
+    command.args(workspace_scan_arguments(&root.depot_scope));
+    Ok((path, command))
+}
+
+pub fn workspace_scan_add_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+) -> Result<(PathBuf, Command), AppError> {
+    let local_scope = workspace_cli_path(&Path::new(&root.local_path).join("*").to_string_lossy());
+    let (path, mut command) = workspace_scan_base_command(input, workspace_root, root)?;
+    command.args(workspace_scan_add_arguments(&local_scope));
+    Ok((path, command))
+}
+
+fn workspace_scan_base_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+) -> Result<(PathBuf, Command), AppError> {
+    let scan_root = Path::new(&root.local_path);
+    if !scan_root.is_absolute() || !scan_root.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Корень фонового сканирования больше недоступен.",
+        ));
+    }
+    let (path, mut command) = configured_command(input)?;
+    command.current_dir(scan_root);
+    if let Some(ignore_file) = workspace_ignore_file(workspace_root) {
+        command.env("P4IGNORE", ignore_file);
+    }
+    set_low_process_priority(&mut command);
+    Ok((path, command))
+}
+
+fn workspace_scan_arguments(scope: &str) -> [&str; 7] {
+    ["-ztag", "-Mj", "status", "-e", "-d", "-m", scope]
+}
+
+fn workspace_scan_add_arguments(scope: &str) -> [&str; 5] {
+    ["-ztag", "-Mj", "status", "-a", scope]
+}
+
+pub struct WorkspaceScanCommandOutput {
+    pub candidates: Vec<WorkspaceScanCandidate>,
+    pub diagnostics: Vec<String>,
+    pub failed: bool,
+}
+
+pub fn parse_workspace_scan_output(output: &str) -> Result<WorkspaceScanCommandOutput, AppError> {
+    parse_workspace_scan_output_actions(output, &["edit", "delete"])
+}
+
+pub fn parse_workspace_scan_add_output(
+    output: &str,
+) -> Result<WorkspaceScanCommandOutput, AppError> {
+    parse_workspace_scan_output_actions(output, &["add"])
+}
+
+fn parse_workspace_scan_output_actions(
+    output: &str,
+    allowed_actions: &[&str],
+) -> Result<WorkspaceScanCommandOutput, AppError> {
+    let records = parse_json_lines(output)?;
+    let mut candidates = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut failed = false;
+    for record in records {
+        let severity = field(&record, &["severity"])
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let generic = field(&record, &["generic"])
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let error_code =
+            field(&record, &["code"]).is_some_and(|code| code.eq_ignore_ascii_case("error"));
+        if severity >= 2 || error_code {
+            let empty_match = severity == 2 && generic == 17;
+            if !empty_match {
+                diagnostics.extend(
+                    record
+                        .get("data")
+                        .or_else(|| record.get("fmt"))
+                        .and_then(value_text),
+                );
+            }
+            failed |= !empty_match && (severity >= 3 || error_code);
+            continue;
+        }
+        let Some(original_action) =
+            field(&record, &["action", "status"]).map(|action| action.to_lowercase())
+        else {
+            continue;
+        };
+        let action = if original_action.contains("add") {
+            "add"
+        } else if original_action.contains("delete")
+            || original_action.contains("remove")
+            || original_action.contains("missing")
+        {
+            "delete"
+        } else if original_action.contains("edit") || original_action.contains("update") {
+            "edit"
+        } else {
+            continue;
+        };
+        if !allowed_actions.contains(&action) {
+            continue;
+        }
+        let tagged_client = field(&record, &["clientFile"]);
+        let local_path = field(&record, &["path"]).or_else(|| {
+            tagged_client
+                .as_deref()
+                .filter(|path| !path.starts_with("//"))
+                .map(str::to_owned)
+        });
+        let Some(local_path) = local_path else {
+            diagnostics.push("p4 status returned a candidate without a local path.".to_owned());
+            failed = true;
+            continue;
+        };
+        let client_path = tagged_client.filter(|path| path.starts_with("//"));
+        candidates.push(WorkspaceScanCandidate {
+            stable_id: format!("{local_path}\0{action}"),
+            action: action.to_owned(),
+            depot_path: field(&record, &["depotFile"]),
+            client_path,
+            local_path,
+        });
+    }
+    candidates.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+    candidates.dedup_by(|left, right| left.stable_id == right.stable_id);
+    Ok(WorkspaceScanCommandOutput {
+        candidates,
+        diagnostics,
+        failed,
+    })
 }
 
 pub fn map_workspace_paths(
@@ -4010,9 +5989,7 @@ fn map_workspace_paths_chunk(
     input: &ConnectionInput,
     queries: &[String],
 ) -> Result<WorkspaceMappingBatch, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "where"]);
-    command.args(queries);
+    let (path, mut command) = workspace_where_command(input, queries)?;
     let (records, diagnostics, partial) = run_json_collecting_diagnostics(&path, &mut command)?;
     Ok(parse_workspace_mapping_batch(
         queries,
@@ -4043,10 +6020,20 @@ fn parse_workspace_mapping_batch(
     let mappings = queries
         .iter()
         .map(|query| {
-            let candidates = records
+            let exact_candidates = records
                 .iter()
-                .filter(|record| mapping_record_matches_query(record, query))
+                .filter(|record| mapping_record_matches_query(record, query, false))
                 .collect::<Vec<_>>();
+            let candidates = if exact_candidates.is_empty() {
+                records
+                    .iter()
+                    .filter(|record| {
+                        mapping_record_matches_query(record, query, true)
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                exact_candidates
+            };
             let Some(record) = candidates.last() else {
                 return WorkspaceMapping {
                     query: query.clone(),
@@ -4098,13 +6085,23 @@ fn parse_workspace_mapping_batch(
     }
 }
 
-fn mapping_record_matches_query(record: &Map<String, Value>, query: &str) -> bool {
+fn mapping_record_matches_query(
+    record: &Map<String, Value>,
+    query: &str,
+    ignore_case: bool,
+) -> bool {
     ["depotFile", "clientFile", "path"]
         .iter()
         .any(|field_name| {
             field(record, &[*field_name]).is_some_and(|value| {
                 let (value, _) = mapping_path(Some(value));
-                value.is_some_and(|value| value.eq_ignore_ascii_case(query))
+                value.is_some_and(|value| {
+                    if ignore_case {
+                        value.eq_ignore_ascii_case(query)
+                    } else {
+                        value == query
+                    }
+                })
             })
         })
 }
@@ -4113,9 +6110,7 @@ fn probe_workspace_paths(
     input: &ConnectionInput,
     depot_paths: &[String],
 ) -> Result<Vec<(String, String)>, AppError> {
-    let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "where"]);
-    command.args(depot_paths);
+    let (path, mut command) = workspace_where_command(input, depot_paths)?;
     let records = run_json_probe(&path, &mut command)?;
     Ok(parse_workspace_paths(&records))
 }
@@ -4286,6 +6281,431 @@ pub fn edit_change_description(
     Ok(())
 }
 
+pub fn preview_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    change_identity_preflight(input, change, owner, client, visibility)
+}
+
+pub fn update_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+    preview_token: &str,
+) -> Result<ChangeIdentityState, AppError> {
+    let preflight = change_identity_preflight(input, change, owner, client, visibility)?;
+    if preflight.preview_token != preview_token {
+        return Err(
+            AppError::new(ErrorKind::Stale, "Changelist preflight is stale.")
+                .with_hint("Run the server preflight again before applying the change."),
+        );
+    }
+    if !preflight.blockers.is_empty() {
+        return Err(change_identity_blocked_error(&preflight.blockers));
+    }
+    if preflight.current == preflight.target {
+        return Ok(preflight.current);
+    }
+
+    let (path, mut output_command) = configured_command(input)?;
+    output_command.args(["change", "-o"]);
+    if preflight.requires_admin {
+        output_command.arg("-f");
+    }
+    output_command.arg(change);
+    let output = output_command
+        .output()
+        .map_err(|error| launch_error(&path, error))?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    let spec = replace_change_identity_fields(
+        &String::from_utf8_lossy(&output.stdout),
+        &preflight.target,
+    )?;
+    let (_, mut input_command) = configured_command(input)?;
+    input_command.args(["change", "-i"]);
+    if preflight.requires_admin {
+        input_command.arg("-f");
+    }
+    input_command.args(["-U", change]);
+    let applied = run_output_with_stdin(&path, &mut input_command, spec.as_bytes())?;
+    if !applied.status.success() {
+        return Err(command_error(&applied));
+    }
+    log_stderr_warning(&applied, "p4 change identity update returned a warning.");
+
+    let read_back = read_change_identity(input, change, preflight.requires_admin)?;
+    if read_back != preflight.target {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Server read-back did not match the requested changelist identity.",
+        )
+        .with_hint("Refresh the changelist before attempting another update."));
+    }
+    Ok(read_back)
+}
+
+fn change_identity_preflight(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    required_client(input)?;
+    validate_numbered_change(change)?;
+    let owner = validate_form_value(owner.trim(), "changelist owner")?.to_owned();
+    let client = validate_form_value(client.trim(), "changelist workspace")?.to_owned();
+    let info = info(input)?;
+    let current = read_change_identity(input, change, false)?;
+    let target = ChangeIdentityState {
+        owner,
+        client,
+        visibility,
+    };
+    let mut blockers = Vec::new();
+
+    let capabilities = info.capabilities.as_ref();
+    for flag in [CapabilityFlag::ChangeUser, CapabilityFlag::ChangeType] {
+        match capabilities
+            .and_then(|snapshot| snapshot.flags.get(&flag))
+            .map(|fact| &fact.state)
+        {
+            Some(CapabilityState::Supported) => {}
+            Some(CapabilityState::Unsupported) => {
+                push_blocker(&mut blockers, ChangeIdentityBlocker::Unsupported)
+            }
+            _ => push_blocker(&mut blockers, ChangeIdentityBlocker::CapabilityUnknown),
+        }
+    }
+
+    let topology = change_topology(&info, &mut blockers);
+    let (permission_level, permission_known) = change_permission_level(input);
+    if !permission_known {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::PermissionUnknown);
+    }
+
+    let has_opened_files = change_has_records(input, ["opened", "-c", change])?;
+    let has_jobs = change_has_records(input, ["fixes", "-c", change])?;
+    let has_shelved_files = change_has_shelf(input, change)?;
+    let changes_identity = current.owner != target.owner || current.client != target.client;
+    let requires_admin = changes_identity
+        && (has_opened_files
+            || has_shelved_files
+            || has_jobs
+            || !server_name_eq(
+                &current.owner,
+                input.user.trim(),
+                info.case_handling.as_deref(),
+            ));
+    if permission_known && !permission_allows_change(&permission_level, requires_admin) {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::PermissionDenied);
+    }
+
+    if !read_change_status(input, change, requires_admin)?.eq_ignore_ascii_case("pending") {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::NotPending);
+    }
+    let target_client = read_target_client(input, &target.client)?;
+    if !server_name_eq(
+        &target_client.owner,
+        &target.owner,
+        info.case_handling.as_deref(),
+    ) {
+        push_blocker(
+            &mut blockers,
+            ChangeIdentityBlocker::TargetClientOwnerMismatch,
+        );
+    }
+    validate_change_topology(&info, target_client.server_id.as_deref(), &mut blockers);
+
+    let mut preflight = ChangeIdentityPreflight {
+        change: change.to_owned(),
+        current,
+        target,
+        has_opened_files,
+        has_shelved_files,
+        has_jobs,
+        requires_admin,
+        permission_level,
+        topology,
+        blockers,
+        preview_token: String::new(),
+    };
+    preflight.preview_token = change_identity_token(&preflight);
+    Ok(preflight)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetClientIdentity {
+    owner: String,
+    server_id: Option<String>,
+}
+
+fn read_target_client(
+    input: &ConnectionInput,
+    client: &str,
+) -> Result<TargetClientIdentity, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "client", "-o", client]);
+    let records = run_json(&path, &mut command)?;
+    let record = records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return the target workspace.",
+            )
+        })?;
+    Ok(TargetClientIdentity {
+        owner: required_field(record, &["Owner", "owner"], "workspace owner")?,
+        server_id: optional_field(record, &["ServerID", "serverID"]),
+    })
+}
+
+fn read_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<ChangeIdentityState, AppError> {
+    let records = read_change_records(input, change, force)?;
+    let record = records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return the changelist form.",
+            )
+        })?;
+    let visibility = match optional_field(record, &["Type", "type"])
+        .unwrap_or_else(|| "public".to_owned())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "public" => ChangeVisibility::Public,
+        "restricted" => ChangeVisibility::Restricted,
+        _ => {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server returned an unknown changelist type.",
+            ));
+        }
+    };
+    Ok(ChangeIdentityState {
+        owner: required_field(record, &["User", "user"], "changelist owner")?,
+        client: required_field(record, &["Client", "client"], "changelist workspace")?,
+        visibility,
+    })
+}
+
+fn read_change_status(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<String, AppError> {
+    let records = read_change_records(input, change, force)?;
+    records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .and_then(|record| optional_field(record, &["Status", "status"]))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return changelist status.",
+            )
+        })
+}
+
+fn read_change_records(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<Vec<Map<String, Value>>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "change", "-o"]);
+    if force {
+        command.arg("-f");
+    }
+    command.arg(change);
+    run_json(&path, &mut command)
+}
+
+fn change_has_records<const N: usize>(
+    input: &ConnectionInput,
+    args: [&str; N],
+) -> Result<bool, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj"]).args(args);
+    Ok(run_json_allowing_empty_match(&path, &mut command)?
+        .iter()
+        .any(|record| !is_message_record(record)))
+}
+
+fn change_has_shelf(input: &ConnectionInput, change: &str) -> Result<bool, AppError> {
+    let records = read_change_records(input, change, false)?;
+    Ok(records.iter().any(|record| {
+        record
+            .keys()
+            .any(|key| key.to_ascii_lowercase().starts_with("shelvedaccess"))
+    }))
+}
+
+fn change_permission_level(input: &ConnectionInput) -> (String, bool) {
+    let Ok((path, mut command)) = configured_command(input) else {
+        return ("unknown".to_owned(), false);
+    };
+    command.args(["-ztag", "-Mj", "protects", "-m"]);
+    match run_json_probe(&path, &mut command) {
+        Ok(records) => records
+            .iter()
+            .find_map(|record| optional_field(record, &["permMax", "perm"]))
+            .map(|permission| (permission, true))
+            .unwrap_or_else(|| ("unknown".to_owned(), false)),
+        Err(_) => ("unknown".to_owned(), false),
+    }
+}
+
+fn permission_allows_change(permission: &str, requires_admin: bool) -> bool {
+    let permission = permission.to_ascii_lowercase();
+    if requires_admin {
+        matches!(permission.as_str(), "admin" | "super")
+    } else {
+        matches!(permission.as_str(), "open" | "write" | "admin" | "super")
+    }
+}
+
+fn change_topology(
+    info: &crate::models::P4Info,
+    blockers: &mut Vec<ChangeIdentityBlocker>,
+) -> String {
+    match info.server_services.as_deref().map(str::to_ascii_lowercase) {
+        Some(services) if services == "standard" => services,
+        Some(services) if services.contains("edge") || services.contains("commit") => {
+            if info.server_id.as_deref().is_none_or(str::is_empty) {
+                push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown);
+            }
+            services
+        }
+        Some(services) if !services.is_empty() => {
+            push_blocker(blockers, ChangeIdentityBlocker::Unsupported);
+            services
+        }
+        _ => {
+            push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown);
+            "unknown".to_owned()
+        }
+    }
+}
+
+fn validate_change_topology(
+    info: &crate::models::P4Info,
+    target_server_id: Option<&str>,
+    blockers: &mut Vec<ChangeIdentityBlocker>,
+) {
+    let services = info
+        .server_services
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if services.contains("edge") || services.contains("commit") {
+        match (info.server_id.as_deref(), target_server_id) {
+            (Some(current), Some(target)) if current == target => {}
+            (Some(_), Some(_)) => push_blocker(blockers, ChangeIdentityBlocker::TopologyMismatch),
+            _ => push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown),
+        }
+    }
+}
+
+fn server_name_eq(left: &str, right: &str, case_handling: Option<&str>) -> bool {
+    match case_handling.map(str::to_ascii_lowercase).as_deref() {
+        Some("insensitive" | "hybrid") => left.eq_ignore_ascii_case(right),
+        _ => left == right,
+    }
+}
+
+fn push_blocker(blockers: &mut Vec<ChangeIdentityBlocker>, blocker: ChangeIdentityBlocker) {
+    if !blockers.contains(&blocker) {
+        blockers.push(blocker);
+    }
+}
+
+fn change_identity_token(preflight: &ChangeIdentityPreflight) -> String {
+    let mut hasher = DefaultHasher::new();
+    preflight.change.hash(&mut hasher);
+    preflight.current.hash(&mut hasher);
+    preflight.target.hash(&mut hasher);
+    preflight.has_opened_files.hash(&mut hasher);
+    preflight.has_shelved_files.hash(&mut hasher);
+    preflight.has_jobs.hash(&mut hasher);
+    preflight.requires_admin.hash(&mut hasher);
+    preflight.permission_level.hash(&mut hasher);
+    preflight.topology.hash(&mut hasher);
+    preflight.blockers.hash(&mut hasher);
+    format!("change-identity-v1-{:016x}", hasher.finish())
+}
+
+fn replace_change_identity_fields(
+    spec: &str,
+    target: &ChangeIdentityState,
+) -> Result<String, AppError> {
+    let mut lines = spec.lines().map(str::to_owned).collect::<Vec<_>>();
+    replace_single_form_field(&mut lines, "User", &target.owner)?;
+    replace_single_form_field(&mut lines, "Client", &target.client)?;
+    replace_or_insert_change_type(
+        &mut lines,
+        match target.visibility {
+            ChangeVisibility::Public => "public",
+            ChangeVisibility::Restricted => "restricted",
+        },
+    );
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn replace_or_insert_change_type(lines: &mut Vec<String>, value: &str) {
+    if let Some(line) = lines.iter_mut().find(|line| line.starts_with("Type:")) {
+        *line = format!("Type:\t{value}");
+        return;
+    }
+    let index = lines
+        .iter()
+        .position(|line| line.starts_with("Description:"))
+        .unwrap_or(lines.len());
+    lines.splice(index..index, [format!("Type:\t{value}"), String::new()]);
+}
+
+fn change_identity_blocked_error(blockers: &[ChangeIdentityBlocker]) -> AppError {
+    let kind = if blockers.iter().any(|blocker| {
+        matches!(
+            blocker,
+            ChangeIdentityBlocker::PermissionDenied | ChangeIdentityBlocker::PermissionUnknown
+        )
+    }) {
+        ErrorKind::Permission
+    } else if blockers.iter().any(|blocker| {
+        matches!(
+            blocker,
+            ChangeIdentityBlocker::TopologyMismatch | ChangeIdentityBlocker::NotPending
+        )
+    }) {
+        ErrorKind::Conflict
+    } else {
+        ErrorKind::UnsupportedCapability
+    };
+    AppError::new(
+        kind,
+        "Changelist identity update is blocked by server preflight.",
+    )
+    .with_hint("Review the preflight blockers and refresh before retrying.")
+}
+
 pub fn delete_change(input: &ConnectionInput, change: &str) -> Result<(), AppError> {
     required_client(input)?;
     validate_numbered_change(change)?;
@@ -4397,20 +6817,23 @@ fn create_shelf_from_all(input: &ConnectionInput, change: &str) -> Result<(), Ap
 }
 
 fn run_text_diff(path: &Path, command: &mut Command) -> Result<FileDiff, AppError> {
-    let output = command
-        .output()
-        .map_err(|error| launch_error(path, error))?;
+    let (output, truncated) = run_bounded_output(path, command, MAX_DIFF_BYTES)?;
     if !output.status.success() {
         return Err(command_error(&output));
     }
     log_stderr_warning(&output, "p4 diff вернул предупреждение.");
-    let truncated = output.stdout.len() > MAX_DIFF_BYTES;
-    let binary = output.stdout.contains(&0) || is_binary_diff_marker(&output.stdout);
-    let bytes = &output.stdout[..output.stdout.len().min(MAX_DIFF_BYTES)];
+    let invalid_encoding = std::str::from_utf8(&output.stdout).is_err();
+    let binary =
+        output.stdout.contains(&0) || invalid_encoding || is_binary_diff_marker(&output.stdout);
     Ok(FileDiff {
-        text: String::from_utf8_lossy(bytes).into_owned(),
+        text: if binary {
+            String::new()
+        } else {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        },
         truncated,
         binary,
+        invalid_encoding,
     })
 }
 
@@ -4530,6 +6953,7 @@ fn parse_info_records(records: &[Map<String, Value>]) -> Result<P4Info, AppError
     let info = P4Info {
         server_address: take_field(&fields, &["serverAddress"]),
         server_version: take_field(&fields, &["serverVersion"]),
+        server_date: take_field(&fields, &["serverDate"]),
         user_name: take_field(&fields, &["userName"]),
         client_name: take_field(&fields, &["clientName"]),
         client_root: take_field(&fields, &["clientRoot"]),
@@ -4616,12 +7040,32 @@ fn parse_workspace_spec(
         host: optional_field(record, &["Host", "host"]),
         stream: optional_field(record, &["Stream", "stream"]),
         description: optional_field(record, &["Description", "description"]).unwrap_or_default(),
-        options: indexed_fields(record, "Options"),
+        options: workspace_options(record),
         submit_options: optional_field(record, &["SubmitOptions", "submitOptions"]),
         line_end: optional_field(record, &["LineEnd", "lineEnd"]),
         alt_roots: indexed_fields(record, "AltRoots"),
+        change_view: indexed_fields(record, "ChangeView"),
+        workspace_type: optional_field(record, &["Type", "type"])
+            .unwrap_or_else(|| "writeable".to_owned()),
+        server_id: optional_field(record, &["ServerID", "serverID", "serverId"]),
         mappings: indexed_fields(record, "View"),
     })
+}
+
+fn workspace_options(record: &Map<String, Value>) -> Vec<String> {
+    let indexed = indexed_fields(record, "Options");
+    let values = if indexed.is_empty() {
+        optional_field(record, &["Options", "options"])
+            .into_iter()
+            .collect()
+    } else {
+        indexed
+    };
+    values
+        .iter()
+        .flat_map(|value| value.split_whitespace())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn parse_depot_directories(
@@ -4769,14 +7213,13 @@ fn limit_change_detail(
     detail
 }
 
-fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision>, AppError> {
+fn parse_file_history(
+    records: &[Map<String, Value>],
+    depot_path: &str,
+) -> Result<Vec<FileRevision>, AppError> {
     let mut revisions = Vec::new();
     for record in records.iter().filter(|record| !is_message_record(record)) {
         if let Some(revision) = optional_field(record, &["rev", "revision"]) {
-            let integrations = ["how", "srev", "erev", "sfile"]
-                .iter()
-                .filter_map(|name| optional_field(record, &[*name]))
-                .collect();
             revisions.push(FileRevision {
                 revision,
                 change: optional_field(record, &["change"]).unwrap_or_default(),
@@ -4787,7 +7230,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
                 client: optional_field(record, &["client"]),
                 size: optional_field(record, &["fileSize", "size"]),
                 description: optional_field(record, &["desc", "description"]),
-                integrations,
+                integration_records: flat_integration_records(record, depot_path),
                 labels: ["label", "labelName"]
                     .iter()
                     .filter_map(|name| optional_field(record, &[*name]))
@@ -4803,10 +7246,6 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
         for index in indices {
             let revision = numbered_field(record, &["rev", "revision"], index)
                 .expect("revision index was collected from this record");
-            let integrations = ["how", "srev", "erev", "sfile", "file"]
-                .iter()
-                .flat_map(|name| numbered_fields(record, name, index))
-                .collect();
             revisions.push(FileRevision {
                 revision,
                 change: numbered_field(record, &["change"], index).unwrap_or_default(),
@@ -4817,7 +7256,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
                 client: numbered_field(record, &["client"], index),
                 size: numbered_field(record, &["fileSize", "size"], index),
                 description: numbered_field(record, &["desc", "description"], index),
-                integrations,
+                integration_records: indexed_integration_records(record, index, depot_path),
                 labels: ["label", "labelName"]
                     .iter()
                     .flat_map(|name| numbered_fields(record, name, index))
@@ -4828,6 +7267,99 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
     Ok(revisions)
 }
 
+fn flat_integration_records(
+    record: &Map<String, Value>,
+    depot_path: &str,
+) -> Vec<FileIntegrationRecord> {
+    let integration = integration_record(
+        optional_field(record, &["how"]),
+        optional_field(record, &["sfile", "file"]),
+        optional_field(record, &["srev"]),
+        optional_field(record, &["erev"]),
+        depot_path,
+    );
+    integration.into_iter().collect()
+}
+
+fn indexed_integration_records(
+    record: &Map<String, Value>,
+    revision_index: usize,
+    depot_path: &str,
+) -> Vec<FileIntegrationRecord> {
+    let how = numbered_integration_fields(record, "how", revision_index);
+    let source_file = numbered_integration_fields(record, "sfile", revision_index);
+    let related_file = numbered_integration_fields(record, "file", revision_index);
+    let start = numbered_integration_fields(record, "srev", revision_index);
+    let end = numbered_integration_fields(record, "erev", revision_index);
+    let indices = how
+        .keys()
+        .chain(source_file.keys())
+        .chain(related_file.keys())
+        .chain(start.keys())
+        .chain(end.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+
+    indices
+        .into_iter()
+        .filter_map(|index| {
+            integration_record(
+                how.get(&index).cloned(),
+                source_file
+                    .get(&index)
+                    .cloned()
+                    .or_else(|| related_file.get(&index).cloned()),
+                start.get(&index).cloned(),
+                end.get(&index).cloned(),
+                depot_path,
+            )
+        })
+        .collect()
+}
+
+fn numbered_integration_fields(
+    record: &Map<String, Value>,
+    prefix: &str,
+    revision_index: usize,
+) -> BTreeMap<usize, String> {
+    let exact = format!("{prefix}{revision_index}");
+    let nested = format!("{exact},");
+    record
+        .iter()
+        .filter_map(|(key, value)| {
+            let integration_index = if key == &exact {
+                Some(0)
+            } else {
+                key.strip_prefix(&nested)
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+            }?;
+            Some((integration_index, value_text(value)?))
+        })
+        .collect()
+}
+
+fn integration_record(
+    how: Option<String>,
+    file_path: Option<String>,
+    start_revision: Option<String>,
+    end_revision: Option<String>,
+    depot_path: &str,
+) -> Option<FileIntegrationRecord> {
+    if how.is_none() && file_path.is_none() && start_revision.is_none() && end_revision.is_none() {
+        return None;
+    }
+    let complete =
+        how.is_some() && file_path.is_some() && start_revision.is_some() && end_revision.is_some();
+    let cyclic = file_path.as_deref() == Some(depot_path);
+    Some(FileIntegrationRecord {
+        how,
+        file_path,
+        start_revision,
+        end_revision,
+        complete,
+        cyclic,
+    })
+}
 fn parse_opened_files(records: &[Map<String, Value>]) -> Result<Vec<OpenedFile>, AppError> {
     records
         .iter()
@@ -4843,6 +7375,62 @@ fn parse_opened_files(records: &[Map<String, Value>]) -> Result<Vec<OpenedFile>,
             })
         })
         .collect()
+}
+
+fn unknown_file_lock_topology() -> FileLockTopology {
+    FileLockTopology {
+        explicit: FileLockPresence::Unknown,
+        exclusive_file_type: FileLockPresence::Unknown,
+        scope: FileLockScope::Unknown,
+        owner: FileLockOwner::Unknown,
+        owner_detail: None,
+    }
+}
+
+fn file_type_is_exclusive(file_type: &str) -> bool {
+    file_type
+        .split_once('+')
+        .is_some_and(|(_, modifiers)| modifiers.contains('l'))
+}
+
+fn parse_file_lock_topology(record: &Map<String, Value>) -> FileLockTopology {
+    let our_lock = has_active_field(record, &["ourLock"]);
+    let other_lock = has_active_field(record, &["otherLock"]);
+    let global_lock = has_active_field(record, &["globalLock"]);
+    let explicit = our_lock || other_lock || global_lock;
+    let owner = match (our_lock, other_lock) {
+        (true, true) => FileLockOwner::Unknown,
+        (true, false) => FileLockOwner::Ours,
+        (false, true) => FileLockOwner::Other,
+        (false, false) if global_lock => FileLockOwner::Unknown,
+        (false, false) => FileLockOwner::None,
+    };
+    FileLockTopology {
+        explicit: if explicit {
+            FileLockPresence::Present
+        } else {
+            FileLockPresence::Absent
+        },
+        exclusive_file_type: optional_field(record, &["type", "headType"])
+            .map(|file_type| {
+                if file_type_is_exclusive(&file_type) {
+                    FileLockPresence::Present
+                } else {
+                    FileLockPresence::Absent
+                }
+            })
+            .unwrap_or(FileLockPresence::Unknown),
+        scope: if global_lock {
+            FileLockScope::Global
+        } else if our_lock || other_lock {
+            FileLockScope::Local
+        } else {
+            FileLockScope::None
+        },
+        owner,
+        owner_detail: optional_field(record, &["otherLock", "ourLock", "globalLock"])
+            .map(|value| bounded_detail_text(&value)),
+    }
 }
 
 fn parse_workspace_files(records: &[Map<String, Value>]) -> Result<Vec<WorkspaceFile>, AppError> {
@@ -4862,6 +7450,7 @@ fn parse_workspace_files(records: &[Map<String, Value>]) -> Result<Vec<Workspace
                 mapped: optional_field(record, &["path", "clientFile"]).is_some(),
                 other_open: has_active_field(record, &["otherOpen", "otherLock"]),
                 other_lock: has_active_field(record, &["otherLock"]),
+                lock_topology: parse_file_lock_topology(record),
                 unresolved: has_active_field(record, &["resolveStatus", "unresolved"]),
                 untracked: false,
                 ignored: false,
@@ -4899,6 +7488,22 @@ fn parse_sync_preview(records: &[Map<String, Value>]) -> SyncPreview {
     }
 }
 
+fn submit_preflight_issue(
+    depot_path: String,
+    kind: &str,
+    reason: impl Into<String>,
+    action: impl Into<String>,
+) -> SubmitPreflightIssue {
+    let reason = reason.into();
+    SubmitPreflightIssue {
+        depot_path,
+        kind: kind.to_owned(),
+        detail: reason.clone(),
+        reason,
+        action: action.into(),
+    }
+}
+
 fn parse_submit_preflight(records: &[Map<String, Value>]) -> Vec<SubmitPreflightIssue> {
     records
         .iter()
@@ -4910,19 +7515,61 @@ fn parse_submit_preflight(records: &[Map<String, Value>]) -> Vec<SubmitPreflight
             };
             let mut issues = Vec::new();
             if has_active_field(record, &["resolveStatus", "unresolved"]) {
-                issues.push(SubmitPreflightIssue {
-                    depot_path: depot_path.clone(),
-                    kind: "unresolved".to_owned(),
-                    detail: "File has unresolved content.".to_owned(),
-                });
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    "unresolved",
+                    "File has unresolved content.",
+                    "Resolve the file and run submit preflight again.",
+                ));
             }
-            if has_active_field(record, &["otherOpen"]) || has_active_field(record, &["otherLock"])
+            let lock = parse_file_lock_topology(record);
+            if lock.explicit == FileLockPresence::Present
+                && lock.owner != FileLockOwner::Ours
             {
-                issues.push(SubmitPreflightIssue {
-                    depot_path: depot_path.clone(),
-                    kind: "locked_or_open_elsewhere".to_owned(),
-                    detail: "File is open or locked by another user.".to_owned(),
-                });
+                let (kind, reason, action) = match (lock.scope, lock.owner) {
+                    (FileLockScope::Global, FileLockOwner::Other) => (
+                        "global_lock",
+                        "Another workspace holds an explicit global lock.",
+                        "Ask the lock owner to release the global lock, then rerun preflight.",
+                    ),
+                    (FileLockScope::Local, FileLockOwner::Other) => (
+                        "local_lock",
+                        "Another workspace holds an explicit local lock.",
+                        "Ask the lock owner to unlock on the originating server, then rerun preflight.",
+                    ),
+                    _ => (
+                        "lock_state_unknown",
+                        "The server reported an explicit lock but did not identify its owner or scope.",
+                        "Refresh and rerun preflight; if the state remains unknown, verify the lock on the server before submitting.",
+                    ),
+                };
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    kind,
+                    reason,
+                    action,
+                ));
+            } else if has_active_field(record, &["otherOpen"]) {
+                let (kind, reason, action) =
+                    if lock.exclusive_file_type == FileLockPresence::Present {
+                        (
+                            "exclusive_filetype",
+                            "The +l file type is already open in another workspace.",
+                            "Ask the other user to submit or revert the file, then rerun preflight.",
+                        )
+                    } else {
+                        (
+                            "other_open",
+                            "The file is open in another workspace without a reported lock.",
+                            "Review the other open before submitting, then rerun preflight if it changes.",
+                        )
+                    };
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    kind,
+                    reason,
+                    action,
+                ));
             }
             let have =
                 optional_field(record, &["haveRev"]).and_then(|value| value.parse::<u64>().ok());
@@ -4931,11 +7578,12 @@ fn parse_submit_preflight(records: &[Map<String, Value>]) -> Vec<SubmitPreflight
             if let (Some(have), Some(head)) = (have, head)
                 && have < head
             {
-                issues.push(SubmitPreflightIssue {
-                    depot_path: depot_path.clone(),
-                    kind: "out_of_date".to_owned(),
-                    detail: format!("Workspace has revision {have}, depot head is {head}."),
-                });
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    "out_of_date",
+                    format!("Workspace has revision {have}, depot head is {head}."),
+                    "Sync or resolve to the depot head, then run submit preflight again.",
+                ));
             }
             issues
         })
@@ -4985,11 +7633,12 @@ fn append_resolve_issues(issues: &mut Vec<SubmitPreflightIssue>, records: &[Map<
             .iter()
             .any(|issue| issue.depot_path == depot_path && issue.kind == "unresolved")
         {
-            issues.push(SubmitPreflightIssue {
+            issues.push(submit_preflight_issue(
                 depot_path,
-                kind: "unresolved".to_owned(),
-                detail: "File still has a pending resolve.".to_owned(),
-            });
+                "unresolved",
+                "File still has a pending resolve.",
+                "Resolve the file and run submit preflight again.",
+            ));
         }
     }
 }
@@ -5003,11 +7652,12 @@ fn append_missing_file_issues(
         let Some(record) = records.iter().find(|record| {
             field(record, &["depotFile", "clientFile"]).as_deref() == Some(expected_path)
         }) else {
-            issues.push(SubmitPreflightIssue {
-                depot_path: expected_path.clone(),
-                kind: "missing".to_owned(),
-                detail: "Opened file was not returned by fstat.".to_owned(),
-            });
+            issues.push(submit_preflight_issue(
+                expected_path.clone(),
+                "missing",
+                "Opened file was not returned by fstat.",
+                "Refresh the changelist and workspace mapping before submitting.",
+            ));
             continue;
         };
         let action = field(record, &["action"]).unwrap_or_default();
@@ -5023,11 +7673,12 @@ fn append_missing_file_issues(
                 .iter()
                 .any(|issue| issue.depot_path == *expected_path && issue.kind == "missing")
         {
-            issues.push(SubmitPreflightIssue {
-                depot_path: expected_path.clone(),
-                kind: "missing".to_owned(),
-                detail: "Opened file has no mapped local path.".to_owned(),
-            });
+            issues.push(submit_preflight_issue(
+                expected_path.clone(),
+                "missing",
+                "Opened file has no mapped local path.",
+                "Restore the workspace mapping or remove the file from the changelist, then rerun preflight.",
+            ));
         }
     }
 }
@@ -5172,6 +7823,17 @@ mod tests {
         }
     }
 
+    fn test_resolve_mapping(depot_path: &str, local_path: &str) -> WorkspaceMapping {
+        WorkspaceMapping {
+            query: depot_path.to_owned(),
+            state: WorkspaceMappingState::Mapped,
+            depot_path: Some(depot_path.to_owned()),
+            client_path: Some(depot_path.replacen("//Acme/main", "//client", 1)),
+            local_path: Some(local_path.to_owned()),
+            diagnostics: Vec::new(),
+        }
+    }
+
     #[test]
     fn derives_child_stream_path_in_the_parent_namespace() {
         assert_eq!(
@@ -5230,10 +7892,78 @@ mod tests {
     }
 
     #[test]
+    fn shared_form_readers_keep_stream_normalization_and_workspace_verbatim_rows() {
+        let stream_lines = ["Paths:", "\tshare ...   ", "", "Options:\tallsubmit"];
+        assert_eq!(
+            form_multiline_values(&stream_lines, "Paths", false),
+            ["share ..."]
+        );
+
+        let workspace_lines = ["View:", "\tcustom extension row   ", "", "Root:\tC:\\work"];
+        assert_eq!(
+            required_form_multiline_values(&workspace_lines, "View").unwrap(),
+            ["custom extension row   "]
+        );
+        assert!(required_form_multiline_values(&workspace_lines, "Missing").is_err());
+    }
+
+    #[test]
+    fn change_identity_form_update_preserves_restricted_payload_fields() {
+        let source = "Change:\t42\n\nClient:\told-ws\n\nUser:\talex\n\nStatus:\tpending\n\nType:\trestricted\n\nDescription:\n\tsecret text\n\nJobs:\n\tjob-secret\n\nFiles:\n\t//secret/main/file.txt\n";
+        let target = ChangeIdentityState {
+            owner: "maria".to_owned(),
+            client: "maria-main".to_owned(),
+            visibility: ChangeVisibility::Public,
+        };
+        let updated = replace_change_identity_fields(source, &target).unwrap();
+        assert!(updated.contains("Client:\tmaria-main"));
+        assert!(updated.contains("User:\tmaria"));
+        assert!(updated.contains("Type:\tpublic"));
+        assert!(updated.contains("\tsecret text"));
+        assert!(updated.contains("\tjob-secret"));
+        assert!(updated.contains("\t//secret/main/file.txt"));
+    }
+
+    #[test]
+    fn change_identity_permissions_distinguish_owner_and_forced_transfer() {
+        assert!(permission_allows_change("open", false));
+        assert!(permission_allows_change("write", false));
+        assert!(!permission_allows_change("write", true));
+        assert!(permission_allows_change("admin", true));
+        assert!(permission_allows_change("super", true));
+        assert!(!permission_allows_change("unknown", false));
+    }
+
+    #[test]
+    fn change_identity_token_covers_server_preflight_state_without_payloads() {
+        let state = ChangeIdentityState {
+            owner: "alex".to_owned(),
+            client: "alex-main".to_owned(),
+            visibility: ChangeVisibility::Restricted,
+        };
+        let mut preflight = ChangeIdentityPreflight {
+            change: "42".to_owned(),
+            current: state.clone(),
+            target: state,
+            has_opened_files: false,
+            has_shelved_files: false,
+            has_jobs: false,
+            requires_admin: false,
+            permission_level: "write".to_owned(),
+            topology: "standard".to_owned(),
+            blockers: Vec::new(),
+            preview_token: String::new(),
+        };
+        let before = change_identity_token(&preflight);
+        preflight.has_jobs = true;
+        assert_ne!(before, change_identity_token(&preflight));
+    }
+
+    #[test]
     fn parses_info_from_multiple_json_records() {
         let records = parse_json_lines(
             r#"{"serverAddress":"ssl:p4.example:1666","serverVersion":"P4D/NTX64/2025.1"}
-{"userName":"alex","clientName":"alex-main","clientRoot":"C:\\work","caseHandling":"insensitive","serverServices":"commit-server","serverID":"commit-1","security":"3","clientAddress":"10.0.0.8:5000","userEmail":"alex@example.test"}"#,
+{"userName":"alex","clientName":"alex-main","clientRoot":"C:\\work","serverDate":"2026/07/30 13:15:00 +0200 CEST","caseHandling":"insensitive","serverServices":"commit-server","serverID":"commit-1","security":"3","clientAddress":"10.0.0.8:5000","userEmail":"alex@example.test"}"#,
         )
         .unwrap();
 
@@ -5241,6 +7971,10 @@ mod tests {
         assert_eq!(info.server_address.as_deref(), Some("ssl:p4.example:1666"));
         assert_eq!(info.client_name.as_deref(), Some("alex-main"));
         assert_eq!(info.client_root.as_deref(), Some("C:\\work"));
+        assert_eq!(
+            info.server_date.as_deref(),
+            Some("2026/07/30 13:15:00 +0200 CEST")
+        );
         assert_eq!(info.case_handling.as_deref(), Some("insensitive"));
         assert_eq!(info.server_services.as_deref(), Some("commit-server"));
         assert_eq!(info.server_id.as_deref(), Some("commit-1"));
@@ -5352,6 +8086,106 @@ mod tests {
     }
 
     #[test]
+    fn depot_state_queries_are_read_only_and_server_scoped() {
+        assert_eq!(
+            depot_state_arguments("//Acme/main/...", Some("42")),
+            ["-ztag", "-Mj", "files", "-e", "//Acme/main/...@42"]
+        );
+        assert_eq!(
+            depot_state_arguments("//Acme/main/...", None),
+            ["-ztag", "-Mj", "files", "-e", "//Acme/main/...#head"]
+        );
+        assert!(validate_depot_state_scope("//Acme/main/...").is_ok());
+        assert!(validate_depot_state_scope("//...").is_ok());
+        assert!(validate_depot_state_scope("//Acme/main/file.txt").is_err());
+        assert!(validate_depot_state_scope("//Acme/*/...").is_err());
+        assert!(validate_depot_state_scope("//Acme/main/...@42").is_err());
+    }
+
+    #[test]
+    fn compares_exact_server_file_identities_into_disjoint_sets() {
+        let before = parse_depot_state(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/changed.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/deleted.txt","rev":"4","type":"binary"}
+{"depotFile":"//Acme/main/type.txt","rev":"2","type":"text"}
+{"depotFile":"//Acme/main/unchanged.txt","rev":"7","type":"utf8"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let after = parse_depot_state(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/added.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/changed.txt","rev":"2","type":"text"}
+{"depotFile":"//Acme/main/type.txt","rev":"3","type":"binary+l"}
+{"depotFile":"//Acme/main/unchanged.txt","rev":"7","type":"utf8"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let comparison = compare_depot_state_maps("//Acme/main/...", "42", None, &before, &after);
+
+        assert_eq!(
+            comparison
+                .added
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/added.txt"]
+        );
+        assert_eq!(comparison.added[0].before_revision, None);
+        assert_eq!(comparison.added[0].after_revision.as_deref(), Some("1"));
+        assert_eq!(
+            comparison
+                .changed
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/changed.txt"]
+        );
+        assert_eq!(
+            comparison
+                .deleted
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/deleted.txt"]
+        );
+        assert_eq!(
+            comparison
+                .type_changed
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/type.txt"]
+        );
+        assert_eq!(
+            comparison.type_changed[0].before_file_type.as_deref(),
+            Some("text")
+        );
+        assert_eq!(
+            comparison.type_changed[0].after_file_type.as_deref(),
+            Some("binary+l")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_server_identity_in_a_state_snapshot() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/a.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/a.txt","rev":"2","type":"text"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            parse_depot_state(&records).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
+    }
+
+    #[test]
     fn shelf_export_uses_shelved_revision_selector_and_new_output_validation() {
         assert_eq!(
             shelved_revision_spec("//Acme/main/file.bin", "42"),
@@ -5457,7 +8291,7 @@ mod tests {
     fn parses_client_spec_with_ordered_mappings_and_roots() {
         let spec = parse_workspace_spec(
             &parse_json_lines(
-                r#"{"Client":"alex-main","Owner":"alex","Root":"C:\\work","Host":"build01","Stream":"//Acme/main","Description":"Main workspace","Options":"noallwrite","SubmitOptions":"submitunchanged","LineEnd":"local","AltRoots0":"D:\\work","View1":"//Acme/main/... //alex-main/main/...","View0":"//Acme/lib/... //alex-main/lib/..."}"#,
+                r#"{"Client":"alex-main","Owner":"alex","Root":"C:\\work","Host":"build01","Stream":"//Acme/main","Description":"Main workspace","Options":"noallwrite noclobber nocompress unlocked nomodtime normdir","SubmitOptions":"submitunchanged","LineEnd":"local","AltRoots1":"E:\\work","AltRoots0":"D:\\work","ChangeView1":"//Acme/lib/...@200","ChangeView0":"//Acme/main/...@100","Type":"partitioned","ServerID":"edge-1","View1":"//Acme/main/... //alex-main/main/...","View0":"//Acme/lib/... //alex-main/lib/..."}"#,
             )
             .unwrap(),
             "alex-main",
@@ -5465,7 +8299,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(spec.name, "alex-main");
-        assert_eq!(spec.alt_roots, vec!["D:\\work"]);
+        assert_eq!(spec.alt_roots, vec!["D:\\work", "E:\\work"]);
+        assert_eq!(
+            spec.options,
+            vec![
+                "noallwrite",
+                "noclobber",
+                "nocompress",
+                "unlocked",
+                "nomodtime",
+                "normdir",
+            ]
+        );
+        assert_eq!(
+            spec.change_view,
+            vec!["//Acme/main/...@100", "//Acme/lib/...@200"]
+        );
+        assert_eq!(spec.workspace_type, "partitioned");
+        assert_eq!(spec.server_id.as_deref(), Some("edge-1"));
         assert_eq!(
             spec.mappings,
             vec![
@@ -5473,6 +8324,23 @@ mod tests {
                 "//Acme/main/... //alex-main/main/...",
             ]
         );
+    }
+
+    #[test]
+    fn client_spec_defaults_an_omitted_workspace_type_to_writeable() {
+        let spec = parse_workspace_spec(
+            &parse_json_lines(
+                r#"{"Client":"alex-main","Root":"C:\\work","Options":"noallwrite noclobber"}"#,
+            )
+            .unwrap(),
+            "alex-main",
+        )
+        .unwrap();
+
+        assert_eq!(spec.workspace_type, "writeable");
+        assert_eq!(spec.options, vec!["noallwrite", "noclobber"]);
+        assert!(spec.change_view.is_empty());
+        assert!(spec.server_id.is_none());
     }
 
     #[test]
@@ -5551,15 +8419,116 @@ mod tests {
 
     #[test]
     fn updates_workspace_fields_without_dropping_unknown_form_sections() {
-        let original = "Client:\talex-main\n\nRoot:\tC:\\work\n\nDescription:\n\tOld workspace\n\nStream:\t//Acme/main\n\nView:\n\t//Acme/main/... //alex-main/...\n\nCustomField:\tkeep\n";
+        let original = "Client:\talex-main\n\nRoot:\tC:\\work\n\nAltRoots:\n\tD:\\work\n\nDescription:\n\tOld workspace\n\nStream:\t//Acme/main\n\nOptions:\tnoallwrite noclobber\n\nChangeView:\n\t//Acme/main/...@100\n\nType:\tpartitioned\n\nServerID:\tedge-1\n\nView:\n\t//Acme/main/... //alex-main/...\n\nCustomField:\tkeep\n";
         let updated =
             replace_workspace_fields(original, "D:\\new-work", "//Acme/dev", "New workspace")
                 .unwrap();
         assert!(updated.contains("Root:\tD:\\new-work"));
         assert!(updated.contains("Stream:\t//Acme/dev"));
         assert!(updated.contains("Description:\n\tNew workspace"));
+        assert!(updated.contains("AltRoots:\n\tD:\\work"));
+        assert!(updated.contains("Options:\tnoallwrite noclobber"));
+        assert!(updated.contains("ChangeView:\n\t//Acme/main/...@100"));
+        assert!(updated.contains("Type:\tpartitioned"));
+        assert!(updated.contains("ServerID:\tedge-1"));
         assert!(updated.contains("View:\n\t//Acme/main/... //alex-main/..."));
         assert!(updated.contains("CustomField:\tkeep"));
+    }
+
+    #[test]
+    fn workspace_mapping_preview_preserves_form_and_unknown_view_entries() {
+        let original = "Client:\talex-main\n\nRoot:\tC:\\work\n\nStream:\t\n\nView:\n\t//Acme/main/... //alex-main/main/...\n\t## server-owned comment\n\tcustom-extension keep-verbatim\n\nCustomField:\tkeep\n";
+        let entries = vec![
+            WorkspaceMappingEdit::Existing { index: 0 },
+            WorkspaceMappingEdit::Existing { index: 1 },
+            WorkspaceMappingEdit::New {
+                kind: WorkspaceMappingKind::Exclude,
+                depot_path: "//Acme/main/generated/...".to_owned(),
+                client_path: "//alex-main/main/generated/...".to_owned(),
+            },
+            WorkspaceMappingEdit::Existing { index: 2 },
+        ];
+        let (preview, updated) =
+            build_workspace_mapping_preview("alex-main", original, &entries).unwrap();
+
+        assert!(preview.changed);
+        assert_eq!(preview.preserved_unknown_entries, 2);
+        assert_eq!(
+            preview.after[2],
+            "-//Acme/main/generated/... //alex-main/main/generated/..."
+        );
+        assert!(updated.contains("## server-owned comment"));
+        assert!(updated.contains("custom-extension keep-verbatim"));
+        assert!(updated.contains("CustomField:\tkeep"));
+
+        let changed_form = original.replace("Root:\tC:\\work", "Root:\tD:\\work");
+        let (changed_preview, _) =
+            build_workspace_mapping_preview("alex-main", &changed_form, &entries).unwrap();
+        assert_ne!(changed_preview.preview_token, preview.preview_token);
+    }
+
+    #[test]
+    fn workspace_mapping_preview_rejects_dropped_or_reordered_unknown_entries() {
+        let original = "Client:\talex-main\n\nStream:\t\n\nView:\n\t//Acme/main/... //alex-main/...\n\t## first protected entry\n\tcustom protected entry\n";
+        let dropped = [WorkspaceMappingEdit::Existing { index: 0 }];
+        assert_eq!(
+            build_workspace_mapping_preview("alex-main", original, &dropped)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Conflict
+        );
+
+        let reordered = [
+            WorkspaceMappingEdit::Existing { index: 0 },
+            WorkspaceMappingEdit::Existing { index: 2 },
+            WorkspaceMappingEdit::Existing { index: 1 },
+        ];
+        assert_eq!(
+            build_workspace_mapping_preview("alex-main", original, &reordered)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn workspace_mapping_preview_rejects_stream_forms_and_unsafe_new_paths() {
+        let stream_form = "Client:\talex-main\n\nStream:\t//Acme/main\n\nView:\n\t//Acme/main/... //alex-main/...\n";
+        assert_eq!(
+            build_workspace_mapping_preview("alex-main", stream_form, &[])
+                .unwrap_err()
+                .kind,
+            ErrorKind::UnsupportedCapability
+        );
+
+        assert!(
+            format_workspace_mapping(
+                "alex-main",
+                WorkspaceMappingKind::Overlay,
+                "//Acme/shared/...",
+                "//other-client/shared/...",
+            )
+            .is_err()
+        );
+        assert!(
+            format_workspace_mapping(
+                "alex-main",
+                WorkspaceMappingKind::Ditto,
+                "//Acme/shared/...@42",
+                "//alex-main/shared/...",
+            )
+            .is_err()
+        );
+        assert_eq!(
+            format_workspace_mapping(
+                "alex-main",
+                WorkspaceMappingKind::Include,
+                "//Acme/Current Rel/...",
+                "//alex-main/Current Rel/...",
+            )
+            .unwrap(),
+            "\"//Acme/Current Rel/...\" \"//alex-main/Current Rel/...\""
+        );
     }
 
     #[test]
@@ -5694,6 +8663,321 @@ mod tests {
     }
 
     #[test]
+    fn mapping_batch_keeps_case_distinct_depot_queries_separate() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/File.txt","clientFile":"//alex-main/File.txt","path":"C:\\work\\File.txt"}
+{"depotFile":"//Acme/main/file.txt","clientFile":"//alex-main/file.txt","path":"C:\\work\\file.txt"}"#,
+        )
+        .unwrap();
+        let batch = parse_workspace_mapping_batch(
+            &[
+                "//Acme/main/File.txt".to_owned(),
+                "//Acme/main/file.txt".to_owned(),
+            ],
+            &records,
+            Vec::new(),
+            false,
+        );
+
+        assert_eq!(
+            batch.mappings[0].local_path.as_deref(),
+            Some("C:\\work\\File.txt")
+        );
+        assert_eq!(
+            batch.mappings[1].local_path.as_deref(),
+            Some("C:\\work\\file.txt")
+        );
+        assert!(
+            batch
+                .mappings
+                .iter()
+                .all(|mapping| mapping.diagnostics.is_empty())
+        );
+    }
+
+    #[test]
+    fn local_reconcile_folder_scope_requires_an_existing_absolute_directory() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-reconcile-folder-{}", std::process::id()));
+        let folder = fixture.join("Source");
+        let file = fixture.join("file.txt");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(&file, b"not a directory").unwrap();
+
+        assert_eq!(
+            PathBuf::from(local_directory_reconcile_query(folder.to_str().unwrap()).unwrap()),
+            folder.join("...")
+        );
+        assert!(local_directory_reconcile_query("relative-folder").is_err());
+        assert!(local_directory_reconcile_query(file.to_str().unwrap()).is_err());
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn local_reconcile_folder_scope_accepts_only_a_complete_mapped_where_result() {
+        let mapping = WorkspaceMapping {
+            query: "C:\\work\\Source\\...".to_owned(),
+            state: WorkspaceMappingState::Mapped,
+            depot_path: Some("//Acme/main/Source/...".to_owned()),
+            client_path: Some("//alex-main/Source/...".to_owned()),
+            local_path: Some("C:\\work\\Source\\...".to_owned()),
+            diagnostics: Vec::new(),
+        };
+        let batch = WorkspaceMappingBatch {
+            mappings: vec![mapping],
+            partial: false,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(
+            mapped_reconcile_scope(&batch).unwrap(),
+            "//Acme/main/Source/..."
+        );
+
+        let mut partial = batch.clone();
+        partial.partial = true;
+        assert_eq!(
+            mapped_reconcile_scope(&partial).unwrap_err().kind,
+            ErrorKind::PartialResult
+        );
+
+        let empty = WorkspaceMappingBatch {
+            mappings: Vec::new(),
+            partial: false,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(
+            mapped_reconcile_scope(&empty).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
+
+        let mut ambiguous = batch.clone();
+        ambiguous.mappings.push(ambiguous.mappings[0].clone());
+        assert_eq!(
+            mapped_reconcile_scope(&ambiguous).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
+
+        let mut excluded = batch;
+        excluded.mappings[0].state = WorkspaceMappingState::Excluded;
+        assert_eq!(
+            mapped_reconcile_scope(&excluded).unwrap_err().kind,
+            ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn workspace_scan_roots_require_complete_mapped_scopes() {
+        let local_root = PathBuf::from(r"C:\work\Source");
+        let mapping = WorkspaceMapping {
+            query: r"C:\work\Source\...".to_owned(),
+            state: WorkspaceMappingState::Mapped,
+            depot_path: Some("//Acme/main/Source/...".to_owned()),
+            client_path: Some("//alex-main/Source/...".to_owned()),
+            local_path: Some(r"C:\work\Source\...".to_owned()),
+            diagnostics: Vec::new(),
+        };
+        let batch = WorkspaceMappingBatch {
+            mappings: vec![mapping],
+            partial: false,
+            diagnostics: Vec::new(),
+        };
+        let roots = mapped_workspace_scan_roots(&[local_root], &batch).unwrap();
+        assert_eq!(roots[0].depot_scope, "//Acme/main/Source/...");
+        assert_eq!(roots[0].client_scope, "//alex-main/Source/...");
+
+        let mut partial = batch.clone();
+        partial.partial = true;
+        assert_eq!(
+            mapped_workspace_scan_roots(&[PathBuf::from(r"C:\work\Source")], &partial)
+                .unwrap_err()
+                .kind,
+            ErrorKind::PartialResult
+        );
+
+        let mut unmapped = batch;
+        unmapped.mappings[0].state = WorkspaceMappingState::Unmapped;
+        assert_eq!(
+            mapped_workspace_scan_roots(&[PathBuf::from(r"C:\work\Source")], &unmapped)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn workspace_scan_ignore_probe_uses_p4ignore_without_disabling_ignores() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-scan-ignore-{}", std::process::id()));
+        let scan_root = fixture.join("Source");
+        fs::create_dir_all(&scan_root).unwrap();
+        let ignore_file = fixture.join(".p4ignore");
+        fs::write(&ignore_file, b"Generated/\n").unwrap();
+        let input = ConnectionInput {
+            p4_path: Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+
+        let (_, command) = workspace_scan_ignore_command(&input, &fixture, &scan_root).unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(arguments, ["ignores", "-v"]);
+        assert!(!arguments.iter().any(|argument| argument == "-I"));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "P4IGNORE"
+                && value.is_some_and(|value| Path::new(value) == ignore_file.as_path())
+        }));
+        assert_eq!(
+            parse_workspace_scan_ignore_sources(
+                "#FILE - defaults\n#FILE C:\\work\\.p4ignore\n#FILE C:\\work\\.p4ignore\n"
+            ),
+            ["- defaults", r"C:\work\.p4ignore"]
+        );
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn background_workspace_scan_is_read_only_scoped_and_ignore_aware() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-background-scan-{}", std::process::id()));
+        let scan_root = fixture.join("Source");
+        fs::create_dir_all(&scan_root).unwrap();
+        let ignore_file = fixture.join(".p4ignore");
+        fs::write(&ignore_file, b"Generated/\n").unwrap();
+        let input = ConnectionInput {
+            p4_path: Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let root = WorkspaceScanRoot {
+            local_path: scan_root.to_string_lossy().into_owned(),
+            local_scope: scan_root.join("...").to_string_lossy().into_owned(),
+            client_scope: "//alex-main/Source/...".to_owned(),
+            depot_scope: "//Acme/main/Source/...".to_owned(),
+            ignore_sources: vec![ignore_file.to_string_lossy().into_owned()],
+        };
+        let (_, command) = workspace_scan_command(&input, &fixture, &root).unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            [
+                "-ztag",
+                "-Mj",
+                "status",
+                "-e",
+                "-d",
+                "-m",
+                "//Acme/main/Source/..."
+            ]
+        );
+        assert!(!arguments.iter().any(|argument| argument == "-A"));
+        assert!(!arguments.iter().any(|argument| argument == "-I"));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "P4IGNORE"
+                && value.is_some_and(|value| Path::new(value) == ignore_file.as_path())
+        }));
+        let (_, add_command) = workspace_scan_add_command(&input, &fixture, &root).unwrap();
+        let add_arguments = add_command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(&add_arguments[..4], ["-ztag", "-Mj", "status", "-a"]);
+        assert!(add_arguments[4].ends_with(r"Source\*"));
+        assert!(!add_arguments.iter().any(|argument| argument == "..."));
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn background_workspace_scan_keeps_only_fast_edit_and_delete_candidates() {
+        let output = parse_workspace_scan_output(
+            r#"{"depotFile":"//Acme/main/edit.txt","clientFile":"//alex-main/edit.txt","path":"C:\\work\\edit.txt","action":"edit"}
+{"depotFile":"//Acme/main/delete.txt","clientFile":"C:\\work\\delete.txt","action":"delete"}
+{"depotFile":"//Acme/main/add.txt","path":"C:\\work\\add.txt","action":"add"}
+{"code":"error","severity":"2","generic":"17","data":"no file(s) to reconcile"}"#,
+        )
+        .unwrap();
+        assert!(!output.failed);
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(output.candidates.len(), 2);
+        assert_eq!(output.candidates[0].action, "delete");
+        assert_eq!(output.candidates[0].local_path, r"C:\work\delete.txt");
+        assert_eq!(
+            output.candidates[1].client_path.as_deref(),
+            Some("//alex-main/edit.txt")
+        );
+        assert!(
+            output
+                .candidates
+                .iter()
+                .all(|candidate| candidate.action != "add")
+        );
+        let adds = parse_workspace_scan_add_output(
+            r#"{"depotFile":"//Acme/main/add.txt","path":"C:\\work\\add.txt","action":"add"}
+{"depotFile":"//Acme/main/edit.txt","path":"C:\\work\\edit.txt","action":"edit"}"#,
+        )
+        .unwrap();
+        assert_eq!(adds.candidates.len(), 1);
+        assert_eq!(adds.candidates[0].action, "add");
+
+        let failed = parse_workspace_scan_output(
+            r#"{"code":"error","severity":"3","generic":"0","data":"workspace unavailable"}"#,
+        )
+        .unwrap();
+        assert!(failed.failed);
+        assert_eq!(failed.diagnostics, ["workspace unavailable"]);
+        assert!(parse_workspace_scan_output("not json").is_err());
+    }
+
+    #[test]
+    fn workspace_scan_exclusions_stay_inside_explicit_roots() {
+        let fixture =
+            std::env::temp_dir().join(format!("p4fnv-scan-exclusions-{}", std::process::id()));
+        let root = fixture.join("workspace");
+        let excluded = root.join("Generated");
+        let outside = fixture.join("outside");
+        fs::create_dir_all(&excluded).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let roots = workspace_scan_directories(&[root.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(
+            workspace_scan_exclusions(&[excluded.to_string_lossy().into_owned()], &roots)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            workspace_scan_exclusions(&[outside.to_string_lossy().into_owned()], &roots).is_err()
+        );
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
     fn reconcile_token_changes_with_action_mapping_or_local_metadata() {
         let mut item = test_reconcile_item("//Acme/main/a.txt", "edit", Some("C:\\work\\a.txt"));
         item.mapping_state = WorkspaceMappingState::Mapped;
@@ -5703,6 +8987,54 @@ mod tests {
         item.action = "edit".to_owned();
         item.local_size = Some(42);
         assert_ne!(reconcile_preview_token("//...", &[item]), original);
+    }
+
+    #[test]
+    fn reconcile_token_is_order_independent_and_ignores_embedded_tokens() {
+        let mut first = test_reconcile_item("//Acme/main/a.txt", "edit", Some("C:\\work\\a.txt"));
+        first.mapping_state = WorkspaceMappingState::Mapped;
+        let mut second = test_reconcile_item("//Acme/main/b.txt", "delete", None);
+        second.mapping_state = WorkspaceMappingState::Mapped;
+        let token = reconcile_preview_token("//Acme/main/...", &[first.clone(), second.clone()]);
+        first.preview_token = "old-token".to_owned();
+        second.preview_token = "another-old-token".to_owned();
+
+        assert!(token.starts_with("reconcile-v2-"));
+        assert_eq!(
+            reconcile_preview_token("//Acme/main/...", &[second, first]),
+            token
+        );
+    }
+
+    #[test]
+    fn reconcile_move_pairs_must_be_complete_safe_and_selected_together() {
+        let mut source = test_reconcile_item("//Acme/main/old.txt", "move", None);
+        source.original_action = Some("move/delete".to_owned());
+        source.move_partner = Some("//Acme/main/new.txt".to_owned());
+        source.mapping_state = WorkspaceMappingState::Mapped;
+        let mut target = test_reconcile_item("//Acme/main/new.txt", "move", None);
+        target.original_action = Some("move/add".to_owned());
+        target.move_partner = Some("//Acme/main/old.txt".to_owned());
+        target.mapping_state = WorkspaceMappingState::Mapped;
+        let mut pair = vec![source, target];
+
+        mark_unsafe_reconcile_move_pairs(&mut pair);
+        assert!(pair.iter().all(|item| !item.unsafe_item));
+        assert!(validate_reconcile_selection(&pair).is_ok());
+        assert_eq!(
+            validate_reconcile_selection(&pair[..1]).unwrap_err().kind,
+            ErrorKind::Conflict
+        );
+
+        pair[1].unsafe_item = true;
+        mark_unsafe_reconcile_move_pairs(&mut pair);
+        assert!(pair.iter().all(|item| item.unsafe_item));
+        assert!(
+            pair[0]
+                .reasons
+                .iter()
+                .any(|reason| reason == "incomplete_move_pair")
+        );
     }
 
     #[test]
@@ -5899,6 +9231,59 @@ mod tests {
     }
 
     #[test]
+    fn workspace_search_is_server_filtered_and_hard_bounded() {
+        let arguments = workspace_search_arguments("//Acme/main/...", "Source *.rs").unwrap();
+        let max_index = arguments
+            .iter()
+            .position(|argument| argument == "-m")
+            .unwrap();
+        let filter_index = arguments
+            .iter()
+            .position(|argument| argument == "-F")
+            .unwrap();
+        assert_eq!(arguments[max_index + 1], "201");
+        assert_eq!(
+            arguments[filter_index + 1],
+            "(depotFile~=*Source* | clientFile~=*Source*) (depotFile~=*\\*.rs* | clientFile~=*\\*.rs*)"
+        );
+        assert_eq!(arguments.last().unwrap(), "//Acme/main/...");
+        assert!(workspace_search_arguments("//Acme/main/...", "  ").is_err());
+        assert!(workspace_search_arguments("//Acme/main/...", &"é".repeat(128)).is_ok());
+        assert!(workspace_search_arguments("//Acme/main/...", &"é".repeat(129)).is_err());
+        assert!(workspace_search_arguments("//Acme/main/...", "line\nbreak").is_err());
+        assert!(workspace_search_arguments("main/...", "source").is_err());
+    }
+
+    #[test]
+    fn workspace_search_reports_partial_results_without_exposing_the_probe_record() {
+        let records = (0..=MAX_WORKSPACE_SEARCH_RESULTS)
+            .map(|index| {
+                let mut record = Map::new();
+                record.insert(
+                    "depotFile".to_owned(),
+                    Value::String(format!("//Acme/main/{index}.txt")),
+                );
+                record
+            })
+            .collect::<Vec<_>>();
+        let result = workspace_search_result(&records, Vec::new(), false).unwrap();
+        assert_eq!(result.files.len(), MAX_WORKSPACE_SEARCH_RESULTS);
+        assert_eq!(result.limit, MAX_WORKSPACE_SEARCH_RESULTS);
+        assert!(result.partial);
+        assert_eq!(
+            result.files.last().unwrap().depot_path,
+            "//Acme/main/199.txt"
+        );
+
+        let diagnostics = vec!["server stopped after a bounded response".to_owned()];
+        let server_partial =
+            workspace_search_result(&records[..1], diagnostics.clone(), true).unwrap();
+        assert_eq!(server_partial.files.len(), 1);
+        assert!(server_partial.partial);
+        assert_eq!(server_partial.diagnostics, diagnostics);
+    }
+
+    #[test]
     fn lists_only_the_requested_local_workspace_directory_without_contacting_p4() {
         let root = std::env::temp_dir().join(format!("p4fnv-local-files-{}", std::process::id()));
         let nested = root.join("Source");
@@ -5985,6 +9370,47 @@ mod tests {
             &parse_json_lines(r#"{"depotFile":"//Acme/main/new.txt","action":"added"}"#).unwrap(),
         );
         assert_eq!(sync_preview_diff_paths(&added), ["//Acme/main/new.txt"]);
+    }
+
+    #[test]
+    fn builds_validated_date_sync_scopes_with_server_timezone_context() {
+        assert_eq!(
+            normalize_date_sync_target("2024-02-29T09:07").unwrap(),
+            "2024/02/29:09:07:00"
+        );
+        assert_eq!(
+            normalize_date_sync_target("2026-07-30T13:15:42").unwrap(),
+            "2026/07/30:13:15:42"
+        );
+        assert_eq!(
+            parse_server_date_context("2026/07/30 13:15:00 +0200 Central European Summer Time")
+                .unwrap(),
+            (
+                "2026/07/30:13:15:00".to_owned(),
+                "+0200 Central European Summer Time".to_owned()
+            )
+        );
+        assert_eq!(
+            date_sync_scopes(&["//Acme/main/...".to_owned()], "2026/07/30:12:00:00").unwrap(),
+            ["//Acme/main/...@2026/07/30:12:00:00"]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_already_revisioned_date_sync_targets() {
+        for invalid in [
+            "2023-02-29T10:00",
+            "2024-13-01T10:00",
+            "2024-01-01T24:00",
+            "2024-01-01 10:00",
+            "1969-12-31T23:59:59",
+        ] {
+            assert!(normalize_date_sync_target(invalid).is_err(), "{invalid}");
+        }
+        assert!(parse_server_date_context("2026/07/30 13:15:00").is_err());
+        assert!(
+            date_sync_scopes(&["//Acme/main/...@42".to_owned()], "2026/07/30:12:00:00").is_err()
+        );
     }
 
     #[test]
@@ -6221,13 +9647,19 @@ mod tests {
 
     #[test]
     fn parses_resolve_preview_candidates_and_details() {
+        let mappings = [
+            test_resolve_mapping("//Acme/main/a.txt", "C:/ws/a.txt"),
+            test_resolve_mapping("//Acme/main/b.txt", "C:/ws/b.txt"),
+        ];
         let items = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.txt","how":"vs","fromFile":"//Acme/main/a.txt#8"}
 {"depotFile":"//Acme/main/b.txt","action":"copy"}"#,
             )
             .unwrap(),
-        );
+            &mappings,
+        )
+        .unwrap();
         assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
         assert_eq!(items[0].action, "vs");
         assert_eq!(items[0].detail.as_deref(), Some("//Acme/main/a.txt#8"));
@@ -6240,12 +9672,15 @@ mod tests {
 
     #[test]
     fn resolve_editor_token_rejects_changed_preview_or_workspace_content() {
+        let mappings = [test_resolve_mapping("//Acme/main/a.txt", "C:/ws/a.txt")];
         let mut preview = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.txt","path":"C:/ws/a.txt","type":"text","baseFile":"//Acme/main/a.txt#7","fromFile":"//Acme/main/a.txt#8"}"#,
             )
             .unwrap(),
+            &mappings,
         )
+        .unwrap()
         .remove(0);
         let original = resolve_editor_token(&preview, b"workspace");
 
@@ -6260,6 +9695,12 @@ mod tests {
 
     #[test]
     fn classifies_specialized_resolves_without_exposing_text_editor() {
+        let mappings = [
+            test_resolve_mapping("//Acme/main/a.bin", "C:/ws/a.bin"),
+            test_resolve_mapping("//Acme/main/name.txt", "C:/ws/name.txt"),
+            test_resolve_mapping("//Acme/main/type.txt", "C:/ws/type.txt"),
+            test_resolve_mapping("//Acme/main/stream", "C:/ws/stream"),
+        ];
         let items = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.bin","type":"binary"}
@@ -6268,14 +9709,21 @@ mod tests {
 {"depotFile":"//Acme/main/stream","resolveType":"stream spec"}"#,
             )
             .unwrap(),
-        );
+            &mappings,
+        )
+        .unwrap();
         assert_eq!(items[0].conflict_kind, ResolveConflictKind::Binary);
+        assert_eq!(items[0].scope, ResolveScope::Content);
         assert_eq!(items[1].conflict_kind, ResolveConflictKind::MoveName);
+        assert_eq!(items[1].scope, ResolveScope::Move);
         assert_eq!(
             items[2].conflict_kind,
             ResolveConflictKind::FiletypeAttribute
         );
+        assert_eq!(items[2].scope, ResolveScope::Filetype);
         assert_eq!(items[3].conflict_kind, ResolveConflictKind::StreamSpec);
+        assert_eq!(items[3].scope, ResolveScope::StreamSpec);
+        assert!(items.iter().all(|item| !item.preview_token.is_empty()));
         assert!(
             items
                 .iter()
@@ -6284,22 +9732,56 @@ mod tests {
     }
 
     #[test]
-    fn post_mutation_readback_distinguishes_pending_resolved_and_unknown() {
-        let paths = vec![
-            "//Acme/main/a.txt".to_owned(),
-            "//Acme/main/b.txt".to_owned(),
-        ];
-        let pending = parse_resolve_preview(
-            &parse_json_lines(r#"{"depotFile":"//Acme/main/a.txt","type":"text"}"#).unwrap(),
+    fn maps_real_file_resolve_shape_to_server_depot_identity() {
+        let mappings = [test_resolve_mapping(
+            "//Acme/main/a.txt",
+            "C:\\workspace\\a.txt",
+        )];
+        let items = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"baseFile":"//Acme/main/a.txt","baseRev":"7","clientFile":"C:\\workspace\\a.txt","contentResolveType":"3waytext","endFromRev":"8","fromFile":"//Acme/main/a.txt","resolveFlag":"c","resolveType":"content","startFromRev":"7"}"#,
+            )
+            .unwrap(),
+            &mappings,
+        )
+        .unwrap();
+
+        assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
+        assert_eq!(items[0].local_path.as_deref(), Some("C:\\workspace\\a.txt"));
+        assert_eq!(
+            items[0].base_identifier.as_deref(),
+            Some("//Acme/main/a.txt#7")
         );
-        let result = resolve_read_back(&paths, &pending);
-        assert_eq!(result.items[0].state, ResolveReadBackState::Pending);
-        assert_eq!(result.items[1].state, ResolveReadBackState::Resolved);
-        assert!(
-            resolve_unknown_read_back(&paths, "offline")
-                .items
-                .iter()
-                .all(|item| item.state == ResolveReadBackState::Unknown)
+        assert_eq!(
+            items[0].source_identifier.as_deref(),
+            Some("//Acme/main/a.txt#8")
+        );
+        assert_eq!(items[0].conflict_kind, ResolveConflictKind::Text);
+    }
+
+    #[test]
+    fn specialized_scopes_use_distinct_server_flags() {
+        assert_eq!(resolve_scope_flag(&ResolveScope::Content), "-Ac");
+        assert_eq!(resolve_scope_flag(&ResolveScope::Move), "-Am");
+        assert_eq!(resolve_scope_flag(&ResolveScope::Filetype), "-At");
+        assert_eq!(resolve_scope_flag(&ResolveScope::Attribute), "-Aa");
+        assert_eq!(resolve_scope_flag(&ResolveScope::StreamSpec), "-So");
+    }
+
+    #[test]
+    fn rejects_resolve_records_without_server_mapping_identity() {
+        let error = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"clientFile":"C:\\other\\a.txt","contentResolveType":"3waytext","resolveType":"content"}"#,
+            )
+            .unwrap(),
+            &[test_resolve_mapping("//Acme/main/a.txt", "C:\\workspace\\a.txt")],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidOutput);
+        assert_eq!(
+            resolve_unknown_item("//Acme/main/a.txt", "offline").state,
+            ResolveReadBackState::Unknown
         );
     }
 
@@ -6324,9 +9806,14 @@ mod tests {
 
     #[test]
     fn parses_filelog_revisions_and_keeps_integration_records() {
-        let revisions = parse_file_history(&parse_json_lines(
-            r#"{"rev":"4","change":"88","action":"edit","user":"alex","time":"1750000000","type":"text","client":"alex-main","fileSize":"128","label":"release_1","desc":"Fix parser","how":"merge","srev":"3","erev":"4","sfile":"//Acme/dev/a.txt"}"#,
-        ).unwrap()).unwrap();
+        let revisions = parse_file_history(
+            &parse_json_lines(
+                r#"{"rev":"4","change":"88","action":"edit","user":"alex","time":"1750000000","type":"text","client":"alex-main","fileSize":"128","label":"release_1","desc":"Fix parser","how":"merge","srev":"3","erev":"4","sfile":"//Acme/dev/a.txt"}"#,
+            )
+            .unwrap(),
+            "//Acme/main/a.txt",
+        )
+        .unwrap();
         assert_eq!(revisions.len(), 1);
         assert_eq!(revisions[0].revision, "4");
         assert_eq!(revisions[0].description.as_deref(), Some("Fix parser"));
@@ -6334,8 +9821,15 @@ mod tests {
         assert_eq!(revisions[0].size.as_deref(), Some("128"));
         assert_eq!(revisions[0].labels, ["release_1"]);
         assert_eq!(
-            revisions[0].integrations,
-            ["merge", "3", "4", "//Acme/dev/a.txt"]
+            revisions[0].integration_records,
+            [FileIntegrationRecord {
+                how: Some("merge".to_owned()),
+                file_path: Some("//Acme/dev/a.txt".to_owned()),
+                start_revision: Some("3".to_owned()),
+                end_revision: Some("4".to_owned()),
+                complete: true,
+                cyclic: false,
+            }]
         );
     }
 
@@ -6346,6 +9840,7 @@ mod tests {
                 r#"{"depotFile":"//Acme/main/a.txt","rev0":"5","rev1":"4","change0":"20","change1":"19","action0":"edit","action1":"add","user0":"alex","user1":"sam","desc0":"Latest","desc1":"Initial","how0,0":"branch into","file0,0":"//Acme/release/a.txt"}"#,
             )
             .unwrap(),
+            "//Acme/main/a.txt",
         )
         .unwrap();
 
@@ -6354,11 +9849,36 @@ mod tests {
         assert_eq!(revisions[0].change, "20");
         assert_eq!(revisions[0].description.as_deref(), Some("Latest"));
         assert_eq!(
-            revisions[0].integrations,
-            ["branch into", "//Acme/release/a.txt"]
+            revisions[0].integration_records,
+            [FileIntegrationRecord {
+                how: Some("branch into".to_owned()),
+                file_path: Some("//Acme/release/a.txt".to_owned()),
+                start_revision: None,
+                end_revision: None,
+                complete: false,
+                cyclic: false,
+            }]
         );
         assert_eq!(revisions[1].revision, "4");
         assert_eq!(revisions[1].action, "add");
+    }
+
+    #[test]
+    fn keeps_incomplete_and_cyclic_filelog_records_explicit() {
+        let revisions = parse_file_history(
+            &parse_json_lines(
+                r#"{"rev0":"4","how0,0":"move/add","sfile0,0":"//Acme/main/a.txt","how0,1":"merge","srev0,1":"1"}"#,
+            )
+            .unwrap(),
+            "//Acme/main/a.txt",
+        )
+        .unwrap();
+
+        assert_eq!(revisions[0].integration_records.len(), 2);
+        assert!(revisions[0].integration_records[0].cyclic);
+        assert!(!revisions[0].integration_records[0].complete);
+        assert_eq!(revisions[0].integration_records[1].file_path, None);
+        assert!(!revisions[0].integration_records[1].complete);
     }
 
     #[test]
@@ -6638,6 +10158,8 @@ mod tests {
             depot_path: "//Acme/main/a.txt".to_owned(),
             kind: "unresolved".to_owned(),
             detail: "existing".to_owned(),
+            reason: "existing".to_owned(),
+            action: "resolve".to_owned(),
         }];
         append_resolve_issues(&mut issues, &records);
         assert_eq!(issues.len(), 2);
@@ -6706,22 +10228,75 @@ mod tests {
     #[test]
     fn submit_preflight_reports_all_server_risks_but_ignores_empty_flags() {
         let issues = parse_submit_preflight(&parse_json_lines(
-            r#"{"depotFile":"//Acme/main/a.txt","resolveStatus":"unresolved","otherOpen":"sam","haveRev":"7","headRev":"9"}
+            r#"{"depotFile":"//Acme/main/a.txt","resolveStatus":"unresolved","otherOpen":"sam","otherLock":"sam@dev","type":"text","haveRev":"7","headRev":"9"}
 {"depotFile":"//Acme/main/b.txt","resolveStatus":"none","otherOpen":"0","otherLock":"false","haveRev":"4","headRev":"4"}"#,
         ).unwrap());
         assert_eq!(issues.len(), 3);
         assert!(issues.iter().any(|issue| issue.kind == "unresolved"));
-        assert!(
-            issues
-                .iter()
-                .any(|issue| issue.kind == "locked_or_open_elsewhere")
-        );
+        assert!(issues.iter().any(|issue| issue.kind == "local_lock"));
         assert!(issues.iter().any(|issue| issue.kind == "out_of_date"));
         assert!(
             issues
                 .iter()
                 .all(|issue| issue.depot_path == "//Acme/main/a.txt")
         );
+        assert!(issues.iter().all(|issue| !issue.reason.is_empty()));
+        assert!(issues.iter().all(|issue| !issue.action.is_empty()));
+    }
+
+    #[test]
+    fn parses_explicit_exclusive_local_global_and_unknown_lock_states() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/local.txt","type":"text","ourLock":"alex@dev"}
+{"depotFile":"//Acme/main/global.txt","type":"binary","otherLock":"sam@edge","globalLock":"sam@edge"}
+{"depotFile":"//Acme/main/exclusive.bin","type":"binary+l","otherOpen":"sam@edge"}
+{"depotFile":"//Acme/main/unknown.txt"}"#,
+        )
+        .unwrap();
+        let files = parse_workspace_files(&records).unwrap();
+
+        assert_eq!(files[0].lock_topology.explicit, FileLockPresence::Present);
+        assert_eq!(files[0].lock_topology.scope, FileLockScope::Local);
+        assert_eq!(files[0].lock_topology.owner, FileLockOwner::Ours);
+        assert_eq!(files[1].lock_topology.scope, FileLockScope::Global);
+        assert_eq!(files[1].lock_topology.owner, FileLockOwner::Other);
+        assert_eq!(
+            files[2].lock_topology.exclusive_file_type,
+            FileLockPresence::Present
+        );
+        assert_eq!(files[2].lock_topology.explicit, FileLockPresence::Absent);
+        assert_eq!(
+            files[3].lock_topology.exclusive_file_type,
+            FileLockPresence::Unknown
+        );
+    }
+
+    #[test]
+    fn submit_preflight_distinguishes_lock_reasons_and_recovery_actions() {
+        let issues = parse_submit_preflight(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/local.txt","type":"text","otherLock":"sam@dev"}
+{"depotFile":"//Acme/main/global.txt","type":"text","otherLock":"sam@edge","globalLock":"sam@edge"}
+{"depotFile":"//Acme/main/exclusive.bin","type":"binary+l","otherOpen":"sam@edge"}
+{"depotFile":"//Acme/main/unknown.txt","type":"text","globalLock":"server-reported"}"#,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(
+            issues
+                .iter()
+                .map(|issue| issue.kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "local_lock",
+                "global_lock",
+                "exclusive_filetype",
+                "lock_state_unknown"
+            ]
+        );
+        assert!(issues.iter().all(|issue| !issue.reason.is_empty()));
+        assert!(issues.iter().all(|issue| !issue.action.is_empty()));
     }
 
     #[test]
@@ -6872,6 +10447,75 @@ mod tests {
         );
         assert!(validate_stream_path("//Acme/dev").is_ok());
         assert!(validate_stream_path("//Acme/dev@42").is_err());
+    }
+
+    #[test]
+    fn stream_spec_parser_bounds_multiline_fields_and_marks_truncation() {
+        let mut lines = vec![
+            "ParentView:\tnoinherit".to_owned(),
+            "Options:\tallsubmit unlocked toparent fromparent mergedown".to_owned(),
+            "Paths:".to_owned(),
+        ];
+        lines.extend((0..=MAX_STREAM_SPEC_ITEMS).map(|index| format!("\tshare path-{index}/...")));
+        lines.push("Remapped:".to_owned());
+        lines.push("\told/... new/...".to_owned());
+
+        let spec = parse_stream_spec(&lines);
+
+        assert_eq!(spec.parent_view, "noinherit");
+        assert_eq!(spec.paths.len(), MAX_STREAM_SPEC_ITEMS);
+        assert_eq!(spec.remapped, ["old/... new/..."]);
+        assert!(spec.truncated);
+    }
+
+    #[test]
+    fn stream_history_parser_preserves_indexed_fields_and_partial_state() {
+        let records = parse_json_lines(
+            r#"{"rev0":"3","action0":"edit","change0":"91","user0":"alex","client0":"alex-dev","time0":"1710000000","desc0":"Third"}
+{"rev":"2","action":"promote","change":"90","user":"sam","description":"Second"}
+{"rev":"1"}"#,
+        )
+        .unwrap();
+
+        let (history, truncated, malformed) = parse_stream_history(&records);
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].revision, "3");
+        assert_eq!(history[0].client.as_deref(), Some("alex-dev"));
+        assert_eq!(history[1].description.as_deref(), Some("Second"));
+        assert!(!truncated);
+        assert!(malformed);
+    }
+
+    #[test]
+    fn stream_history_parser_returns_only_the_bounded_snapshot() {
+        let records = (0..MAX_STREAM_HISTORY_QUERY_ITEMS)
+            .map(|index| {
+                serde_json::from_value::<Map<String, Value>>(serde_json::json!({
+                    "rev": index.to_string(),
+                    "action": "edit"
+                }))
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let (history, truncated, malformed) = parse_stream_history(&records);
+
+        assert_eq!(history.len(), MAX_STREAM_HISTORY_ITEMS);
+        assert!(truncated);
+        assert!(!malformed);
+    }
+
+    #[test]
+    fn stream_istat_arguments_are_read_only_and_direction_specific() {
+        assert_eq!(
+            stream_istat_arguments(StreamIntegrationDirection::CopyUp, "//Acme/dev"),
+            ["-ztag", "-Mj", "istat", "-Af", "//Acme/dev"]
+        );
+        assert_eq!(
+            stream_istat_arguments(StreamIntegrationDirection::MergeDown, "//Acme/dev"),
+            ["-ztag", "-Mj", "istat", "-Af", "-r", "//Acme/dev"]
+        );
     }
 
     #[test]

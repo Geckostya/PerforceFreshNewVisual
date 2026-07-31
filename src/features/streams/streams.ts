@@ -1,9 +1,50 @@
-import type { StreamIntegrationDirection, StreamPathRuleInput, StreamSummary } from "../../shared/models";
+import { capabilitySetGate } from "../../shared/capabilities";
+import type { CapabilitySnapshot, OperationEvent, StreamIntegrationDirection, StreamPathRuleInput, StreamSummary } from "../../shared/models";
 
 export interface StreamIntegrationCandidate {
   direction: StreamIntegrationDirection;
   sourceStream: string;
   targetStream: string;
+}
+
+export interface StreamIntegrationHandoff {
+  succeededPaths: string[];
+  canResolve: boolean;
+  canReview: boolean;
+  canOpenSubmit: boolean;
+}
+
+export function streamIntegrationHandoff(operation?: OperationEvent): StreamIntegrationHandoff {
+  const succeededPaths = [...new Set(
+    operation?.itemResults
+      ?.filter((item) => item.status === "succeeded" && item.path)
+      .map((item) => item.path!) || [],
+  )];
+  const readBackConfirmed = operation?.readBack?.status === "succeeded";
+  const hasConfirmedPendingWork = readBackConfirmed
+    && succeededPaths.length > 0
+    && (operation?.kind === "completed" || operation?.kind === "partial");
+  return {
+    succeededPaths,
+    canResolve: hasConfirmedPendingWork,
+    canReview: hasConfirmedPendingWork,
+    canOpenSubmit: hasConfirmedPendingWork && operation?.kind === "completed",
+  };
+}
+
+export function streamIntegrationAllowed(capabilities: CapabilitySnapshot | undefined, direction: StreamIntegrationDirection): boolean {
+  return direction === "mergeDown"
+    ? capabilitySetGate([
+      capabilities?.commands.integrate,
+      capabilities?.flags.integrateStream,
+      capabilities?.flags.integrateReverse,
+      capabilities?.flags.integrateForceBranch,
+    ])
+    : capabilitySetGate([
+      capabilities?.commands.copy,
+      capabilities?.flags.copyStream,
+      capabilities?.flags.copyForceBranch,
+    ]);
 }
 
 export function streamIntegrationCandidates(streams: StreamSummary[], currentStream?: string): StreamIntegrationCandidate[] {

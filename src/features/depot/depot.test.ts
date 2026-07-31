@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changeScope, directoryPattern, directoryScope, filePattern, hasNextHistoryPage, historyPageItems, historyPageLimit, parentScope, revisionScope, scopeBase, scopeSegments } from "./depot";
+import { changeScope, DEPOT_HISTORY_PAGE_SIZE, directoryPattern, directoryScope, filePattern, parentScope, revisionScope, scopeBase, scopeSegments } from "./depot";
 
 describe("depot browser patterns", () => {
   it("uses dirs star and files ellipsis patterns", () => {
@@ -25,12 +25,7 @@ describe("depot browser patterns", () => {
     expect(changeScope("//Acme/main/src/", "1234")).toBe("//Acme/main/src/...@1234");
   });
 
-  it("paginates bounded history without appending into the visible page", () => {
-    const items = Array.from({ length: 201 }, (_, index) => index + 1);
-    expect(historyPageLimit(0)).toBe(101);
-    expect(historyPageLimit(49)).toBe(5000);
-    expect(historyPageItems(items, 1)).toEqual(Array.from({ length: 100 }, (_, index) => index + 101));
-    expect(hasNextHistoryPage(items.length, 1)).toBe(true);
-    expect(hasNextHistoryPage(200, 1)).toBe(false);
+  it("uses a bounded server page size", () => {
+    expect(DEPOT_HISTORY_PAGE_SIZE).toBe(100);
   });
 });

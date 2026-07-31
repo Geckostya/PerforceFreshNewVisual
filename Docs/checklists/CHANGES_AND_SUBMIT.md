@@ -17,7 +17,7 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 
 ## P0 gaps
 
-- [~] Add specialized action dialogs for binary, move/name, filetype/attribute, and stream-spec resolve; they are already classified and excluded from the text editor.
+- [x] Specialized action dialogs for binary, move/name, filetype/attribute, and stream-spec resolve use category-specific safe scopes, cancel defaults, and read-back outcomes; they remain excluded from the text editor.
 - [x] After submit cancellation/network loss, present `submitted`, `pending`, or `unknown` with a concrete recovery action.
 - [x] Publish shelf-preserving submit modes through the same operation protocol as local submit without weakening compensation behavior.
 - [ ] Show succeeded/failed/skipped items and compensation results consistently for every compound mutation.
@@ -25,6 +25,6 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 
 ## P1/P2 extensions
 
-- [ ] P1 Complete shelf conflict taxonomy, batch export, native picker, and topology-aware reshelve/promote.
-- [ ] P1 Change owner/workspace and public/restricted type with shelf/jobs/topology preflight.
+- [~] P1 Batch shelf export is safe and topology-aware reshelve capability is explicit; conflict taxonomy, native picker, and promote remain.
+- [x] P1 Change owner/workspace and public/restricted type with capability/permission plus shelf/jobs/topology preflight, stale-token rejection, and restricted-safe server read-back.
 - [ ] P2 Handle shelved stream specs and P4 Code Review only when the server/integration supports them.

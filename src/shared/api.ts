@@ -7,7 +7,9 @@ import type {
   FileDiff,
   AnnotationLine,
   DiffMode,
+  DateSyncPreview,
   FileRevision,
+  HistoryPage,
   LocaleCatalog,
   OpenedFile,
   P4Detection,
@@ -15,7 +17,14 @@ import type {
   LoginStatus,
   PendingChange,
   Job,
+  JobForm,
+  JobFormField,
   Label,
+  LabelInput,
+  LabelSpec,
+  LabelTagInput,
+  LabelTagPreview,
+  LabelTagResult,
   Fix,
   ShelvedFile,
   SubmitMode,
@@ -23,15 +32,23 @@ import type {
   SubmittedChangeDetail,
   SubmittedFilterOptions,
   ChangeExportResult,
+  ChangeIdentityPreflight,
+  ChangeIdentityState,
+  ChangeVisibility,
   CherryPickPreviewItem,
   UndoPreviewItem,
   UnshelvePreview,
   WorkspaceSummary,
   WorkspaceSpec,
+  WorkspaceMappingApplyInput,
+  WorkspaceMappingEditor,
+  WorkspaceMappingPreview,
+  WorkspaceMappingPreviewInput,
   WorkspaceCreateInput,
   WorkspaceUpdateInput,
   DepotDirectory,
   DepotFile,
+  DepotStateComparison,
   DepotSummary,
   TrustEntry,
   TrustChallenge,
@@ -41,6 +58,8 @@ import type {
   WorkspaceFile,
   WorkspaceLocalBatch,
   WorkspaceMappingBatch,
+  WorkspaceScanSnapshot,
+  WorkspaceSearchResult,
   ReconcileItem,
   ResolvePreviewItem,
   ResolveApplyResult,
@@ -153,8 +172,20 @@ export async function inspectWorkspace(input: ConnectionInput): Promise<Workspac
   return invoke<WorkspaceSpec>("inspect_workspace", { input });
 }
 
-export async function updateWorkspace(connection: ConnectionInput, update: WorkspaceUpdateInput): Promise<void> {
-  return invoke("update_workspace", { input: { connection, ...update } });
+export async function updateWorkspace(connection: ConnectionInput, update: WorkspaceUpdateInput): Promise<WorkspaceSpec> {
+  return invoke<WorkspaceSpec>("update_workspace", { input: { connection, ...update } });
+}
+
+export async function inspectWorkspaceMappingEditor(connection: ConnectionInput, workspace: string): Promise<WorkspaceMappingEditor> {
+  return invoke<WorkspaceMappingEditor>("inspect_workspace_mapping_editor", { input: connection, workspace });
+}
+
+export async function previewWorkspaceMappings(connection: ConnectionInput, input: WorkspaceMappingPreviewInput): Promise<WorkspaceMappingPreview> {
+  return invoke<WorkspaceMappingPreview>("preview_workspace_mappings", { input: { connection, ...input } });
+}
+
+export async function applyWorkspaceMappings(connection: ConnectionInput, input: WorkspaceMappingApplyInput): Promise<WorkspaceSpec> {
+  return invoke<WorkspaceSpec>("apply_workspace_mappings", { input: { connection, ...input } });
 }
 
 export async function createWorkspace(connection: ConnectionInput, create: WorkspaceCreateInput): Promise<void> {
@@ -213,6 +244,10 @@ export async function listDepotFiles(input: ConnectionInput, scope: string, incl
   return invoke<DepotFile[]>("list_depot_files", { input, scope, includeDeleted });
 }
 
+export async function compareDepotStates(input: ConnectionInput, scope: string, baseChange: string, targetChange?: string): Promise<DepotStateComparison> {
+  return invoke<DepotStateComparison>("compare_depot_states", { input, scope, baseChange, targetChange });
+}
+
 export async function listPendingChanges(input: ConnectionInput): Promise<PendingChange[]> {
   return invoke<PendingChange[]>("list_pending_changes", { input });
 }
@@ -221,9 +256,24 @@ export async function listJobs(input: ConnectionInput, search?: string): Promise
   return invoke<Job[]>("list_jobs", { input, search });
 }
 
+export async function inspectJobForm(input: ConnectionInput, job?: string): Promise<JobForm> {
+  return invoke<JobForm>("inspect_job_form", { input: { connection: input, job } });
+}
+
+export async function saveJob(input: ConnectionInput, job: string | undefined, fields: JobFormField[], formToken: string): Promise<Job> {
+  return invoke<Job>("save_job", { input: { connection: input, job, fields, formToken } });
+}
+
 export async function listLabels(input: ConnectionInput, search?: string): Promise<Label[]> {
   return invoke<Label[]>("list_labels", { input, search });
 }
+
+export async function inspectLabel(input: ConnectionInput, name: string): Promise<LabelSpec> { return invoke<LabelSpec>("inspect_label", { input, name }); }
+export async function createLabel(input: ConnectionInput, draft: LabelInput): Promise<LabelSpec> { return invoke<LabelSpec>("create_label", { input, draft }); }
+export async function updateLabel(input: ConnectionInput, draft: LabelInput): Promise<LabelSpec> { return invoke<LabelSpec>("update_label", { input, draft }); }
+export async function deleteLabel(input: ConnectionInput, name: string): Promise<void> { return invoke<void>("delete_label", { input, name }); }
+export async function previewLabelTag(input: ConnectionInput, tag: LabelTagInput): Promise<LabelTagPreview> { return invoke<LabelTagPreview>("preview_label_tag", { input, tag }); }
+export async function applyLabelTag(input: ConnectionInput, tag: LabelTagInput): Promise<LabelTagResult> { return invoke<LabelTagResult>("apply_label_tag", { input, tag }); }
 
 export async function listFixes(input: ConnectionInput, job: string): Promise<Fix[]> {
   return invoke<Fix[]>("list_fixes", { input, job });
@@ -247,6 +297,10 @@ export async function listSubmittedChanges(input: ConnectionInput, scope: string
     client: client?.trim() || undefined,
     includeStreams,
   });
+}
+
+export async function listSubmittedHistoryPage(input: ConnectionInput, scope: string, limit = 100, cursor?: string, job?: string, user?: string, client?: string, includeStreams = false): Promise<HistoryPage<PendingChange>> {
+  return invoke<HistoryPage<PendingChange>>("list_submitted_history_page", { request: { connection: input, scope, limit, cursor, job: job?.trim() || undefined, user: user?.trim() || undefined, client: client?.trim() || undefined, includeStreams } });
 }
 
 export async function listSubmittedFilterOptions(input: ConnectionInput): Promise<SubmittedFilterOptions> {
@@ -285,8 +339,28 @@ export async function listWorkspaceFiles(input: ConnectionInput, scope?: string,
   return invoke<WorkspaceFile[]>("list_workspace_files", { input, scope, includeUntracked });
 }
 
+export async function searchWorkspaceFiles(input: ConnectionInput, scope: string, query: string): Promise<WorkspaceSearchResult> {
+  return invoke<WorkspaceSearchResult>("search_workspace_files", { input, scope, query });
+}
+
 export async function mapWorkspacePaths(input: ConnectionInput, paths: string[]): Promise<WorkspaceMappingBatch> {
   return invoke<WorkspaceMappingBatch>("map_workspace_paths", { input, paths });
+}
+
+export async function configureWorkspaceScan(input: ConnectionInput, roots: string[], exclusions: string[]): Promise<WorkspaceScanSnapshot> {
+  return invoke<WorkspaceScanSnapshot>("configure_workspace_scan", { input, roots, exclusions });
+}
+
+export async function getWorkspaceScanSnapshot(input: ConnectionInput): Promise<WorkspaceScanSnapshot> {
+  return invoke<WorkspaceScanSnapshot>("get_workspace_scan_snapshot", { input });
+}
+
+export async function refreshWorkspaceScan(input: ConnectionInput): Promise<void> {
+  return invoke("refresh_workspace_scan", { input });
+}
+
+export async function cancelWorkspaceScan(): Promise<void> {
+  return invoke("cancel_workspace_scan");
 }
 
 export async function listLocalWorkspaceDirectory(input: ConnectionInput, directory: string): Promise<WorkspaceLocalBatch> {
@@ -295,6 +369,10 @@ export async function listLocalWorkspaceDirectory(input: ConnectionInput, direct
 
 export async function previewSync(input: ConnectionInput, scopes: string[]): Promise<SyncPreview> {
   return invoke<SyncPreview>("preview_sync", { input, scopes });
+}
+
+export async function previewSyncAtDate(input: ConnectionInput, scopes: string[], targetDateTime: string): Promise<DateSyncPreview> {
+  return invoke<DateSyncPreview>("preview_sync_at_date", { input, scopes, targetDateTime });
 }
 
 export async function repairSyncHaveList(input: ConnectionInput, paths: string[]): Promise<void> {
@@ -341,6 +419,16 @@ export async function resolveFiles(connection: ConnectionInput, depotPaths: stri
   return invoke<ResolveApplyResult>("resolve_files", { input: { connection, depotPaths, mode } });
 }
 
+export async function resolveSpecialized(connection: ConnectionInput, items: ResolvePreviewItem[], mode: ResolveMode): Promise<ResolveApplyResult> {
+  return invoke<ResolveApplyResult>("resolve_specialized", {
+    input: {
+      connection,
+      items: items.map(({ depotPath, previewToken, scope }) => ({ depotPath, previewToken, scope })),
+      mode,
+    },
+  });
+}
+
 export async function previewResolve(connection: ConnectionInput, depotPaths: string[]): Promise<ResolvePreviewItem[]> {
   return invoke<ResolvePreviewItem[]>("preview_resolve", { input: connection, depotPaths });
 }
@@ -365,6 +453,10 @@ export async function startReconcile(connection: ConnectionInput, change: string
 
 export async function startReconcilePreview(input: ConnectionInput, scope?: string): Promise<string> {
   return invoke<string>("start_reconcile_preview", { input, scope });
+}
+
+export async function reconcileScopeFromLocalDirectory(input: ConnectionInput, directory: string): Promise<string> {
+  return invoke<string>("reconcile_scope_from_local_directory", { input, directory });
 }
 
 export async function listShelvedFiles(
@@ -394,6 +486,10 @@ export async function fileHistory(connection: ConnectionInput, depotPath: string
   return invoke<FileRevision[]>("file_history", { input: connection, depotPath, limit });
 }
 
+export async function fileHistoryPage(connection: ConnectionInput, depotPath: string, limit = 100, cursor?: string): Promise<HistoryPage<FileRevision>> {
+  return invoke<HistoryPage<FileRevision>>("file_history_page", { input: connection, depotPath, limit, cursor });
+}
+
 export async function printRevision(connection: ConnectionInput, depotPath: string, revision: string): Promise<FileDiff> {
   return invoke<FileDiff>("print_revision", { input: { connection, depotPath }, revision });
 }
@@ -408,6 +504,17 @@ export async function saveChangeFiles(connection: ConnectionInput, change: strin
 
 export async function saveShelvedFile(connection: ConnectionInput, sourceChange: string, depotPath: string, outputPath: string): Promise<void> {
   return invoke("save_shelved_file", { input: { connection, sourceChange, depotPath, outputPath } });
+}
+
+export async function saveShelvedFiles(
+  connection: ConnectionInput,
+  sourceChange: string,
+  depotPaths: string[],
+  outputDirectory: string,
+): Promise<ChangeExportResult> {
+  return invoke<ChangeExportResult>("save_shelved_files", {
+    input: { connection, sourceChange, depotPaths, outputDirectory },
+  });
 }
 
 export async function diffRevisions(connection: ConnectionInput, depotPath: string, left: string, right: string, mode: DiffMode = "default"): Promise<FileDiff> {
@@ -531,6 +638,31 @@ export async function editChange(
   description: string,
 ): Promise<void> {
   return invoke("edit_change", { input: { connection, change, description } });
+}
+
+export async function previewChangeIdentity(
+  connection: ConnectionInput,
+  change: string,
+  owner: string,
+  client: string,
+  visibility: ChangeVisibility,
+): Promise<ChangeIdentityPreflight> {
+  return invoke<ChangeIdentityPreflight>("preview_change_identity", {
+    input: { connection, change, owner, client, visibility },
+  });
+}
+
+export async function updateChangeIdentity(
+  connection: ConnectionInput,
+  change: string,
+  owner: string,
+  client: string,
+  visibility: ChangeVisibility,
+  previewToken: string,
+): Promise<ChangeIdentityState> {
+  return invoke<ChangeIdentityState>("update_change_identity", {
+    input: { connection, change, owner, client, visibility, previewToken },
+  });
 }
 
 export async function deleteChange(connection: ConnectionInput, change: string): Promise<void> {

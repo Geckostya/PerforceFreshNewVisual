@@ -1,6 +1,6 @@
 use std::{
     env,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{
@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 use crate::models::{AppError, CliLogEntry, CliLogLevel, ConnectionInput, ErrorKind};
 
 const MAX_CLI_LOG_ENTRIES: usize = 500;
+const MAX_BOUNDED_STDERR_BYTES: usize = 64 * 1024;
 type JsonDiagnosticOutput = (Vec<Map<String, Value>>, Vec<String>, bool);
 static CLI_LOG: OnceLock<Mutex<Vec<CliLogEntry>>> = OnceLock::new();
 static CLI_LOG_ID: AtomicU64 = AtomicU64::new(1);
@@ -81,6 +82,21 @@ pub(super) fn run_json_collecting_diagnostics(
     path: &Path,
     command: &mut Command,
 ) -> Result<JsonDiagnosticOutput, AppError> {
+    run_json_collecting_diagnostics_with_policy(path, command, false)
+}
+
+pub(super) fn run_json_collecting_diagnostics_allowing_empty_match(
+    path: &Path,
+    command: &mut Command,
+) -> Result<JsonDiagnosticOutput, AppError> {
+    run_json_collecting_diagnostics_with_policy(path, command, true)
+}
+
+fn run_json_collecting_diagnostics_with_policy(
+    path: &Path,
+    command: &mut Command,
+    allow_empty_match: bool,
+) -> Result<JsonDiagnosticOutput, AppError> {
     let output = command
         .output()
         .map_err(|error| launch_error(path, error))?;
@@ -88,6 +104,7 @@ pub(super) fn run_json_collecting_diagnostics(
     log_record_messages(&records, true);
     let diagnostics = records
         .iter()
+        .filter(|record| !(allow_empty_match && is_empty_match_record(record)))
         .filter(|record| {
             record
                 .get("severity")
@@ -113,7 +130,18 @@ pub(super) fn run_json_collecting_diagnostics(
         )
         .filter(|message| !message.is_empty())
         .collect::<Vec<_>>();
-    let partial = !output.status.success()
+    let partial = json_output_is_partial(output.status.success(), &records, allow_empty_match);
+    Ok((records, diagnostics, partial))
+}
+
+fn json_output_is_partial(
+    status_success: bool,
+    records: &[Map<String, Value>],
+    allow_empty_match: bool,
+) -> bool {
+    let empty_match_only =
+        allow_empty_match && !records.is_empty() && records.iter().all(is_empty_match_record);
+    (!status_success && !empty_match_only)
         || records.iter().any(|record| {
             record
                 .get("severity")
@@ -123,8 +151,7 @@ pub(super) fn run_json_collecting_diagnostics(
                     .get("code")
                     .and_then(Value::as_str)
                     .is_some_and(|code| code.eq_ignore_ascii_case("error"))
-        });
-    Ok((records, diagnostics, partial))
+        })
 }
 
 pub(super) fn run_json_with_stdin_allowing_empty_match(
@@ -180,6 +207,77 @@ pub(super) fn run_binary(path: &Path, command: &mut Command) -> Result<Vec<u8>, 
         return Err(command_error(&output));
     }
     Ok(output.stdout)
+}
+
+/// Runs a text-producing command without retaining an unbounded response in memory.
+///
+/// Both pipes are drained to let the child finish normally, while only the requested stdout
+/// prefix and a bounded diagnostic prefix are retained.
+pub(super) fn run_bounded_output(
+    path: &Path,
+    command: &mut Command,
+    max_stdout_bytes: usize,
+) -> Result<(Output, bool), AppError> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| launch_error(path, error))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не удалось открыть stdout p4."))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не удалось открыть stderr p4."))?;
+    let stderr_reader = thread::spawn(move || read_bounded(stderr, MAX_BOUNDED_STDERR_BYTES));
+    let (stdout, stdout_truncated) =
+        read_bounded(&mut stdout, max_stdout_bytes).map_err(|error| {
+            AppError::new(ErrorKind::CommandFailed, "Не удалось прочитать вывод p4.")
+                .with_diagnostics(error.to_string())
+        })?;
+    let status = child.wait().map_err(|error| {
+        AppError::new(ErrorKind::CommandFailed, "Не удалось дождаться ответа p4.")
+            .with_diagnostics(error.to_string())
+    })?;
+    let (stderr, stderr_truncated) = stderr_reader
+        .join()
+        .map_err(|_| AppError::new(ErrorKind::CommandFailed, "Чтение диагностики p4 прервано."))?
+        .map_err(|error| {
+            AppError::new(
+                ErrorKind::CommandFailed,
+                "Не удалось прочитать диагностику p4.",
+            )
+            .with_diagnostics(error.to_string())
+        })?;
+    let mut output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    if stderr_truncated {
+        output
+            .stderr
+            .extend_from_slice(b"\n[diagnostics truncated]");
+    }
+    Ok((output, stdout_truncated))
+}
+
+fn read_bounded(mut reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut kept = Vec::with_capacity(limit);
+    let mut buffer = [0_u8; 32 * 1024];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok((kept, truncated));
+        }
+        let available = limit.saturating_sub(kept.len());
+        let retained = read.min(available);
+        kept.extend_from_slice(&buffer[..retained]);
+        truncated |= retained < read;
+    }
 }
 
 pub(super) fn run_output_with_stdin(
@@ -258,6 +356,18 @@ pub(super) fn p4_command(path: &Path) -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
     }
     command
+}
+
+pub(super) fn set_low_process_priority(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }
 
 pub(super) fn set_non_empty_env(command: &mut Command, name: &str, value: Option<&str>) {
@@ -526,8 +636,12 @@ pub(super) fn combined_output(output: &Output) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_error_message, is_empty_match_record, parse_json_lines};
+    use super::{
+        classify_error_message, is_empty_match_record, json_output_is_partial, parse_json_lines,
+        read_bounded,
+    };
     use crate::models::ErrorKind;
+    use std::io::Cursor;
 
     #[test]
     fn classifies_recovery_relevant_error_kinds() {
@@ -558,12 +672,25 @@ mod tests {
         let records = parse_json_lines(
             r#"{"data":"//alex-main/Campfire/* - no such file(s).\n","generic":17,"severity":2}
 {"data":"//alex-main/.p4config - file(s) not on client.\n","generic":17,"severity":2}
-{"code":"warning","data":"A real warning.","severity":2}"#,
+{"code":"error","data":"A real error.","severity":3}"#,
         )
         .unwrap();
 
         assert!(is_empty_match_record(&records[0]));
         assert!(is_empty_match_record(&records[1]));
         assert!(!is_empty_match_record(&records[2]));
+        assert!(!json_output_is_partial(false, &records[..2], true));
+        assert!(json_output_is_partial(false, &records[..2], false));
+        assert!(json_output_is_partial(true, &records[2..], true));
+    }
+
+    #[test]
+    fn bounded_reader_drains_large_output_without_retaining_it() {
+        let input = vec![b'x'; 96 * 1024];
+        let (kept, truncated) = read_bounded(Cursor::new(input), 1024).unwrap();
+
+        assert!(truncated);
+        assert_eq!(kept.len(), 1024);
+        assert!(kept.iter().all(|byte| *byte == b'x'));
     }
 }

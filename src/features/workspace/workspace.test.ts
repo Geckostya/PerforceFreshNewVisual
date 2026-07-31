@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OpenedFile, PendingChange, ReconcileItem, WorkspaceFile } from "../../shared/models";
-import { buildWorkspaceTree, canDiffSubmittedFile, canDownloadSubmittedFile, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, toggleReconcileSelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
+import { buildWorkspaceTree, cancelWorkspaceSearchRequest, canDiffSubmittedFile, canDownloadSubmittedFile, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, toggleReconcileSelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSearchCompletionFocus, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
 
 const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   depotPath: "//Acme/main/a.txt",
@@ -8,6 +8,7 @@ const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   mapped: true,
   otherOpen: false,
   otherLock: false,
+  lockTopology: { explicit: "absent", exclusiveFileType: "absent", scope: "none", owner: "none" },
   unresolved: false,
   untracked: false,
   ignored: false,
@@ -220,5 +221,19 @@ describe("workspace status filters", () => {
     expect(defaultReconcileSelection([safe, ignored, unsafe])).toEqual([safe]);
     expect(toggleReconcileSelection([safe], ignored)).toEqual([safe]);
     expect(toggleReconcileSelection([safe], safe)).toEqual([]);
+  });
+});
+
+describe("bounded workspace search lifecycle", () => {
+  it("moves focus to results only for the current request", () => {
+    expect(workspaceSearchCompletionFocus(4, 4, 2)).toBe("results");
+    expect(workspaceSearchCompletionFocus(4, 4, 0)).toBe("input");
+    expect(workspaceSearchCompletionFocus(3, 4, 2)).toBe("ignore");
+  });
+
+  it("cancels by superseding the request and returning focus to the input", () => {
+    const cancelled = cancelWorkspaceSearchRequest(7);
+    expect(cancelled).toEqual({ request: 8, focus: "input" });
+    expect(workspaceSearchCompletionFocus(7, cancelled.request, 3)).toBe("ignore");
   });
 });

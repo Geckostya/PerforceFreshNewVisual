@@ -16,10 +16,10 @@ Current status for Local Files, Depot Files, retrieval, file lifecycle, history,
 - [ ] Complete mapping, P4IGNORE, move-pair, case-only rename, collision, other-open, and lock classification before file mutations.
 - [~] Reconcile groups add/edit/delete/move/ignored/unsafe and rejects action/mapping/ignore/move-pair/path/local-metadata races; opened/lock-state classification still needs end-to-end coverage before this is complete.
 - [~] Depot/client/local navigation uses bounded server-backed `where` with mapped/excluded/unmapped and partial diagnostics; Depot pagination and broader permission/maxresults coverage remain.
-- [ ] Add date-based retrieval and richer changelist/revision target selection without creating a second sync implementation.
-- [ ] Add server-side history filters and incremental cursors without a hidden global scan.
-- [ ] Compare folder/changelist states as added/changed/deleted/type-changed sets.
-- [ ] Follow rename and integration records without heuristic path joins.
+- [~] Date-based retrieval uses the shared Safe Sync preview/overwrite/cancel/read-back workflow with explicit server-timezone context; richer changelist/revision target selection remains.
+- [x] Server-side history filters and incremental opaque cursors use bounded pages without a hidden global scan.
+- [x] Compare a folder-history changelist with the current server state as exact added/changed/deleted/type-changed sets.
+- [x] Follow complete non-cyclic rename and integration records from exact server `filelog` paths; incomplete and cyclic records remain explicit.
 - [x] Measure exceptional directories/lists and add virtualization only where incremental loading is insufficient; current bounded and lazy paths remain below that threshold and expose partial limits instead.
 
 ## P1 content tools
@@ -27,4 +27,4 @@ Current status for Local Files, Depot Files, retrieval, file lifecycle, history,
 - [ ] Chunk or stream large text with a clear bounded fallback.
 - [ ] Add syntax/word highlighting and image/binary metadata preview.
 - [ ] Launch configured editor/diff/merge tools without a shell and manage temporary files explicitly.
-- [ ] Build Revision Graph only from `filelog`/integration records; never infer edges.
+- [x] Build Revision Graph only from bounded `filelog`/integration records; never infer edges, and expose partial graph state.

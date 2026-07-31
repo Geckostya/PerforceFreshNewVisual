@@ -1,10 +1,77 @@
-import type { OpenedFile, PendingChange, ShelvedFile, SubmitPreflightIssue, SubmitPreflightJob } from "../../shared/models";
+import type { TranslationKey } from "../../shared/i18n";
+import type {
+  OpenedFile,
+  PendingChange,
+  ShelvedFile,
+  SubmitPreflightIssue,
+  SubmitPreflightJob,
+  WorkspaceScanCoverageState,
+  WorkspaceScanPartialReason,
+  WorkspaceScanSnapshot,
+} from "../../shared/models";
 import { markdownToPlainText } from "../../shared/ChangelistDescription";
 
 export interface ChangeGroup extends PendingChange {
   files: OpenedFile[];
   isDefault: boolean;
   isShelved: boolean;
+}
+
+export const UNOPENED_CHANGES_GROUP_ID = "virtual:unopened-changes";
+
+export interface UnopenedChangesGroup {
+  id: typeof UNOPENED_CHANGES_GROUP_ID;
+  candidates: WorkspaceScanSnapshot["candidates"];
+  coverage: WorkspaceScanSnapshot["coverage"];
+}
+
+export function unopenedChangesGroup(snapshot: WorkspaceScanSnapshot): UnopenedChangesGroup {
+  return {
+    id: UNOPENED_CHANGES_GROUP_ID,
+    candidates: snapshot.candidates,
+    coverage: snapshot.coverage,
+  };
+}
+
+export function unopenedChangesMatch(
+  group: UnopenedChangesGroup,
+  query: string,
+  localizedLabel: string,
+  selected: boolean,
+): boolean {
+  if (selected) return true;
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [localizedLabel, ...group.candidates.flatMap((candidate) => [
+    candidate.action,
+    candidate.localPath,
+    candidate.clientPath ?? "",
+    candidate.depotPath ?? "",
+  ])].some((value) => value.toLowerCase().includes(needle));
+}
+
+export function workspaceScanCoverageStateKey(state: WorkspaceScanCoverageState): TranslationKey {
+  const keys = {
+    not_started: "unopenedCoverageNotStarted",
+    complete: "unopenedCoverageComplete",
+    partial: "unopenedCoveragePartial",
+    paused: "unopenedCoveragePaused",
+    stale: "unopenedCoverageStale",
+  } satisfies Record<WorkspaceScanCoverageState, TranslationKey>;
+  return keys[state];
+}
+
+export function workspaceScanReasonKey(reason: WorkspaceScanPartialReason): TranslationKey {
+  const keys = {
+    candidate_limit: "unopenedReasonCandidateLimit",
+    budget_exceeded: "unopenedReasonBudgetExceeded",
+    cancelled: "unopenedReasonCancelled",
+    command_failed: "unopenedReasonCommandFailed",
+    foreground_active: "unopenedReasonForegroundActive",
+    ignore_rules_unavailable: "unopenedReasonIgnoreRulesUnavailable",
+    root_error: "unopenedReasonRootError",
+  } satisfies Record<WorkspaceScanPartialReason, TranslationKey>;
+  return keys[reason];
 }
 
 export function groupChanges(

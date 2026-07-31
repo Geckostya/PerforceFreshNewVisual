@@ -313,6 +313,17 @@ export function filterWorkspaceFiles(files: WorkspaceFile[], filter: WorkspaceFi
   });
 }
 
+export type WorkspaceSearchFocusTarget = "ignore" | "input" | "results";
+
+export function workspaceSearchCompletionFocus(request: number, activeRequest: number, resultCount: number): WorkspaceSearchFocusTarget {
+  if (request !== activeRequest) return "ignore";
+  return resultCount > 0 ? "results" : "input";
+}
+
+export function cancelWorkspaceSearchRequest(activeRequest: number): { request: number; focus: "input" } {
+  return { request: activeRequest + 1, focus: "input" };
+}
+
 export function groupWorkspaceFiles(files: WorkspaceFile[]): WorkspaceTreeGroup[] {
   const groups = new Map<string, WorkspaceFile[]>();
   for (const file of files) {

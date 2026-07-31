@@ -116,6 +116,69 @@ pub struct CapabilityFact {
     pub evidence: CapabilityEvidence,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilityCommand {
+    Login2,
+    Topology,
+    Trust,
+    Integrate,
+    Copy,
+    Istat,
+    Streamlog,
+    Reshelve,
+    Change,
+    Protects,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilityFlag {
+    Login2State,
+    TopologyFields,
+    TrustInstall,
+    IntegrateStream,
+    IntegrateParent,
+    IntegrateForceBranch,
+    IntegrateReverse,
+    CopyStream,
+    CopyForceBranch,
+    IstatForceBranch,
+    IstatReverse,
+    StreamlogLimit,
+    ChangeUser,
+    ChangeType,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilityName {
+    CliVersion,
+    ServerVersion,
+    ServerServices,
+    Topology,
+    Depots,
+    UnicodeServer,
+    StreamWorkspace,
+    CaseSensitiveMapping,
+    TaskStreamSubmit,
+    PromotedShelves,
+    GlobalLocks,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TopologyService {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub services: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
@@ -135,8 +198,7 @@ pub struct CapabilitySnapshot {
     pub server_services: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topology: Option<String>,
+    pub topology: Vec<TopologyService>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unicode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,8 +207,9 @@ pub struct CapabilitySnapshot {
     pub security: Option<String>,
     pub workspace_kind: WorkspaceKind,
     pub depot_modes: Vec<String>,
-    pub commands: BTreeMap<String, CapabilityFact>,
-    pub facts: BTreeMap<String, CapabilityFact>,
+    pub commands: BTreeMap<CapabilityCommand, CapabilityFact>,
+    pub flags: BTreeMap<CapabilityFlag, CapabilityFact>,
+    pub facts: BTreeMap<CapabilityName, CapabilityFact>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -258,6 +321,8 @@ pub struct P4Info {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
@@ -310,7 +375,79 @@ pub struct WorkspaceSpec {
     pub submit_options: Option<String>,
     pub line_end: Option<String>,
     pub alt_roots: Vec<String>,
+    pub change_view: Vec<String>,
+    pub workspace_type: String,
+    pub server_id: Option<String>,
     pub mappings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMappingKind {
+    Include,
+    Exclude,
+    Overlay,
+    Ditto,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingEditorEntry {
+    pub index: usize,
+    pub mapping: String,
+    pub preserved_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingEditor {
+    pub workspace: String,
+    pub entries: Vec<WorkspaceMappingEditorEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "source",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum WorkspaceMappingEdit {
+    Existing {
+        index: usize,
+    },
+    New {
+        kind: WorkspaceMappingKind,
+        depot_path: String,
+        client_path: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingPreviewInput {
+    pub connection: ConnectionInput,
+    pub workspace: String,
+    pub entries: Vec<WorkspaceMappingEdit>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingApplyInput {
+    pub connection: ConnectionInput,
+    pub workspace: String,
+    pub entries: Vec<WorkspaceMappingEdit>,
+    pub preview_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMappingPreview {
+    pub workspace: String,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    pub preserved_unknown_entries: usize,
+    pub changed: bool,
+    pub preview_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -332,6 +469,7 @@ pub struct StreamHistoryEntry {
     pub action: String,
     pub change: Option<String>,
     pub user: Option<String>,
+    pub client: Option<String>,
     pub time: Option<String>,
     pub description: Option<String>,
 }
@@ -340,7 +478,10 @@ pub struct StreamHistoryEntry {
 #[serde(rename_all = "camelCase")]
 pub struct StreamIntegrationHint {
     pub direction: StreamIntegrationDirection,
+    pub source_stream: String,
+    pub target_stream: String,
     pub state: CapabilityState,
+    pub partial: bool,
     pub message: String,
 }
 
@@ -353,8 +494,12 @@ pub struct StreamDetail {
     pub paths: Vec<String>,
     pub remapped: Vec<String>,
     pub ignored: Vec<String>,
+    pub spec_truncated: bool,
     pub history: Vec<StreamHistoryEntry>,
+    pub history_truncated: bool,
+    pub history_partial: bool,
     pub hints: Vec<StreamIntegrationHint>,
+    pub partial: bool,
     pub warnings: Vec<String>,
 }
 
@@ -520,6 +665,32 @@ pub struct DepotFile {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DepotStateDifference {
+    pub depot_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_file_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_file_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DepotStateComparison {
+    pub scope: String,
+    pub base_change: String,
+    pub target_change: Option<String>,
+    pub added: Vec<DepotStateDifference>,
+    pub changed: Vec<DepotStateDifference>,
+    pub deleted: Vec<DepotStateDifference>,
+    pub type_changed: Vec<DepotStateDifference>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TrustEntry {
     pub server: String,
     pub fingerprint: String,
@@ -627,6 +798,7 @@ pub struct OperationEvent {
     pub item_results: Vec<OperationItemResult>,
     pub read_back: OperationReadBack,
     pub retryable: bool,
+    pub cancellable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -642,6 +814,72 @@ pub struct PendingChange {
     pub stream: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeVisibility {
+    Public,
+    Restricted,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityState {
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeIdentityBlocker {
+    CapabilityUnknown,
+    Unsupported,
+    PermissionUnknown,
+    PermissionDenied,
+    TopologyUnknown,
+    TopologyMismatch,
+    TargetClientOwnerMismatch,
+    NotPending,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityPreflight {
+    pub change: String,
+    pub current: ChangeIdentityState,
+    pub target: ChangeIdentityState,
+    pub has_opened_files: bool,
+    pub has_shelved_files: bool,
+    pub has_jobs: bool,
+    pub requires_admin: bool,
+    pub permission_level: String,
+    pub topology: String,
+    pub blockers: Vec<ChangeIdentityBlocker>,
+    pub preview_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage<T> {
+    pub items: Vec<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub partial: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmittedHistoryPageInput {
+    pub connection: ConnectionInput,
+    pub scope: String,
+    pub limit: u32,
+    pub cursor: Option<String>,
+    pub job: Option<String>,
+    pub user: Option<String>,
+    pub client: Option<String>,
+    pub include_streams: bool,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
@@ -652,6 +890,40 @@ pub struct Job {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobFormField {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobForm {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    pub fields: Vec<JobFormField>,
+    pub form_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobFormInput {
+    pub connection: ConnectionInput,
+    #[serde(default)]
+    pub job: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveJobInput {
+    pub connection: ConnectionInput,
+    #[serde(default)]
+    pub job: Option<String>,
+    pub fields: Vec<JobFormField>,
+    pub form_token: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Label {
@@ -659,6 +931,46 @@ pub struct Label {
     pub owner: Option<String>,
     pub update: Option<String>,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelInput {
+    pub name: String,
+    pub description: String,
+    pub view: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelSpec {
+    pub label: Label,
+    pub view: Vec<String>,
+    pub locked: bool,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelTagInput {
+    pub label: String,
+    pub paths: Vec<String>,
+    pub remove: bool,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelTagPreview {
+    pub label: String,
+    pub remove: bool,
+    pub scopes: Vec<String>,
+    pub protected: bool,
+    pub items: Vec<String>,
+    pub partial: bool,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelTagResult {
+    pub label: LabelSpec,
+    pub items: Vec<String>,
+    pub diagnostics: Vec<String>,
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -685,6 +997,43 @@ pub struct OpenedFile {
     pub file_type: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLockPresence {
+    Present,
+    Absent,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLockScope {
+    None,
+    Local,
+    Global,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLockOwner {
+    None,
+    Ours,
+    Other,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileLockTopology {
+    pub explicit: FileLockPresence,
+    pub exclusive_file_type: FileLockPresence,
+    pub scope: FileLockScope,
+    pub owner: FileLockOwner,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_detail: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFile {
@@ -705,11 +1054,22 @@ pub struct WorkspaceFile {
     pub mapped: bool,
     pub other_open: bool,
     pub other_lock: bool,
+    pub lock_topology: FileLockTopology,
     pub unresolved: bool,
     pub untracked: bool,
     pub ignored: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchResult {
+    pub files: Vec<WorkspaceFile>,
+    pub partial: bool,
+    pub limit: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -755,6 +1115,83 @@ pub struct WorkspaceMappingBatch {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanIdentity {
+    pub server: String,
+    pub user: String,
+    pub workspace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanRoot {
+    pub local_path: String,
+    pub local_scope: String,
+    pub client_scope: String,
+    pub depot_scope: String,
+    pub ignore_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceScanCoverageState {
+    NotStarted,
+    Complete,
+    Partial,
+    Paused,
+    Stale,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceScanPartialReason {
+    CandidateLimit,
+    BudgetExceeded,
+    Cancelled,
+    CommandFailed,
+    ForegroundActive,
+    IgnoreRulesUnavailable,
+    RootError,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanCoverage {
+    pub state: WorkspaceScanCoverageState,
+    pub completed_roots: usize,
+    pub total_roots: usize,
+    pub candidate_count: usize,
+    pub candidate_limit: usize,
+    pub partial_reasons: Vec<WorkspaceScanPartialReason>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanCandidate {
+    pub stable_id: String,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depot_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_path: Option<String>,
+    pub local_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanSnapshot {
+    pub scope_id: String,
+    pub identity: WorkspaceScanIdentity,
+    pub roots: Vec<WorkspaceScanRoot>,
+    pub exclusions: Vec<String>,
+    pub candidates: Vec<WorkspaceScanCandidate>,
+    pub coverage: WorkspaceScanCoverage,
+    pub generated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncPreviewItem {
     pub depot_path: String,
     pub action: String,
@@ -774,6 +1211,16 @@ pub struct SyncPreview {
     pub modified_files: Vec<String>,
     pub writable_files: Vec<String>,
     pub missing_have_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DateSyncPreview {
+    pub scopes: Vec<String>,
+    pub target_date_time: String,
+    pub server_date: String,
+    pub server_time_zone: String,
+    pub preview: SyncPreview,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -814,11 +1261,13 @@ pub struct ResolvePreviewItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub conflict_kind: ResolveConflictKind,
+    pub scope: ResolveScope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_identifier: Option<String>,
     pub workspace_identifier: String,
+    pub preview_token: String,
     pub allowed_actions: Vec<ResolveMode>,
     pub read_back: ResolveReadBackState,
 }
@@ -830,6 +1279,17 @@ pub enum ResolveConflictKind {
     Binary,
     MoveName,
     FiletypeAttribute,
+    StreamSpec,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveScope {
+    Content,
+    Move,
+    Filetype,
+    Attribute,
     StreamSpec,
     Unknown,
 }
@@ -902,6 +1362,7 @@ pub struct FileDiff {
     pub text: String,
     pub truncated: bool,
     pub binary: bool,
+    pub invalid_encoding: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -925,8 +1386,19 @@ pub struct FileRevision {
     pub client: Option<String>,
     pub size: Option<String>,
     pub description: Option<String>,
-    pub integrations: Vec<String>,
+    pub integration_records: Vec<FileIntegrationRecord>,
     pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileIntegrationRecord {
+    pub how: Option<String>,
+    pub file_path: Option<String>,
+    pub start_revision: Option<String>,
+    pub end_revision: Option<String>,
+    pub complete: bool,
+    pub cyclic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1026,6 +1498,15 @@ pub struct SaveShelvedInput {
     pub output_path: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveShelvedFilesInput {
+    pub connection: ConnectionInput,
+    pub source_change: String,
+    pub depot_paths: Vec<String>,
+    pub output_directory: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DiffMode {
@@ -1107,6 +1588,8 @@ pub struct SubmitPreflightIssue {
     pub depot_path: String,
     pub kind: String,
     pub detail: String,
+    pub reason: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1228,6 +1711,27 @@ pub struct EditChangeInput {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityPreflightInput {
+    pub connection: ConnectionInput,
+    pub change: String,
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityUpdateInput {
+    pub connection: ConnectionInput,
+    pub change: String,
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+    pub preview_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteChangeInput {
     pub connection: ConnectionInput,
     pub change: String,
@@ -1253,6 +1757,22 @@ pub struct FileOperationInput {
 pub struct ResolveInput {
     pub connection: ConnectionInput,
     pub depot_paths: Vec<String>,
+    pub mode: ResolveMode,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecializedResolveItemInput {
+    pub depot_path: String,
+    pub preview_token: String,
+    pub scope: ResolveScope,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecializedResolveInput {
+    pub connection: ConnectionInput,
+    pub items: Vec<SpecializedResolveItemInput>,
     pub mode: ResolveMode,
 }
 

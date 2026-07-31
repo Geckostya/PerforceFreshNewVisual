@@ -16,3 +16,11 @@ export function focusNextPane(backwards = false): boolean {
   target.scrollIntoView({ block: "nearest", inline: "nearest" });
   return true;
 }
+
+export function focusCurrentViewHeading(root: ParentNode = document): boolean {
+  const target = root.querySelector<HTMLElement>(".workspace-main .resource-view h1[data-pane-entry]");
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}

@@ -15,7 +15,7 @@ import { classifyGoTo } from "./goTo";
 import { CommandPalette } from "./CommandPalette";
 import { ActionDialog, Modal } from "../shared/View";
 import { connectionForServer } from "../shared/connection";
-import { focusNextPane } from "../shared/focus";
+import { focusCurrentViewHeading, focusNextPane } from "../shared/focus";
 
 const ChangesView = lazy(() => import("../features/changes/ChangesView").then((module) => ({ default: module.ChangesView })));
 const WorkspaceView = lazy(() => import("../features/workspace/WorkspaceView").then((module) => ({ default: module.WorkspaceView })));
@@ -107,7 +107,7 @@ function AppContent() {
       }
       if (editing || !(event.ctrlKey || event.metaKey)) return;
       const nextView = ({ "1": "workspace", "2": "changes", "3": "streams", "4": "shelves", "5": "jobs" } as const)[event.key];
-      if (nextView) { event.preventDefault(); setView(nextView); }
+      if (nextView) { event.preventDefault(); navigateView(nextView); }
     }
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
@@ -125,6 +125,11 @@ function AppContent() {
     setAutoOpenError(undefined);
     setFileCount(0);
     setCliLogOpen(false);
+  }
+
+  function navigateView(nextView: typeof view) {
+    setView(nextView);
+    window.requestAnimationFrame(() => focusCurrentViewHeading());
   }
 
   async function signOut() {
@@ -218,7 +223,7 @@ function AppContent() {
             <div className="workspace-view-host" hidden={view !== "workspace" || filesSource !== "local"}>
               <WorkspaceView connection={session.connection} info={session.info} initialScope={workspaceScope} initialResolveRequest={integrationResolve} sourceControl={<FilesSourceControl source="local" setSource={setFilesSource} />} onNavigateDepot={(scope) => { setDepotScope(scope); setFilesSource("depot"); }} onDeleted={exitWorkspace} onRenamed={(name) => setSession((current) => current ? { ...current, connection: { ...current.connection, client: name }, info: { ...current.info, clientName: name } } : current)} />
             </div>
-            {view === "changes" ? <ChangesView connection={session.connection} info={session.info} onFileCountChange={handleFileCount} initialChange={changeTarget} initialAction={changeAction} /> : view === "workspace" ? filesSource === "depot" ? <DepotView connection={session.connection} initialScope={depotScope} sourceControl={<FilesSourceControl source="depot" setSource={setFilesSource} />} onNavigateLocal={(scope) => { setWorkspaceScope(scope); setFilesSource("local"); }} /> : null : view === "streams" ? <StreamsView connection={session.connection} currentStream={session.info.clientStream} capabilities={session.info.capabilities} onSwitched={(info) => setSession((current) => current ? { ...current, info } : current)} onResolveIntegration={(change, paths) => { setIntegrationResolve({ id: Date.now(), change, paths }); setFilesSource("local"); setView("workspace"); }} onReviewIntegration={(change, openSubmit) => { setChangeTarget(change); setChangeAction({ id: Date.now(), change, openSubmit }); setView("changes"); }} /> : view === "history" ? <HistoryView connection={session.connection} info={session.info} /> : view === "jobs" ? <JobsView connection={session.connection} initialSearch={jobSearch} /> : view === "labels" ? <LabelsView connection={session.connection} initialSearch={labelSearch} /> : <ShelvesView connection={session.connection} />}
+            {view === "changes" ? <ChangesView connection={session.connection} info={session.info} onFileCountChange={handleFileCount} initialChange={changeTarget} initialAction={changeAction} /> : view === "workspace" ? filesSource === "depot" ? <DepotView connection={session.connection} initialScope={depotScope} sourceControl={<FilesSourceControl source="depot" setSource={setFilesSource} />} onNavigateLocal={(scope) => { setWorkspaceScope(scope); setFilesSource("local"); }} /> : null : view === "streams" ? <StreamsView connection={session.connection} currentStream={session.info.clientStream} capabilities={session.info.capabilities} onSwitched={(info) => setSession((current) => current ? { ...current, info } : current)} onResolveIntegration={(change, paths) => { setIntegrationResolve({ id: Date.now(), change, paths }); setFilesSource("local"); setView("workspace"); }} onReviewIntegration={(change, openSubmit) => { setChangeTarget(change); setChangeAction({ id: Date.now(), change, openSubmit }); setView("changes"); }} /> : view === "history" ? <HistoryView connection={session.connection} info={session.info} /> : view === "jobs" ? <JobsView connection={session.connection} initialSearch={jobSearch} /> : view === "labels" ? <LabelsView connection={session.connection} initialSearch={labelSearch} /> : <ShelvesView connection={session.connection} info={session.info} />}
           </Suspense>
         </main>
       </div>
@@ -228,7 +233,7 @@ function AppContent() {
         else if (actionId === "refresh_streams") setView("streams");
         else setView("workspace");
       }} />
-      <CommandPalette onNavigate={(target) => { if (target === "depot") { setFilesSource("depot"); setView("workspace"); } else setView(target); }} onFocusGoTo={() => goToInputRef.current?.focus()} onShowShortcuts={() => setShortcutHelpOpen(true)} />
+      <CommandPalette onNavigate={(target) => { if (target === "depot") { setFilesSource("depot"); navigateView("workspace"); } else navigateView(target); }} onFocusGoTo={() => goToInputRef.current?.focus()} onShowShortcuts={() => setShortcutHelpOpen(true)} />
       {shortcutHelpOpen && <ShortcutHelpDialog onClose={() => setShortcutHelpOpen(false)} />}
       {logoutConfirmOpen && <ActionDialog danger title={t("logout")} confirmLabel={t("logout")} busy={logoutBusy} onClose={() => setLogoutConfirmOpen(false)} onConfirm={() => void signOut()}><p>{t("logoutConfirm")}</p></ActionDialog>}
     </div>

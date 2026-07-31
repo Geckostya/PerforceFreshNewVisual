@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exactOverwriteScopes, overwritePathsAfterForce, shouldShowSyncConflictDialog, updateOverwritePaths } from "./SafeSync";
+import { exactOverwriteScopes, overwritePathsAfterForce, serverDateInputValue, shouldShowSyncConflictDialog, updateOverwritePaths } from "./SafeSync";
 
 describe("safe sync writable choices", () => {
   it("keeps overwrite choices unique and removable per file", () => {
@@ -27,5 +27,15 @@ describe("safe sync writable choices", () => {
       { depotPath: "//Acme/main/a.txt", action: "updated", revision: "7" },
       { depotPath: "//Acme/main/b.txt", action: "updated" },
     ])).toEqual(["//Acme/main/a.txt#7", "//Acme/main/b.txt"]);
+    expect(exactOverwriteScopes(["//Acme/main/deleted.txt"], [
+      { depotPath: "//Acme/main/deleted.txt", action: "deleted" },
+    ], ["//Acme/main/...@2026/07/01:12:00:00"])).toEqual([
+      "//Acme/main/deleted.txt@2026/07/01:12:00:00",
+    ]);
+  });
+
+  it("uses the server wall clock as the date-input default without dropping seconds", () => {
+    expect(serverDateInputValue("2026/07/30 13:15:42 +0200 CEST")).toBe("2026-07-30T13:15:42");
+    expect(serverDateInputValue("not a server date")).toBe("");
   });
 });

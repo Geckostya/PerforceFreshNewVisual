@@ -2,22 +2,30 @@ use crate::{
     diagnostics, locales,
     models::{
         AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
-        CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
-        CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
+        ChangeIdentityPreflight, ChangeIdentityPreflightInput, ChangeIdentityState,
+        ChangeIdentityUpdateInput, CherryPickPreviewItem, CliLogEntry, ConnectionInput,
+        CreateChangeInput, CreateStreamInput, CreateStreamPreview, DateSyncPreview,
+        DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile, DepotStateComparison,
         DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        FileRevision, Fix, HistoryPage, Job, JobForm, JobFormInput, Label, LabelInput, LabelSpec,
+        LabelTagInput, LabelTagPreview, LabelTagResult, LocaleCatalog, MoveInput, OpenedFile,
         OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
         OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
         P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
         ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput,
-        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
-        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
-        StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
-        SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
-        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
-        TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
-        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
-        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveJobInput, SaveRevisionInput,
+        SaveShelvedFilesInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
+        ShelvedFile, SpecializedResolveInput, StreamDetail, StreamIntegrationInput,
+        StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
+        SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
+        SubmittedChangeDetail, SubmittedFilterOptions, SubmittedHistoryPageInput,
+        SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem,
+        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
+        WorkspaceMappingApplyInput, WorkspaceMappingBatch, WorkspaceMappingEditor,
+        WorkspaceMappingPreview, WorkspaceMappingPreviewInput, WorkspaceScanCandidate,
+        WorkspaceScanCoverage, WorkspaceScanCoverageState, WorkspaceScanIdentity,
+        WorkspaceScanPartialReason, WorkspaceScanRoot, WorkspaceScanSnapshot,
+        WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -27,12 +35,13 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{BufRead, BufReader, Write},
+    hash::{DefaultHasher, Hash, Hasher},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex, atomic::Ordering, mpsc},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -40,6 +49,765 @@ use tauri_plugin_opener::OpenerExt;
 #[derive(Default)]
 pub struct WorkspaceRootRegistry {
     roots: Mutex<BTreeMap<String, PathBuf>>,
+}
+
+#[derive(Clone, Default)]
+pub struct WorkspaceScanRegistry {
+    snapshot: Arc<Mutex<Option<WorkspaceScanSnapshot>>>,
+}
+
+impl WorkspaceScanRegistry {
+    fn reset(&self, input: &ConnectionInput, info: &P4Info) -> Result<(), AppError> {
+        let workspace = info
+            .client_name
+            .as_deref()
+            .or(input.client.as_deref())
+            .map(str::trim)
+            .filter(|workspace| !workspace.is_empty())
+            .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не выбран workspace."))?;
+        let identity = WorkspaceScanIdentity {
+            server: input.port.clone(),
+            user: input.user.clone(),
+            workspace: workspace.to_owned(),
+            stream: info.client_stream.clone(),
+        };
+        self.replace(empty_workspace_scan_snapshot(identity))
+    }
+
+    fn reset_stream(&self, input: &ConnectionInput, stream: &str) -> Result<(), AppError> {
+        let workspace = input
+            .client
+            .as_deref()
+            .map(str::trim)
+            .filter(|workspace| !workspace.is_empty())
+            .ok_or_else(|| AppError::new(ErrorKind::CommandFailed, "Не выбран workspace."))?;
+        let identity = WorkspaceScanIdentity {
+            server: input.port.clone(),
+            user: input.user.clone(),
+            workspace: workspace.to_owned(),
+            stream: Some(stream.to_owned()),
+        };
+        let mut snapshot = empty_workspace_scan_snapshot(identity);
+        snapshot.coverage.state = WorkspaceScanCoverageState::Stale;
+        self.replace(snapshot)
+    }
+
+    fn identity(&self, input: &ConnectionInput) -> Result<WorkspaceScanIdentity, AppError> {
+        let snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let snapshot = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if !workspace_scan_connection_matches(&snapshot.identity, input) {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Состояние сканера относится к другому workspace.",
+            ));
+        }
+        Ok(snapshot.identity.clone())
+    }
+
+    fn configure(
+        &self,
+        expected_identity: &WorkspaceScanIdentity,
+        roots: Vec<WorkspaceScanRoot>,
+        exclusions: Vec<String>,
+        partial_reasons: Vec<WorkspaceScanPartialReason>,
+    ) -> Result<WorkspaceScanSnapshot, AppError> {
+        let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let current = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if &current.identity != expected_identity {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Workspace изменился во время настройки сканера.",
+            ));
+        }
+        let state = if partial_reasons.is_empty() {
+            WorkspaceScanCoverageState::NotStarted
+        } else {
+            WorkspaceScanCoverageState::Partial
+        };
+        let configured = WorkspaceScanSnapshot {
+            scope_id: workspace_scan_scope_id(expected_identity, &roots, &exclusions),
+            identity: expected_identity.clone(),
+            coverage: WorkspaceScanCoverage {
+                state,
+                completed_roots: 0,
+                total_roots: roots.len(),
+                candidate_count: 0,
+                candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
+                partial_reasons,
+            },
+            roots,
+            exclusions,
+            candidates: Vec::new(),
+            generated_at_ms: operation_started_at_ms(),
+        };
+        *snapshot = Some(configured.clone());
+        Ok(configured)
+    }
+
+    fn get(&self, input: &ConnectionInput) -> Result<WorkspaceScanSnapshot, AppError> {
+        let snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let snapshot = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if !workspace_scan_connection_matches(&snapshot.identity, input) {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Состояние сканера относится к другому workspace.",
+            ));
+        }
+        Ok(snapshot.clone())
+    }
+
+    fn publish_results(
+        &self,
+        expected_scope_id: &str,
+        mut candidates: Vec<WorkspaceScanCandidate>,
+        completed_roots: usize,
+        failed_roots: usize,
+        reasons: &[WorkspaceScanPartialReason],
+    ) -> Result<WorkspaceScanSnapshot, AppError> {
+        let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let current = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
+        if current.scope_id != expected_scope_id {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Результат сканирования относится к устаревшему scope.",
+            ));
+        }
+        let mut partial_reasons = current
+            .coverage
+            .partial_reasons
+            .iter()
+            .filter(|reason| **reason == WorkspaceScanPartialReason::IgnoreRulesUnavailable)
+            .cloned()
+            .collect::<Vec<_>>();
+        for reason in reasons {
+            if !partial_reasons.contains(reason) {
+                partial_reasons.push(reason.clone());
+            }
+        }
+        candidates.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+        candidates.dedup_by(|left, right| left.stable_id == right.stable_id);
+        if candidates.len() > p4::MAX_WORKSPACE_SCAN_CANDIDATES {
+            candidates.truncate(p4::MAX_WORKSPACE_SCAN_CANDIDATES);
+            if !partial_reasons.contains(&WorkspaceScanPartialReason::CandidateLimit) {
+                partial_reasons.push(WorkspaceScanPartialReason::CandidateLimit);
+            }
+        }
+        let total_roots = current.roots.len();
+        if failed_roots > 0 && !partial_reasons.contains(&WorkspaceScanPartialReason::RootError) {
+            partial_reasons.push(WorkspaceScanPartialReason::RootError);
+        }
+        let mut published = current.clone();
+        published.coverage = WorkspaceScanCoverage {
+            state: if partial_reasons.is_empty() && completed_roots >= total_roots {
+                WorkspaceScanCoverageState::Complete
+            } else {
+                WorkspaceScanCoverageState::Partial
+            },
+            completed_roots: completed_roots.min(total_roots),
+            total_roots,
+            candidate_count: candidates.len(),
+            candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
+            partial_reasons,
+        };
+        published.candidates = candidates;
+        published.generated_at_ms = operation_started_at_ms();
+        *snapshot = Some(published.clone());
+        Ok(published)
+    }
+
+    fn pause(
+        &self,
+        expected_scope_id: &str,
+        reason: WorkspaceScanPartialReason,
+    ) -> Result<(), AppError> {
+        let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let current = snapshot.as_mut().ok_or_else(workspace_scan_not_open)?;
+        if current.scope_id != expected_scope_id {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Состояние сканера относится к устаревшему scope.",
+            ));
+        }
+        current.coverage.state = WorkspaceScanCoverageState::Paused;
+        if !current.coverage.partial_reasons.contains(&reason) {
+            current.coverage.partial_reasons.push(reason);
+        }
+        current.generated_at_ms = operation_started_at_ms();
+        Ok(())
+    }
+
+    fn replace(&self, replacement: WorkspaceScanSnapshot) -> Result<(), AppError> {
+        *self.snapshot.lock().map_err(workspace_scan_lock_error)? = Some(replacement);
+        Ok(())
+    }
+}
+
+fn empty_workspace_scan_snapshot(identity: WorkspaceScanIdentity) -> WorkspaceScanSnapshot {
+    WorkspaceScanSnapshot {
+        scope_id: workspace_scan_scope_id(&identity, &[], &[]),
+        identity,
+        roots: Vec::new(),
+        exclusions: Vec::new(),
+        candidates: Vec::new(),
+        coverage: WorkspaceScanCoverage {
+            state: WorkspaceScanCoverageState::NotStarted,
+            completed_roots: 0,
+            total_roots: 0,
+            candidate_count: 0,
+            candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
+            partial_reasons: Vec::new(),
+        },
+        generated_at_ms: operation_started_at_ms(),
+    }
+}
+
+fn workspace_scan_scope_id(
+    identity: &WorkspaceScanIdentity,
+    roots: &[WorkspaceScanRoot],
+    exclusions: &[String],
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    identity.server.hash(&mut hasher);
+    identity.user.hash(&mut hasher);
+    identity.workspace.hash(&mut hasher);
+    identity.stream.hash(&mut hasher);
+    for root in roots {
+        root.local_scope.hash(&mut hasher);
+        root.client_scope.hash(&mut hasher);
+        root.depot_scope.hash(&mut hasher);
+    }
+    exclusions.hash(&mut hasher);
+    format!("workspace-scan-{:016x}", hasher.finish())
+}
+
+fn workspace_scan_connection_matches(
+    identity: &WorkspaceScanIdentity,
+    input: &ConnectionInput,
+) -> bool {
+    identity.server.eq_ignore_ascii_case(input.port.trim())
+        && identity.user.eq_ignore_ascii_case(input.user.trim())
+        && input
+            .client
+            .as_deref()
+            .is_some_and(|client| identity.workspace.eq_ignore_ascii_case(client.trim()))
+}
+
+fn workspace_scan_not_open() -> AppError {
+    AppError::new(
+        ErrorKind::CommandFailed,
+        "Workspace для сканирования ещё не открыт.",
+    )
+    .with_hint("Переоткройте workspace и повторите операцию.")
+}
+
+fn workspace_scan_lock_error(error: impl std::fmt::Display) -> AppError {
+    AppError::new(
+        ErrorKind::CommandFailed,
+        "Не удалось прочитать состояние сканера workspace.",
+    )
+    .with_diagnostics(error.to_string())
+}
+
+const WORKSPACE_SCAN_DEBOUNCE: Duration = Duration::from_millis(300);
+const WORKSPACE_SCAN_BUDGET: Duration = Duration::from_millis(1_500);
+const WORKSPACE_SCAN_FOREGROUND_RETRY: Duration = Duration::from_millis(500);
+const WORKSPACE_SCAN_INTERVAL: Duration = Duration::from_secs(30);
+const WORKSPACE_SCAN_MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+struct WorkspaceScanRequest {
+    input: ConnectionInput,
+    workspace_root: PathBuf,
+    scope_id: String,
+    roots: Vec<WorkspaceScanRoot>,
+    exclusions: Vec<String>,
+    workspace: String,
+    next_add_root: usize,
+    cached_candidates: Vec<WorkspaceScanCandidate>,
+}
+
+impl WorkspaceScanRequest {
+    fn new(
+        input: ConnectionInput,
+        workspace_root: PathBuf,
+        snapshot: &WorkspaceScanSnapshot,
+    ) -> Self {
+        Self {
+            workspace: operation_workspace(&input),
+            input,
+            workspace_root,
+            scope_id: snapshot.scope_id.clone(),
+            roots: snapshot.roots.clone(),
+            exclusions: snapshot.exclusions.clone(),
+            next_add_root: 0,
+            cached_candidates: snapshot.candidates.clone(),
+        }
+    }
+}
+
+enum WorkspaceScanSchedulerMessage {
+    Schedule(Box<WorkspaceScanRequest>, Duration),
+    Cancel(mpsc::Sender<()>),
+}
+
+struct ScheduledWorkspaceScan {
+    request: WorkspaceScanRequest,
+    due: Instant,
+}
+
+#[derive(Clone)]
+pub struct WorkspaceScanScheduler {
+    sender: mpsc::Sender<WorkspaceScanSchedulerMessage>,
+}
+
+impl WorkspaceScanScheduler {
+    pub fn new(scans: WorkspaceScanRegistry, operations: OperationRegistry) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || workspace_scan_scheduler_loop(receiver, scans, operations));
+        Self { sender }
+    }
+
+    fn schedule(&self, request: WorkspaceScanRequest, delay: Duration) -> Result<(), AppError> {
+        self.sender
+            .send(WorkspaceScanSchedulerMessage::Schedule(
+                Box::new(request),
+                delay,
+            ))
+            .map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось запланировать фоновое сканирование.",
+                )
+                .with_diagnostics(error.to_string())
+            })
+    }
+
+    fn cancel_and_wait(&self) -> Result<(), AppError> {
+        let (acknowledge, acknowledged) = mpsc::channel();
+        self.sender
+            .send(WorkspaceScanSchedulerMessage::Cancel(acknowledge))
+            .map_err(|error| {
+                AppError::new(
+                    ErrorKind::CommandFailed,
+                    "Не удалось отменить фоновое сканирование.",
+                )
+                .with_diagnostics(error.to_string())
+            })?;
+        acknowledged
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|error| {
+                AppError::new(
+                    ErrorKind::Timeout,
+                    "Фоновое сканирование не завершилось вовремя.",
+                )
+                .with_diagnostics(error.to_string())
+            })
+    }
+}
+
+enum WorkspaceScanRunOutcome {
+    Finished {
+        candidates: Vec<WorkspaceScanCandidate>,
+        completed_roots: usize,
+        failed_roots: usize,
+        reason: Option<WorkspaceScanPartialReason>,
+    },
+    Foreground,
+    Message(WorkspaceScanSchedulerMessage),
+}
+
+impl WorkspaceScanRunOutcome {
+    fn partial(
+        candidates: Vec<WorkspaceScanCandidate>,
+        completed_roots: usize,
+        reason: WorkspaceScanPartialReason,
+    ) -> Self {
+        let failed_roots = usize::from(reason == WorkspaceScanPartialReason::CommandFailed);
+        Self::Finished {
+            candidates,
+            completed_roots,
+            failed_roots,
+            reason: Some(reason),
+        }
+    }
+}
+
+fn workspace_scan_scheduler_loop(
+    receiver: mpsc::Receiver<WorkspaceScanSchedulerMessage>,
+    scans: WorkspaceScanRegistry,
+    operations: OperationRegistry,
+) {
+    let mut pending: Option<ScheduledWorkspaceScan> = None;
+    let mut failures = 0_u32;
+    loop {
+        let message = match pending.as_ref() {
+            Some(scheduled) => {
+                let wait = scheduled.due.saturating_duration_since(Instant::now());
+                match receiver.recv_timeout(wait) {
+                    Ok(message) => Some(message),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            None => match receiver.recv() {
+                Ok(message) => Some(message),
+                Err(_) => return,
+            },
+        };
+        if let Some(message) = message {
+            match message {
+                WorkspaceScanSchedulerMessage::Schedule(request, delay) => {
+                    pending = Some(ScheduledWorkspaceScan {
+                        request: *request,
+                        due: Instant::now() + delay,
+                    });
+                    failures = 0;
+                }
+                WorkspaceScanSchedulerMessage::Cancel(acknowledge) => {
+                    if let Some(scheduled) = pending.take() {
+                        let _ = scans.pause(
+                            &scheduled.request.scope_id,
+                            WorkspaceScanPartialReason::Cancelled,
+                        );
+                    }
+                    let _ = acknowledge.send(());
+                }
+            }
+            continue;
+        }
+
+        let Some(scheduled) = pending.take() else {
+            continue;
+        };
+        let mut request = scheduled.request;
+        if operations.has_active_workspace_operation(&request.workspace) {
+            let _ = scans.pause(
+                &request.scope_id,
+                WorkspaceScanPartialReason::ForegroundActive,
+            );
+            pending = Some(ScheduledWorkspaceScan {
+                request,
+                due: Instant::now() + WORKSPACE_SCAN_FOREGROUND_RETRY,
+            });
+            continue;
+        }
+        match run_workspace_scan(&receiver, &operations, &mut request) {
+            WorkspaceScanRunOutcome::Finished {
+                candidates,
+                completed_roots,
+                failed_roots,
+                reason,
+            } => {
+                let reasons = reason.into_iter().collect::<Vec<_>>();
+                let published = scans.publish_results(
+                    &request.scope_id,
+                    candidates,
+                    completed_roots,
+                    failed_roots,
+                    &reasons,
+                );
+                if published.is_err() {
+                    continue;
+                }
+                let failed = failed_roots > 0
+                    || reasons.contains(&WorkspaceScanPartialReason::CommandFailed);
+                failures = if failed {
+                    failures.saturating_add(1)
+                } else {
+                    0
+                };
+                let delay = if failed {
+                    workspace_scan_backoff(failures)
+                } else if reasons.contains(&WorkspaceScanPartialReason::BudgetExceeded) {
+                    WORKSPACE_SCAN_DEBOUNCE
+                } else {
+                    WORKSPACE_SCAN_INTERVAL
+                };
+                pending = Some(ScheduledWorkspaceScan {
+                    request,
+                    due: Instant::now() + delay,
+                });
+            }
+            WorkspaceScanRunOutcome::Foreground => {
+                let _ = scans.pause(
+                    &request.scope_id,
+                    WorkspaceScanPartialReason::ForegroundActive,
+                );
+                pending = Some(ScheduledWorkspaceScan {
+                    request,
+                    due: Instant::now() + WORKSPACE_SCAN_FOREGROUND_RETRY,
+                });
+            }
+            WorkspaceScanRunOutcome::Message(message) => match message {
+                WorkspaceScanSchedulerMessage::Schedule(next, delay) => {
+                    pending = Some(ScheduledWorkspaceScan {
+                        request: *next,
+                        due: Instant::now() + delay,
+                    });
+                    failures = 0;
+                }
+                WorkspaceScanSchedulerMessage::Cancel(acknowledge) => {
+                    let _ = scans.pause(&request.scope_id, WorkspaceScanPartialReason::Cancelled);
+                    let _ = acknowledge.send(());
+                }
+            },
+        }
+    }
+}
+
+fn workspace_scan_backoff(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(6);
+    Duration::from_secs(1_u64 << exponent).min(WORKSPACE_SCAN_MAX_BACKOFF)
+}
+
+fn workspace_scan_budget_exhausted(elapsed: Duration) -> bool {
+    elapsed >= WORKSPACE_SCAN_BUDGET
+}
+
+fn run_workspace_scan(
+    receiver: &mpsc::Receiver<WorkspaceScanSchedulerMessage>,
+    operations: &OperationRegistry,
+    request: &mut WorkspaceScanRequest,
+) -> WorkspaceScanRunOutcome {
+    let started = Instant::now();
+    let mut candidates = request.cached_candidates.clone();
+    let mut completed_roots = 0;
+    for root in &request.roots {
+        if workspace_scan_budget_exhausted(started.elapsed()) {
+            return WorkspaceScanRunOutcome::partial(
+                candidates,
+                completed_roots,
+                WorkspaceScanPartialReason::BudgetExceeded,
+            );
+        }
+        let command =
+            match p4::workspace_scan_command(&request.input, &request.workspace_root, root) {
+                Ok((_, command)) => command,
+                Err(_) => {
+                    return WorkspaceScanRunOutcome::partial(
+                        candidates,
+                        completed_roots,
+                        WorkspaceScanPartialReason::CommandFailed,
+                    );
+                }
+            };
+        let (parsed, retained_candidates) = match workspace_scan_child_result(
+            run_workspace_scan_child(
+                command,
+                p4::parse_workspace_scan_output,
+                receiver,
+                operations,
+                &request.workspace,
+                started,
+            ),
+            candidates,
+            completed_roots,
+        ) {
+            Ok(result) => result,
+            Err(outcome) => return outcome,
+        };
+        candidates = retained_candidates;
+        if parsed.failed || !parsed.diagnostics.is_empty() {
+            return WorkspaceScanRunOutcome::partial(
+                candidates,
+                completed_roots,
+                WorkspaceScanPartialReason::CommandFailed,
+            );
+        }
+        candidates.retain(|candidate| {
+            candidate.action == "add"
+                || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
+        });
+        candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
+            !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
+        }));
+        completed_roots += 1;
+    }
+    if !request.roots.is_empty() {
+        let add_root_index = request.next_add_root % request.roots.len();
+        let add_root = &request.roots[add_root_index];
+        if workspace_scan_budget_exhausted(started.elapsed()) {
+            return WorkspaceScanRunOutcome::partial(
+                candidates,
+                completed_roots,
+                WorkspaceScanPartialReason::BudgetExceeded,
+            );
+        }
+        let command =
+            match p4::workspace_scan_add_command(&request.input, &request.workspace_root, add_root)
+            {
+                Ok((_, command)) => command,
+                Err(_) => {
+                    return WorkspaceScanRunOutcome::partial(
+                        candidates,
+                        completed_roots,
+                        WorkspaceScanPartialReason::CommandFailed,
+                    );
+                }
+            };
+        let (parsed, retained_candidates) = match workspace_scan_child_result(
+            run_workspace_scan_child(
+                command,
+                p4::parse_workspace_scan_add_output,
+                receiver,
+                operations,
+                &request.workspace,
+                started,
+            ),
+            candidates,
+            completed_roots,
+        ) {
+            Ok(result) => result,
+            Err(outcome) => return outcome,
+        };
+        candidates = retained_candidates;
+        if parsed.failed || !parsed.diagnostics.is_empty() {
+            return WorkspaceScanRunOutcome::partial(
+                candidates,
+                completed_roots,
+                WorkspaceScanPartialReason::CommandFailed,
+            );
+        }
+        candidates.retain(|candidate| {
+            candidate.action != "add"
+                || !workspace_scan_path_is_inside(&candidate.local_path, &add_root.local_path)
+        });
+        candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
+            !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
+        }));
+        request.cached_candidates.clone_from(&candidates);
+        request.next_add_root = (add_root_index + 1) % request.roots.len();
+    }
+    request.cached_candidates.clone_from(&candidates);
+    WorkspaceScanRunOutcome::Finished {
+        candidates,
+        completed_roots,
+        failed_roots: 0,
+        reason: None,
+    }
+}
+
+enum WorkspaceScanChildOutcome {
+    Completed(p4::WorkspaceScanCommandOutput),
+    Budget,
+    Foreground,
+    Message(WorkspaceScanSchedulerMessage),
+    Failed,
+}
+
+fn workspace_scan_child_result(
+    outcome: WorkspaceScanChildOutcome,
+    candidates: Vec<WorkspaceScanCandidate>,
+    completed_roots: usize,
+) -> Result<(p4::WorkspaceScanCommandOutput, Vec<WorkspaceScanCandidate>), WorkspaceScanRunOutcome>
+{
+    match outcome {
+        WorkspaceScanChildOutcome::Completed(output) => Ok((output, candidates)),
+        WorkspaceScanChildOutcome::Budget => Err(WorkspaceScanRunOutcome::partial(
+            candidates,
+            completed_roots,
+            WorkspaceScanPartialReason::BudgetExceeded,
+        )),
+        WorkspaceScanChildOutcome::Foreground => Err(WorkspaceScanRunOutcome::Foreground),
+        WorkspaceScanChildOutcome::Message(message) => {
+            Err(WorkspaceScanRunOutcome::Message(message))
+        }
+        WorkspaceScanChildOutcome::Failed => Err(WorkspaceScanRunOutcome::partial(
+            candidates,
+            completed_roots,
+            WorkspaceScanPartialReason::CommandFailed,
+        )),
+    }
+}
+
+fn run_workspace_scan_child(
+    mut command: Command,
+    parse: fn(&str) -> Result<p4::WorkspaceScanCommandOutput, AppError>,
+    receiver: &mpsc::Receiver<WorkspaceScanSchedulerMessage>,
+    operations: &OperationRegistry,
+    workspace: &str,
+    scan_started: Instant,
+) -> WorkspaceScanChildOutcome {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let Ok(mut child) = command.spawn() else {
+        return WorkspaceScanChildOutcome::Failed;
+    };
+    let mut stdout = child.stdout.take().map(|mut stdout| {
+        thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = stdout.read_to_end(&mut output);
+            output
+        })
+    });
+    let mut stderr = child.stderr.take().map(|mut stderr| {
+        thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = stderr.read_to_end(&mut output);
+            output
+        })
+    });
+    loop {
+        let interruption = if workspace_scan_budget_exhausted(scan_started.elapsed()) {
+            Some(WorkspaceScanChildOutcome::Budget)
+        } else if operations.has_active_workspace_operation(workspace) {
+            Some(WorkspaceScanChildOutcome::Foreground)
+        } else {
+            match receiver.try_recv() {
+                Ok(message) => Some(WorkspaceScanChildOutcome::Message(message)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(WorkspaceScanChildOutcome::Failed),
+            }
+        };
+        if let Some(interruption) = interruption {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout.take().and_then(|reader| reader.join().ok());
+            let _ = stderr.take().and_then(|reader| reader.join().ok());
+            return interruption;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout
+                    .take()
+                    .and_then(|reader| reader.join().ok())
+                    .unwrap_or_default();
+                let stderr = stderr
+                    .take()
+                    .and_then(|reader| reader.join().ok())
+                    .unwrap_or_default();
+                if status.success() {
+                    return parse(&String::from_utf8_lossy(&stdout))
+                        .map(WorkspaceScanChildOutcome::Completed)
+                        .unwrap_or(WorkspaceScanChildOutcome::Failed);
+                }
+                let _ = stderr;
+                return WorkspaceScanChildOutcome::Failed;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout.take().and_then(|reader| reader.join().ok());
+                let _ = stderr.take().and_then(|reader| reader.join().ok());
+                return WorkspaceScanChildOutcome::Failed;
+            }
+        }
+    }
+}
+
+fn workspace_scan_path_is_excluded(path: &str, exclusions: &[String]) -> bool {
+    exclusions
+        .iter()
+        .any(|exclusion| workspace_scan_path_is_inside(path, exclusion))
+}
+
+fn workspace_scan_path_is_inside(path: &str, directory: &str) -> bool {
+    let path = path.replace('/', "\\").to_lowercase();
+    let directory = directory
+        .trim_end_matches(['/', '\\'])
+        .replace('/', "\\")
+        .to_lowercase();
+    path == directory || path.starts_with(&format!("{directory}\\"))
 }
 
 impl WorkspaceRootRegistry {
@@ -90,15 +858,32 @@ impl WorkspaceRootRegistry {
     }
 }
 
-fn validate_reveal_path(path: &str) -> Result<&str, AppError> {
+fn validate_reveal_path(path: &str) -> Result<PathBuf, AppError> {
     let path = path.trim();
-    if path.is_empty() || path.contains(['\r', '\n']) {
+    if path.is_empty() || path.contains(['\r', '\n', '\0']) {
         return Err(AppError::new(
             ErrorKind::CommandFailed,
             "Не указан корректный локальный путь.",
         ));
     }
-    Ok(path)
+    let path = PathBuf::from(path);
+    let metadata = fs::metadata(&path).map_err(|error| {
+        AppError::new(ErrorKind::CommandFailed, "Локальный путь не существует.")
+            .with_diagnostics(error.to_string())
+    })?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Локальный путь не является файлом или папкой.",
+        ));
+    }
+    fs::canonicalize(path).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не удалось проверить локальный путь.",
+        )
+        .with_diagnostics(error.to_string())
+    })
 }
 
 #[tauri::command]
@@ -106,8 +891,19 @@ pub fn reveal_path(path: String) -> Result<(), AppError> {
     let path = validate_reveal_path(&path)?;
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
+        let explorer = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .map(|directory| directory.join("explorer.exe"))
+            .filter(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                AppError::new(ErrorKind::CommandFailed, "Не найден Windows Explorer.")
+            })?;
+        std::process::Command::new(explorer)
+            .arg({
+                let mut select_argument = std::ffi::OsString::from("/select,");
+                select_argument.push(path);
+                select_argument
+            })
             .spawn()
             .map_err(|error| {
                 AppError::new(
@@ -146,12 +942,16 @@ pub async fn test_connection(input: ConnectionInput) -> Result<P4Info, AppError>
 pub async fn open_workspace(
     input: ConnectionInput,
     roots: State<'_, WorkspaceRootRegistry>,
+    scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
 ) -> Result<P4Info, AppError> {
+    scheduler.cancel_and_wait()?;
     let registry_input = input.clone();
     let info = tauri::async_runtime::spawn_blocking(move || p4::open_workspace(&input))
         .await
         .map_err(task_error)??;
     roots.remember(&registry_input, &info)?;
+    scans.reset(&registry_input, &info)?;
     Ok(info)
 }
 
@@ -324,7 +1124,7 @@ pub async fn inspect_workspace(input: ConnectionInput) -> Result<WorkspaceSpec, 
 }
 
 #[tauri::command]
-pub async fn update_workspace(input: WorkspaceUpdateInput) -> Result<(), AppError> {
+pub async fn update_workspace(input: WorkspaceUpdateInput) -> Result<WorkspaceSpec, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::update_workspace(
             &input.connection,
@@ -332,6 +1132,45 @@ pub async fn update_workspace(input: WorkspaceUpdateInput) -> Result<(), AppErro
             &input.root,
             input.stream.as_deref(),
             &input.description,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_workspace_mapping_editor(
+    input: ConnectionInput,
+    workspace: String,
+) -> Result<WorkspaceMappingEditor, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::inspect_workspace_mapping_editor(&input, &workspace)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_workspace_mappings(
+    input: WorkspaceMappingPreviewInput,
+) -> Result<WorkspaceMappingPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_workspace_mappings(&input.connection, &input.workspace, &input.entries)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn apply_workspace_mappings(
+    input: WorkspaceMappingApplyInput,
+) -> Result<WorkspaceSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::apply_workspace_mappings(
+            &input.connection,
+            &input.workspace,
+            &input.entries,
+            &input.preview_token,
         )
     })
     .await
@@ -490,12 +1329,20 @@ fn workspace_stream_view_paths(
 }
 
 #[tauri::command]
-pub async fn switch_stream(input: SwitchStreamInput) -> Result<(), AppError> {
+pub async fn switch_stream(
+    input: SwitchStreamInput,
+    scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
+) -> Result<(), AppError> {
+    scheduler.cancel_and_wait()?;
+    let registry_input = input.connection.clone();
+    let stream = input.stream.clone();
     tauri::async_runtime::spawn_blocking(move || {
         p4::switch_stream(&input.connection, &input.stream, &input.local_strategy)
     })
     .await
-    .map_err(task_error)?
+    .map_err(task_error)??;
+    scans.reset_stream(&registry_input, &stream)
 }
 
 #[tauri::command]
@@ -529,6 +1376,20 @@ pub async fn list_depot_files(
 }
 
 #[tauri::command]
+pub async fn compare_depot_states(
+    input: ConnectionInput,
+    scope: String,
+    base_change: String,
+    target_change: Option<String>,
+) -> Result<DepotStateComparison, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::compare_depot_states(&input, &scope, &base_change, target_change.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn list_pending_changes(input: ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_pending_changes(&input))
         .await
@@ -546,11 +1407,88 @@ pub async fn list_jobs(
 }
 
 #[tauri::command]
+pub async fn inspect_job_form(input: JobFormInput) -> Result<JobForm, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::inspect_job_form(&input.connection, input.job.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_job(input: SaveJobInput) -> Result<Job, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_job(
+            &input.connection,
+            input.job.as_deref(),
+            &input.fields,
+            &input.form_token,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn list_labels(
     input: ConnectionInput,
     search: Option<String>,
 ) -> Result<Vec<Label>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_labels(&input, search.as_deref()))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_label(input: ConnectionInput, name: String) -> Result<LabelSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::inspect_label(&input, &name))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn create_label(
+    input: ConnectionInput,
+    draft: LabelInput,
+) -> Result<LabelSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::create_label(&input, &draft))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn update_label(
+    input: ConnectionInput,
+    draft: LabelInput,
+) -> Result<LabelSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::update_label(&input, &draft))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn delete_label(input: ConnectionInput, name: String) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::delete_label(&input, &name))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_label_tag(
+    input: ConnectionInput,
+    tag: LabelTagInput,
+) -> Result<LabelTagPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::preview_label_tag(&input, &tag))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn apply_label_tag(
+    input: ConnectionInput,
+    tag: LabelTagInput,
+) -> Result<LabelTagResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::apply_label_tag(&input, &tag))
         .await
         .map_err(task_error)?
 }
@@ -607,6 +1545,15 @@ pub async fn list_submitted_changes(
     })
     .await
     .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn list_submitted_history_page(
+    request: SubmittedHistoryPageInput,
+) -> Result<HistoryPage<PendingChange>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::list_submitted_history_page(request))
+        .await
+        .map_err(task_error)?
 }
 
 #[tauri::command]
@@ -724,6 +1671,17 @@ pub async fn list_workspace_files(
 }
 
 #[tauri::command]
+pub async fn search_workspace_files(
+    input: ConnectionInput,
+    scope: String,
+    query: String,
+) -> Result<WorkspaceSearchResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::search_workspace_files(&input, &scope, &query))
+        .await
+        .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn map_workspace_paths(
     input: ConnectionInput,
     paths: Vec<String>,
@@ -731,6 +1689,72 @@ pub async fn map_workspace_paths(
     tauri::async_runtime::spawn_blocking(move || p4::map_workspace_paths(&input, &paths))
         .await
         .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn configure_workspace_scan(
+    input: ConnectionInput,
+    roots: Vec<String>,
+    exclusions: Vec<String>,
+    workspace_roots: State<'_, WorkspaceRootRegistry>,
+    scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
+) -> Result<WorkspaceScanSnapshot, AppError> {
+    scheduler.cancel_and_wait()?;
+    let workspace_root = workspace_roots.root(&input)?;
+    let request_workspace_root = workspace_root.clone();
+    let identity = scans.identity(&input)?;
+    let scan_input = input.clone();
+    let configuration = tauri::async_runtime::spawn_blocking(move || {
+        p4::configure_workspace_scan(&scan_input, &workspace_root, &roots, &exclusions)
+    })
+    .await
+    .map_err(task_error)??;
+    let snapshot = scans.configure(
+        &identity,
+        configuration.roots,
+        configuration.exclusions,
+        configuration.partial_reasons,
+    )?;
+    scheduler.schedule(
+        WorkspaceScanRequest::new(input, request_workspace_root, &snapshot),
+        WORKSPACE_SCAN_DEBOUNCE,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn get_workspace_scan_snapshot(
+    input: ConnectionInput,
+    scans: State<'_, WorkspaceScanRegistry>,
+) -> Result<WorkspaceScanSnapshot, AppError> {
+    scans.get(&input)
+}
+
+#[tauri::command]
+pub fn refresh_workspace_scan(
+    input: ConnectionInput,
+    workspace_roots: State<'_, WorkspaceRootRegistry>,
+    scans: State<'_, WorkspaceScanRegistry>,
+    scheduler: State<'_, WorkspaceScanScheduler>,
+) -> Result<(), AppError> {
+    let workspace_root = workspace_roots.root(&input)?;
+    let snapshot = scans.get(&input)?;
+    if snapshot.roots.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Корни фонового сканирования ещё не настроены.",
+        ));
+    }
+    scheduler.schedule(
+        WorkspaceScanRequest::new(input, workspace_root, &snapshot),
+        Duration::ZERO,
+    )
+}
+
+#[tauri::command]
+pub fn cancel_workspace_scan(scheduler: State<'_, WorkspaceScanScheduler>) -> Result<(), AppError> {
+    scheduler.cancel_and_wait()
 }
 
 #[tauri::command]
@@ -776,6 +1800,19 @@ pub async fn preview_sync(
     tauri::async_runtime::spawn_blocking(move || p4::preview_sync_scopes(&input, &scopes))
         .await
         .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_sync_at_date(
+    input: ConnectionInput,
+    scopes: Vec<String>,
+    target_date_time: String,
+) -> Result<DateSyncPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_sync_at_date(&input, &scopes, &target_date_time)
+    })
+    .await
+    .map_err(task_error)?
 }
 
 #[tauri::command]
@@ -860,6 +1897,46 @@ fn bounded_operation_diagnostics(message: Option<&str>) -> Vec<OperationDiagnost
         .collect()
 }
 
+fn submit_item_results(
+    change: &str,
+    mode: &SubmitMode,
+    outcome: &SubmitOutcome,
+) -> Vec<OperationItemResult> {
+    outcome
+        .steps
+        .iter()
+        .map(|step| OperationItemResult {
+            item_id: step.step.clone(),
+            path: None,
+            status: match step.status.as_str() {
+                "completed" | "succeeded" => OperationItemStatus::Succeeded,
+                "skipped" => OperationItemStatus::Skipped,
+                _ => OperationItemStatus::Failed,
+            },
+            reason: step.detail.clone(),
+            compensation: if matches!(mode, SubmitMode::Shelf)
+                && !matches!(step.status.as_str(), "completed" | "succeeded" | "skipped")
+            {
+                OperationCompensationStatus::Unknown
+            } else {
+                OperationCompensationStatus::NotRequired
+            },
+            recovery_action_id: (!outcome.recovery_actions.is_empty()
+                || matches!(outcome.terminal, SubmitTerminalOutcome::Unknown)
+                || !matches!(step.status.as_str(), "completed" | "succeeded" | "skipped"))
+            .then(|| "refresh_changes".to_owned()),
+        })
+        .chain((outcome.steps.is_empty()).then(|| OperationItemResult {
+            item_id: format!("submit-{change}"),
+            path: None,
+            status: OperationItemStatus::Skipped,
+            reason: Some("Submit returned no completed step details.".to_owned()),
+            compensation: OperationCompensationStatus::Unknown,
+            recovery_action_id: Some("refresh_changes".to_owned()),
+        }))
+        .collect()
+}
+
 fn submitted_change_from_record(
     record: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<String> {
@@ -900,6 +1977,7 @@ fn operation_event(
             message: None,
         },
         retryable: false,
+        cancellable: true,
     }
 }
 
@@ -1482,6 +2560,24 @@ pub async fn start_sync(
     Ok(operation_id)
 }
 
+fn failed_submit_outcome(readback: &SubmitReadBack, error: &AppError) -> SubmitOutcome {
+    SubmitOutcome {
+        preserved_local_change: None,
+        terminal: readback.outcome,
+        affected_change: readback.affected_change.clone(),
+        recovery_actions: readback.recovery_actions.clone(),
+        steps: vec![SubmitStepResult {
+            step: "submit".to_owned(),
+            status: "failed".to_owned(),
+            detail: Some(error.message.clone()),
+        }],
+    }
+}
+
+fn submit_mode_cancellable(mode: &SubmitMode) -> bool {
+    matches!(mode, SubmitMode::Local)
+}
+
 #[tauri::command]
 pub async fn start_submit(
     app: tauri::AppHandle,
@@ -1491,6 +2587,8 @@ pub async fn start_submit(
     if !matches!(input.mode, SubmitMode::Local) {
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (cancel, cancellation) = mpsc::channel();
+        drop(cancellation);
+        let cancellable = submit_mode_cancellable(&input.mode);
         let operation_id = registry.new_id();
         let started_at_ms = operation_started_at_ms();
         if !registry.insert_if_kind_idle(
@@ -1512,6 +2610,7 @@ pub async fn start_submit(
             "operation-event",
             OperationEvent {
                 phase: Some("apply".to_owned()),
+                cancellable,
                 ..operation_event(
                     &operation_id,
                     "submit",
@@ -1524,7 +2623,6 @@ pub async fn start_submit(
         let registry_for_wait = registry.inner().clone();
         let id_for_wait = operation_id.clone();
         thread::spawn(move || {
-            let _keep_cancellation_open = cancellation;
             let result = p4::submit_change(
                 &input.connection,
                 &input.change,
@@ -1532,8 +2630,10 @@ pub async fn start_submit(
                 &input.mode,
             );
             let was_cancelled = cancelled.load(Ordering::Acquire);
-            let (kind, message, diagnostics, read_back, submit_outcome) = match result {
+            let (kind, message, diagnostics, read_back, submit_outcome, item_results) = match result
+            {
                 Ok(outcome) => {
+                    let item_results = submit_item_results(&input.change, &input.mode, &outcome);
                     let kind = match outcome.terminal {
                         SubmitTerminalOutcome::Submitted => OperationEventKind::Completed,
                         SubmitTerminalOutcome::Pending if was_cancelled => {
@@ -1566,10 +2666,13 @@ pub async fn start_submit(
                             message,
                         },
                         Some(outcome),
+                        item_results,
                     )
                 }
                 Err(error) => {
                     let readback = p4::submit_readback(&input.connection, &input.change);
+                    let outcome = failed_submit_outcome(&readback, &error);
+                    let item_results = submit_item_results(&input.change, &input.mode, &outcome);
                     let kind = match readback.outcome {
                         SubmitTerminalOutcome::Submitted => OperationEventKind::Partial,
                         SubmitTerminalOutcome::Pending if was_cancelled => {
@@ -1597,7 +2700,8 @@ pub async fn start_submit(
                             ],
                             message: Some(readback.message),
                         },
-                        None,
+                        Some(outcome),
+                        item_results,
                     )
                 }
             };
@@ -1610,8 +2714,10 @@ pub async fn start_submit(
                     message,
                     phase: Some("validate".to_owned()),
                     diagnostics,
+                    item_results,
                     read_back,
                     submit_outcome,
+                    cancellable,
                     ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
                 },
             );
@@ -1766,10 +2872,11 @@ pub async fn start_submit(
             recovery_actions: readback.recovery_actions.clone(),
             steps: vec![SubmitStepResult {
                 step: "submit_local".to_owned(),
-                status: if success { "completed" } else { "uncertain" }.to_owned(),
-                detail: None,
+                status: if success { "succeeded" } else { "failed" }.to_owned(),
+                detail: (!success).then(|| readback.message.clone()),
             }],
         };
+        let item_results = submit_item_results(&change, &SubmitMode::Local, &submit_outcome);
         let message = if !success && !was_cancelled {
             let detail = stderr_text.trim();
             Some(if detail.is_empty() {
@@ -1808,6 +2915,7 @@ pub async fn start_submit(
                 reconcile_items: None,
                 submit_outcome: Some(submit_outcome),
                 diagnostics,
+                item_results,
                 read_back: OperationReadBack {
                     status: match readback.outcome {
                         SubmitTerminalOutcome::Submitted | SubmitTerminalOutcome::Pending => {
@@ -1902,6 +3010,17 @@ async fn run_file_operation(
 pub async fn resolve_files(input: ResolveInput) -> Result<ResolveApplyResult, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::resolve_files(&input.connection, &input.depot_paths, &input.mode)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn resolve_specialized(
+    input: SpecializedResolveInput,
+) -> Result<ResolveApplyResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::resolve_specialized(&input.connection, &input.items, &input.mode)
     })
     .await
     .map_err(task_error)?
@@ -2268,6 +3387,18 @@ pub async fn start_reconcile_preview(
 }
 
 #[tauri::command]
+pub async fn reconcile_scope_from_local_directory(
+    input: ConnectionInput,
+    directory: String,
+) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::reconcile_scope_from_local_directory(&input, &directory)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn start_reconcile(
     app: tauri::AppHandle,
     registry: State<'_, OperationRegistry>,
@@ -2279,16 +3410,7 @@ pub async fn start_reconcile(
             "Select at least one reconcile candidate.",
         ));
     }
-    if input
-        .items
-        .iter()
-        .any(|item| item.ignored || item.unsafe_item)
-    {
-        return Err(AppError::new(
-            ErrorKind::Conflict,
-            "Ignored or unsafe reconcile candidates cannot be applied.",
-        ));
-    }
+    p4::validate_reconcile_selection(&input.items)?;
     if input.preview_token.trim().is_empty()
         || input
             .items
@@ -2590,6 +3712,20 @@ pub async fn file_history(
 }
 
 #[tauri::command]
+pub async fn file_history_page(
+    input: ConnectionInput,
+    depot_path: String,
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<HistoryPage<FileRevision>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::file_history_page(&input, &depot_path, limit, cursor.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn print_revision(input: DiffInput, revision: String) -> Result<FileDiff, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::print_revision(&input.connection, &input.depot_path, &revision)
@@ -2631,6 +3767,22 @@ pub async fn save_shelved_file(input: SaveShelvedInput) -> Result<(), AppError> 
             &input.source_change,
             &input.depot_path,
             &input.output_path,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_shelved_files(
+    input: SaveShelvedFilesInput,
+) -> Result<ChangeExportResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_shelved_files(
+            &input.connection,
+            &input.source_change,
+            &input.depot_paths,
+            &input.output_directory,
         )
     })
     .await
@@ -2831,6 +3983,41 @@ pub async fn edit_change(input: EditChangeInput) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub async fn preview_change_identity(
+    input: ChangeIdentityPreflightInput,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn update_change_identity(
+    input: ChangeIdentityUpdateInput,
+) -> Result<ChangeIdentityState, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::update_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+            &input.preview_token,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn delete_change(input: DeleteChangeInput) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::delete_change(&input.connection, &input.change)
@@ -2930,13 +4117,30 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
-        parse_sync_output_record, submitted_change_from_record, sync_operation_scope,
+        WORKSPACE_SCAN_BUDGET, WorkspaceScanRegistry, WorkspaceScanRequest, WorkspaceScanScheduler,
+        bounded_operation_diagnostics, confirmed_integration_paths, failed_submit_outcome,
+        operation_event, operation_workspace, parse_sync_output_record, submit_item_results,
+        submit_mode_cancellable, submitted_change_from_record, sync_operation_scope,
         sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
+        workspace_scan_backoff, workspace_scan_budget_exhausted, workspace_scan_path_is_excluded,
         workspace_stream_view_paths,
     };
-    use crate::models::{OpenedFile, OperationEventKind};
-    use std::{collections::BTreeSet, fs};
+    use crate::models::{
+        AppError, ConnectionInput, ErrorKind, OpenedFile, OperationCompensationStatus,
+        OperationEventKind, OperationItemStatus, P4Info, SubmitMode, SubmitOutcome, SubmitReadBack,
+        SubmitStepResult, SubmitTerminalOutcome, WorkspaceScanCandidate,
+        WorkspaceScanCoverageState, WorkspaceScanPartialReason, WorkspaceScanRoot,
+    };
+    use crate::operations::{OperationHandle, OperationRegistry};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        path::PathBuf,
+        process::Command,
+        sync::{Arc, atomic::AtomicBool, mpsc},
+        thread,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -2997,6 +4201,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn integration_readback_ignores_opened_files_from_another_changelist() {
+        let expected = BTreeSet::from(["//acme/dev/a.txt".to_owned()]);
+        let opened = OpenedFile {
+            change: "456".to_owned(),
+            ..opened_file("//Acme/dev/a.txt")
+        };
+
+        assert!(
+            confirmed_integration_paths(&expected, &BTreeSet::new(), &expected, &[opened], "123",)
+                .is_empty()
+        );
+    }
+
     fn opened_file(path: &str) -> OpenedFile {
         OpenedFile {
             depot_path: path.to_owned(),
@@ -3039,6 +4257,79 @@ mod tests {
     }
 
     #[test]
+    fn unknown_submit_failure_keeps_recovery_and_never_exposes_retry() {
+        let readback = SubmitReadBack {
+            outcome: SubmitTerminalOutcome::Unknown,
+            affected_change: None,
+            message: "unknown".to_owned(),
+            recovery_actions: vec!["refresh and rerun preflight".to_owned()],
+        };
+        let outcome = failed_submit_outcome(
+            &readback,
+            &AppError::new(ErrorKind::Offline, "connection lost"),
+        );
+        let items = submit_item_results("42", &SubmitMode::Local, &outcome);
+
+        assert_eq!(outcome.terminal, SubmitTerminalOutcome::Unknown);
+        assert_eq!(outcome.recovery_actions, ["refresh and rerun preflight"]);
+        assert_eq!(outcome.steps[0].status, "failed");
+        assert_eq!(
+            items[0].recovery_action_id.as_deref(),
+            Some("refresh_changes")
+        );
+    }
+
+    #[test]
+    fn shelf_submit_exposes_step_and_compensation_outcomes() {
+        let outcome = SubmitOutcome {
+            preserved_local_change: Some("205".to_owned()),
+            terminal: SubmitTerminalOutcome::Submitted,
+            affected_change: Some("104".to_owned()),
+            recovery_actions: Vec::new(),
+            steps: vec![SubmitStepResult {
+                step: "move_local_files".to_owned(),
+                status: "completed".to_owned(),
+                detail: None,
+            }],
+        };
+
+        let results = submit_item_results("104", &SubmitMode::Shelf, &outcome);
+        assert_eq!(results[0].item_id, "move_local_files");
+        assert_eq!(results[0].status, OperationItemStatus::Succeeded);
+        assert_eq!(
+            results[0].compensation,
+            OperationCompensationStatus::NotRequired
+        );
+
+        let failure_outcome = SubmitOutcome {
+            steps: vec![SubmitStepResult {
+                step: "submit_shelf".to_owned(),
+                status: "failed".to_owned(),
+                detail: Some("submit failed".to_owned()),
+            }],
+            ..outcome
+        };
+        let failure = submit_item_results("104", &SubmitMode::Shelf, &failure_outcome);
+        assert_eq!(failure[0].status, OperationItemStatus::Failed);
+        assert_eq!(
+            failure[0].compensation,
+            OperationCompensationStatus::Unknown
+        );
+        assert_eq!(
+            failure[0].recovery_action_id.as_deref(),
+            Some("refresh_changes")
+        );
+    }
+
+    #[test]
+    fn only_process_backed_local_submit_claims_cancellation_support() {
+        assert!(submit_mode_cancellable(&SubmitMode::Local));
+        assert!(!submit_mode_cancellable(&SubmitMode::Shelf));
+        assert!(!submit_mode_cancellable(&SubmitMode::LocalDeleteShelf));
+        assert!(!submit_mode_cancellable(&SubmitMode::LocalUpdateShelf));
+    }
+
+    #[test]
     fn submit_output_uses_only_the_server_returned_change_id() {
         let string_record = serde_json::json!({ "submittedChange": "104" });
         let number_record = serde_json::json!({ "submittedChange": 105 });
@@ -3061,10 +4352,25 @@ mod tests {
     fn reveal_path_rejects_empty_and_multiline_values() {
         assert!(validate_reveal_path("  ").is_err());
         assert!(validate_reveal_path("C:\\work\\file.txt\nexplorer.exe").is_err());
+        assert!(validate_reveal_path("C:\\work\\missing.txt").is_err());
+    }
+
+    #[test]
+    fn reveal_path_requires_an_existing_file_or_directory() {
+        let directory = std::env::temp_dir().join(format!(
+            "p4fnv-reveal-path-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
         assert_eq!(
-            validate_reveal_path(" C:\\work\\file.txt ").unwrap(),
-            "C:\\work\\file.txt"
+            validate_reveal_path(directory.to_str().unwrap()).unwrap(),
+            fs::canonicalize(&directory).unwrap()
         );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -3091,5 +4397,319 @@ mod tests {
         );
 
         fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn workspace_scan_reports_partial_coverage_and_resets_on_stream_change() {
+        let input = ConnectionInput {
+            p4_path: None,
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let registry = WorkspaceScanRegistry::default();
+        registry
+            .reset(
+                &input,
+                &P4Info {
+                    client_name: Some("alex-main".to_owned()),
+                    client_stream: Some("//Acme/main".to_owned()),
+                    ..P4Info::default()
+                },
+            )
+            .unwrap();
+        let identity = registry.identity(&input).unwrap();
+        let configured = registry
+            .configure(
+                &identity,
+                vec![WorkspaceScanRoot {
+                    local_path: r"C:\work\Source".to_owned(),
+                    local_scope: r"C:\work\Source\...".to_owned(),
+                    client_scope: "//alex-main/Source/...".to_owned(),
+                    depot_scope: "//Acme/main/Source/...".to_owned(),
+                    ignore_sources: Vec::new(),
+                }],
+                Vec::new(),
+                vec![WorkspaceScanPartialReason::IgnoreRulesUnavailable],
+            )
+            .unwrap();
+        assert_eq!(
+            configured.coverage.state,
+            WorkspaceScanCoverageState::Partial
+        );
+        assert_eq!(configured.coverage.total_roots, 1);
+        assert!(configured.candidates.is_empty());
+
+        let limited = registry
+            .publish_results(
+                &configured.scope_id,
+                (0..=crate::p4::MAX_WORKSPACE_SCAN_CANDIDATES)
+                    .map(|index| WorkspaceScanCandidate {
+                        stable_id: format!("candidate-{index}"),
+                        action: "add".to_owned(),
+                        depot_path: None,
+                        client_path: None,
+                        local_path: format!(r"C:\work\Source\{index}.txt"),
+                    })
+                    .collect(),
+                0,
+                1,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            limited.candidates.len(),
+            crate::p4::MAX_WORKSPACE_SCAN_CANDIDATES
+        );
+        assert!(
+            limited
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::CandidateLimit)
+        );
+        assert!(
+            limited
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::RootError)
+        );
+
+        registry.reset_stream(&input, "//Acme/dev").unwrap();
+        let reset = registry.get(&input).unwrap();
+        assert_eq!(reset.identity.stream.as_deref(), Some("//Acme/dev"));
+        assert_eq!(reset.coverage.state, WorkspaceScanCoverageState::Stale);
+        assert!(reset.roots.is_empty());
+        assert!(reset.candidates.is_empty());
+        assert_ne!(reset.scope_id, configured.scope_id);
+        assert_eq!(
+            registry
+                .publish_results(&configured.scope_id, Vec::new(), 0, 0, &[])
+                .unwrap_err()
+                .kind,
+            ErrorKind::Stale
+        );
+
+        let mut other_workspace = input;
+        other_workspace.client = Some("alex-release".to_owned());
+        registry
+            .reset(
+                &other_workspace,
+                &P4Info {
+                    client_name: Some("alex-release".to_owned()),
+                    client_stream: Some("//Acme/release".to_owned()),
+                    ..P4Info::default()
+                },
+            )
+            .unwrap();
+        let workspace_reset = registry.get(&other_workspace).unwrap();
+        assert_eq!(workspace_reset.identity.workspace, "alex-release");
+        assert_eq!(
+            workspace_reset.coverage.state,
+            WorkspaceScanCoverageState::NotStarted
+        );
+        assert!(workspace_reset.roots.is_empty());
+    }
+
+    #[test]
+    fn workspace_scan_scheduler_has_bounded_budget_backoff_and_exclusions() {
+        assert!(!workspace_scan_budget_exhausted(Duration::from_millis(
+            1499
+        )));
+        assert!(workspace_scan_budget_exhausted(Duration::from_millis(1500)));
+        assert_eq!(workspace_scan_backoff(1), Duration::from_secs(1));
+        assert_eq!(workspace_scan_backoff(2), Duration::from_secs(2));
+        assert_eq!(workspace_scan_backoff(99), Duration::from_secs(60));
+        assert!(workspace_scan_path_is_excluded(
+            r"C:\work\Generated\a.txt",
+            &[r"c:\WORK\generated".to_owned()]
+        ));
+        assert!(!workspace_scan_path_is_excluded(
+            r"C:\work\Source\a.txt",
+            &[r"C:\work\Generated".to_owned()]
+        ));
+        assert!(!workspace_scan_path_is_excluded(
+            r"C:\work\GeneratedFiles\a.txt",
+            &[r"C:\work\Generated".to_owned()]
+        ));
+    }
+
+    #[test]
+    fn workspace_scan_scheduler_yields_to_foreground_and_cancels_pending_retry() {
+        let input = ConnectionInput {
+            p4_path: None,
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let scans = WorkspaceScanRegistry::default();
+        scans
+            .reset(
+                &input,
+                &P4Info {
+                    client_name: Some("alex-main".to_owned()),
+                    client_stream: Some("//Acme/main".to_owned()),
+                    ..P4Info::default()
+                },
+            )
+            .unwrap();
+        let identity = scans.identity(&input).unwrap();
+        let configured = scans
+            .configure(
+                &identity,
+                vec![WorkspaceScanRoot {
+                    local_path: r"C:\work\Source".to_owned(),
+                    local_scope: r"C:\work\Source\...".to_owned(),
+                    client_scope: "//alex-main/Source/...".to_owned(),
+                    depot_scope: "//Acme/main/Source/...".to_owned(),
+                    ignore_sources: Vec::new(),
+                }],
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let operations = OperationRegistry::default();
+        let (cancel, _) = mpsc::channel();
+        assert!(operations.insert_if_kind_idle(
+            "op-foreground".to_owned(),
+            OperationHandle {
+                kind: "sync",
+                workspace: operation_workspace(&input),
+                started_at_ms: 42,
+                cancel,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            }
+        ));
+        let scheduler = WorkspaceScanScheduler::new(scans.clone(), operations.clone());
+        scheduler
+            .schedule(
+                WorkspaceScanRequest::new(input.clone(), PathBuf::from(r"C:\work"), &configured),
+                Duration::ZERO,
+            )
+            .unwrap();
+        for _ in 0..50 {
+            if scans
+                .get(&input)
+                .is_ok_and(|snapshot| snapshot.coverage.state == WorkspaceScanCoverageState::Paused)
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let paused = scans.get(&input).unwrap();
+        assert_eq!(paused.coverage.state, WorkspaceScanCoverageState::Paused);
+        assert!(
+            paused
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::ForegroundActive)
+        );
+        scheduler.cancel_and_wait().unwrap();
+        operations.remove("op-foreground");
+        assert!(
+            scans
+                .get(&input)
+                .unwrap()
+                .coverage
+                .partial_reasons
+                .contains(&WorkspaceScanPartialReason::Cancelled)
+        );
+    }
+
+    #[test]
+    fn workspace_scan_budget_and_cancel_kill_the_active_child() {
+        let sleeping_command = || {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "commands::tests::workspace_scan_sleeping_child_fixture",
+                "--ignored",
+                "--exact",
+            ]);
+            command
+        };
+        let operations = OperationRegistry::default();
+        let (_sender, receiver) = mpsc::channel();
+        assert!(matches!(
+            super::run_workspace_scan_child(
+                sleeping_command(),
+                crate::p4::parse_workspace_scan_output,
+                &receiver,
+                &operations,
+                "server/alex/main",
+                Instant::now() - WORKSPACE_SCAN_BUDGET,
+            ),
+            super::WorkspaceScanChildOutcome::Budget
+        ));
+
+        let (sender, receiver) = mpsc::channel();
+        let (acknowledge, _acknowledged) = mpsc::channel();
+        sender
+            .send(super::WorkspaceScanSchedulerMessage::Cancel(acknowledge))
+            .unwrap();
+        assert!(matches!(
+            super::run_workspace_scan_child(
+                sleeping_command(),
+                crate::p4::parse_workspace_scan_output,
+                &receiver,
+                &operations,
+                "server/alex/main",
+                Instant::now(),
+            ),
+            super::WorkspaceScanChildOutcome::Message(
+                super::WorkspaceScanSchedulerMessage::Cancel(_)
+            )
+        ));
+    }
+
+    #[test]
+    fn workspace_scan_active_child_yields_to_new_foreground_work() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "commands::tests::workspace_scan_sleeping_child_fixture",
+            "--ignored",
+            "--exact",
+        ]);
+        let operations = OperationRegistry::default();
+        let foreground_operations = operations.clone();
+        let foreground = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            let (cancel, _) = mpsc::channel();
+            assert!(foreground_operations.insert_if_kind_idle(
+                "op-foreground".to_owned(),
+                OperationHandle {
+                    kind: "sync",
+                    workspace: "server/alex/main".to_owned(),
+                    started_at_ms: 42,
+                    cancel,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                }
+            ));
+        });
+        let (_sender, receiver) = mpsc::channel();
+
+        assert!(matches!(
+            super::run_workspace_scan_child(
+                command,
+                crate::p4::parse_workspace_scan_output,
+                &receiver,
+                &operations,
+                "server/alex/main",
+                Instant::now(),
+            ),
+            super::WorkspaceScanChildOutcome::Foreground
+        ));
+        foreground.join().unwrap();
+        operations.remove("op-foreground");
+    }
+
+    #[test]
+    #[ignore]
+    fn workspace_scan_sleeping_child_fixture() {
+        thread::sleep(Duration::from_secs(10));
     }
 }

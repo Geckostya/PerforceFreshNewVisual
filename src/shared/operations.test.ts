@@ -54,6 +54,16 @@ describe("operation snapshots", () => {
     expect(isOperationTerminal("progress")).toBe(false);
   });
 
+  it("classifies every protocol state explicitly", () => {
+    const active = ["started", "progress", "cancel_requested"] as const;
+    const terminal = ["completed", "failed", "cancelled", "partial", "unknown"] as const;
+
+    expect(active.every(isOperationActive)).toBe(true);
+    expect(active.some(isOperationTerminal)).toBe(false);
+    expect(terminal.every(isOperationTerminal)).toBe(true);
+    expect(terminal.some(isOperationActive)).toBe(false);
+  });
+
   it("does not regress a terminal result when late progress arrives", () => {
     let state = reduceOperationSnapshots([], event("op-1", "started"));
     state = reduceOperationSnapshots(state, event("op-1", "unknown", 2));
@@ -62,12 +72,58 @@ describe("operation snapshots", () => {
     expect(state[0]).toMatchObject({ status: "unknown", processed: 2, retryable: false });
   });
 
+  it("keeps the first terminal result when a contradictory terminal event arrives", () => {
+    let state = reduceOperationSnapshots([], event("op-1", "started"));
+    state = reduceOperationSnapshots(state, event("op-1", "unknown", 2));
+    state = reduceOperationSnapshots(state, event("op-1", "failed", 3));
+
+    expect(state[0]).toMatchObject({ status: "unknown", processed: 2, retryable: false });
+  });
+
+  it("never exposes retry for an unknown submit", () => {
+    const state = reduceOperationSnapshots([], {
+      ...event("op-submit", "unknown"),
+      operationKind: "submit",
+      retryable: true,
+      submitOutcome: {
+        terminal: "unknown",
+        recoveryActions: ["refresh Changes and rerun preflight"],
+        steps: [{ step: "submit", status: "failed" }],
+      },
+    });
+
+    expect(state[0]).toMatchObject({ operationKind: "submit", status: "unknown", retryable: false });
+  });
+
+  it("never exposes retry for stream integration", () => {
+    const failed = reduceOperationSnapshots([], {
+      ...event("op-integrate", "failed"),
+      operationKind: "integrate",
+      retryable: true,
+    });
+    const unknown = reduceOperationSnapshots([], {
+      ...event("op-integrate-unknown", "unknown"),
+      operationKind: "integrate",
+      retryable: true,
+    });
+
+    expect(failed[0].retryable).toBe(false);
+    expect(unknown[0].retryable).toBe(false);
+  });
+
   it("keeps cancel requested active until a terminal event arrives", () => {
     let state = reduceOperationSnapshots([], event("op-1", "started"));
     state = reduceOperationSnapshots(state, event("op-1", "cancel_requested"));
     expect(isOperationActive(state[0].status)).toBe(true);
     state = reduceOperationSnapshots(state, event("op-1", "cancelled"));
     expect(isOperationTerminal(state[0].status)).toBe(true);
+  });
+
+  it("preserves a non-cancellable composite operation across progress events", () => {
+    let state = reduceOperationSnapshots([], { ...event("op-submit", "started"), operationKind: "submit", cancellable: false });
+    state = reduceOperationSnapshots(state, { ...event("op-submit", "progress"), operationKind: "submit" });
+
+    expect(state[0].cancellable).toBe(false);
   });
 
   it("preserves bounded session history", () => {

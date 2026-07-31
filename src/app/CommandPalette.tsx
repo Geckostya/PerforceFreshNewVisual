@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "../shared/i18n";
-import { filterPaletteCommands, type PaletteCommandId } from "./commands";
+import { filterPaletteCommands, paletteOptionId, type PaletteCommandId } from "./commands";
 
 type View = "changes" | "workspace" | "streams" | "history" | "depot" | "jobs" | "labels" | "shelves";
 
@@ -84,9 +84,9 @@ export function CommandPalette({ onNavigate, onFocusGoTo, onShowShortcuts }: { o
   return <div className="command-palette-layer" role="presentation" onMouseDown={() => setOpen(false)}>
     <section ref={palette} className="command-palette" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" onMouseDown={(event) => event.stopPropagation()}>
       <h2 id="command-palette-title">{t("commandPalette")}</h2>
-      <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("commandPalettePlaceholder")} aria-label={t("commandPalette")} />
-      <div className="command-palette-list" role="listbox">
-        {filtered.length === 0 ? <p className="empty-copy">{t("commandPaletteEmpty")}</p> : filtered.map((command, index) => <button type="button" role="option" aria-selected={index === active} className={index === active ? "active" : ""} key={command.id} onMouseEnter={() => setActive(index)} onClick={() => execute(command.id)}>{label(command.id)}<small>{command.id === "goTo" ? "Ctrl/Cmd+L" : ""}</small></button>)}
+      <input autoFocus value={query} role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-palette-options" aria-activedescendant={filtered[active] ? paletteOptionId(filtered[active].id) : undefined} onChange={(event) => setQuery(event.target.value)} placeholder={t("commandPalettePlaceholder")} aria-label={t("commandPalette")} />
+      <div id="command-palette-options" className="command-palette-list" role="listbox">
+        {filtered.length === 0 ? <p className="empty-copy">{t("commandPaletteEmpty")}</p> : filtered.map((command, index) => <button id={paletteOptionId(command.id)} type="button" role="option" aria-selected={index === active} className={index === active ? "active" : ""} key={command.id} onMouseEnter={() => setActive(index)} onClick={() => execute(command.id)}>{label(command.id)}<small>{command.id === "goTo" ? "Ctrl/Cmd+L" : ""}</small></button>)}
       </div>
     </section>
   </div>;
