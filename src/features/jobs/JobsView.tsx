@@ -7,7 +7,7 @@ import { RefreshButton } from "../../shared/RefreshButton";
 import { ActionDialog, BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
 
-type JobDialog = { kind: "attach"; change: string } | { kind: "detach"; change: string } | { kind: "form"; form: JobForm; job?: string };
+type JobDialog = { kind: "attach"; change: string } | { kind: "detach"; change: string } | { kind: "form"; form: JobForm };
 
 export function JobsView({ connection, initialSearch }: { connection: ConnectionInput; initialSearch?: string }) {
   const { t } = useLocale();
@@ -50,7 +50,7 @@ export function JobsView({ connection, initialSearch }: { connection: Connection
   async function openForm(job?: string) {
     setFixActionBusy(true);
     setError(undefined);
-    try { setDialog({ kind: "form", form: await inspectJobForm(connection, job), job }); }
+    try { setDialog({ kind: "form", form: await inspectJobForm(connection, job) }); }
     catch (reason) { setError(normalizeAppError(reason)); }
     finally { setFixActionBusy(false); }
   }
@@ -61,7 +61,7 @@ export function JobsView({ connection, initialSearch }: { connection: Connection
       setFixActionBusy(true);
       setError(undefined);
       try {
-        const saved = await saveJob(connection, dialog.job, dialog.form.fields, dialog.form.formToken);
+        const saved = await saveJob(connection, dialog.form.job, dialog.form.fields, dialog.form.formToken);
         await load();
         await inspectJob(saved.id);
         setDialog(undefined);
@@ -119,6 +119,6 @@ export function JobsView({ connection, initialSearch }: { connection: Connection
       <label className="field"><span className="field-label">{t("changelistLabel")}</span><input autoFocus value={dialog.change} onChange={(event) => setDialog({ ...dialog, change: event.target.value })} /></label>
     </ActionDialog>}
     {dialog?.kind === "detach" && <ActionDialog danger title={t("detachJob")} confirmLabel={t("detachJob")} busy={fixActionBusy} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{t("unfixConfirm")}</p></ActionDialog>}
-    {dialog?.kind === "form" && <ActionDialog title={dialog.job ? t("editJob") : t("createJob")} confirmLabel={t("save")} busy={fixActionBusy} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{t("jobFormBody")}</p>{dialog.form.fields.map((field, index) => <label className="field" key={field.name}><span className="field-label">{field.name}</span>{field.value.includes("\n") || field.name === "Description" ? <textarea value={field.value} onChange={(event) => { const fields = [...dialog.form.fields]; fields[index] = { ...field, value: event.target.value }; setDialog({ ...dialog, form: { ...dialog.form, fields } }); }} /> : <input value={field.value} onChange={(event) => { const fields = [...dialog.form.fields]; fields[index] = { ...field, value: event.target.value }; setDialog({ ...dialog, form: { ...dialog.form, fields } }); }} />}</label>)}</ActionDialog>}
+    {dialog?.kind === "form" && <ActionDialog title={dialog.form.job ? t("editJob") : t("createJob")} confirmLabel={t("save")} busy={fixActionBusy} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{t("jobFormBody")}</p>{dialog.form.fields.map((field, index) => <label className="field" key={field.name}><span className="field-label">{field.name}</span>{field.value.includes("\n") || field.name === "Description" ? <textarea value={field.value} onChange={(event) => { const fields = [...dialog.form.fields]; fields[index] = { ...field, value: event.target.value }; setDialog({ ...dialog, form: { ...dialog.form, fields } }); }} /> : <input value={field.value} onChange={(event) => { const fields = [...dialog.form.fields]; fields[index] = { ...field, value: event.target.value }; setDialog({ ...dialog, form: { ...dialog.form, fields } }); }} />}</label>)}</ActionDialog>}
   </View>;
 }

@@ -48,12 +48,20 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
       .some((value) => value?.toLowerCase().includes(needle)));
   }, [labels, query]);
 
-  async function inspectLabel(label: Label) {
+  async function inspectLabel(label: Label, knownSpec?: LabelSpec) {
     setSelectedLabel(label);
+    setSpec(undefined);
     setSyncPreviewState(undefined);
     setDetailBusy(true);
     setError(undefined);
-    try { setLabelFiles(await listDepotFiles(connection, `//...@${label.name}`, true)); }
+    try {
+      const [files, nextSpec] = await Promise.all([
+        listDepotFiles(connection, `//...@${label.name}`, true),
+        knownSpec ? Promise.resolve(knownSpec) : fetchLabelSpec(connection, label.name),
+      ]);
+      setLabelFiles(files);
+      setSpec(nextSpec);
+    }
     catch (reason) { setError(normalizeAppError(reason)); }
     finally { setDetailBusy(false); }
   }
@@ -71,14 +79,12 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
     if (!dialog) return;
     setDetailBusy(true); setError(undefined);
     try {
-      if (dialog.kind === "create" || dialog.kind === "edit") { const next = dialog.kind === "create" ? await createLabel(connection, dialog.draft) : await updateLabel(connection, dialog.draft); setSpec(next); setSelectedLabel(next.label); setDialog(undefined); await load(); await inspectLabelFiles(next.label); setNotice(t("labelSaved")); }
+      if (dialog.kind === "create" || dialog.kind === "edit") { const next = dialog.kind === "create" ? await createLabel(connection, dialog.draft) : await updateLabel(connection, dialog.draft); setDialog(undefined); await load(); await inspectLabel(next.label, next); setNotice(t("labelSaved")); }
       else if (dialog.kind === "delete" && selectedLabel) { await deleteLabel(connection, selectedLabel.name); setSelectedLabel(undefined); setSpec(undefined); setLabelFiles([]); setDialog(undefined); await load(); setNotice(t("labelDeleted")); }
       else if ((dialog.kind === "tag" || dialog.kind === "untag") && selectedLabel) { const tag = { label: selectedLabel.name, paths: labelFiles.map((file) => file.depotPath), remove: dialog.kind === "untag" }; if (!dialog.preview) { setDialog({ ...dialog, preview: await previewLabelTag(connection, tag) }); } else { const result = await applyLabelTag(connection, tag); setSpec(result.label); setDialog(undefined); setNotice(result.partial ? t("labelTagPartial") : t("labelTagApplied")); } }
     } catch (reason) { setError(normalizeAppError(reason)); }
     finally { setDetailBusy(false); }
   }
-
-  async function inspectLabelFiles(label: Label) { setLabelFiles(await listDepotFiles(connection, `//...@${label.name}`, true)); }
 
   async function showLabelSync() {
     if (!selectedLabel) return;

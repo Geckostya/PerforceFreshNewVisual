@@ -20,9 +20,8 @@ use crate::{
         SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
         SubmittedChangeDetail, SubmittedFilterOptions, SubmittedHistoryPageInput,
         SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem,
-        UnshelveInput, UnshelvePreview,
-        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
-        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
+        WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
