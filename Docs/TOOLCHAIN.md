@@ -42,9 +42,12 @@ p4 -V
 npm run dev       # Tauri application
 npm run dev:web   # Vite UI only; Tauri IPC is unavailable
 npm run build:fast # Standalone debug executable for local iteration
+npm run build:release-fast # Optimized local executable with shorter Rust code generation
 ```
 
 The default development profile keeps line tables for useful panic backtraces but omits full dependency debug information. This reduces Rust code generation, link time, and `target` size. Use the opt-in `debugging` Cargo profile when full native debugger information is required. `build:fast` is not a shipping build and does not replace the release gate below.
+
+`build:release-fast` uses the `release-fast` Cargo profile (`opt-level = 2`, no LTO) for local performance checks when a debug executable is not representative enough. It does not replace `npm run build`, which remains the shipping release gate.
 
 Windows debug builds use the `rust-lld` linker bundled with the pinned Rust toolchain. Release builds use the same linker and remain fully optimized; run the complete gate after toolchain or native dependency changes.
 
