@@ -28,6 +28,7 @@ export interface OperationSnapshot {
   itemResults: OperationItemResult[];
   readBack?: OperationReadBack;
   retryable: boolean;
+  cancellable: boolean;
   connectionKey?: string;
 }
 
@@ -73,6 +74,7 @@ export function reduceOperationSnapshots(current: OperationSnapshot[], event: Op
     itemResults: event.itemResults ?? previous?.itemResults ?? [],
     readBack: event.readBack ?? previous?.readBack,
     retryable,
+    cancellable: event.cancellable ?? previous?.cancellable ?? true,
     connectionKey: previous?.connectionKey ?? connectionKey,
   };
   if (index < 0) next.push(snapshot);

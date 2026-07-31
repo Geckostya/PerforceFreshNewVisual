@@ -386,6 +386,7 @@ export interface OperationEvent {
   itemResults?: OperationItemResult[];
   readBack?: OperationReadBack;
   retryable: boolean;
+  cancellable?: boolean;
 }
 
 export type ResourceFreshness =

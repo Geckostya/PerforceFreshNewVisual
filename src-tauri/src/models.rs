@@ -724,6 +724,7 @@ pub struct OperationEvent {
     pub item_results: Vec<OperationItemResult>,
     pub read_back: OperationReadBack,
     pub retryable: bool,
+    pub cancellable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

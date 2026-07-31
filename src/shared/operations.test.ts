@@ -85,6 +85,13 @@ describe("operation snapshots", () => {
     expect(isOperationTerminal(state[0].status)).toBe(true);
   });
 
+  it("preserves a non-cancellable composite operation across progress events", () => {
+    let state = reduceOperationSnapshots([], { ...event("op-submit", "started"), operationKind: "submit", cancellable: false });
+    state = reduceOperationSnapshots(state, { ...event("op-submit", "progress"), operationKind: "submit" });
+
+    expect(state[0].cancellable).toBe(false);
+  });
+
   it("preserves bounded session history", () => {
     let state = [] as ReturnType<typeof reduceOperationSnapshots>;
     for (let index = 0; index < 35; index += 1) {

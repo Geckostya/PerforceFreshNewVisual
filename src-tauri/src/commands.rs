@@ -994,6 +994,7 @@ fn operation_event(
             message: None,
         },
         retryable: false,
+        cancellable: true,
     }
 }
 
@@ -1590,6 +1591,10 @@ fn failed_submit_outcome(readback: &SubmitReadBack, error: &AppError) -> SubmitO
     }
 }
 
+fn submit_mode_cancellable(mode: &SubmitMode) -> bool {
+    matches!(mode, SubmitMode::Local)
+}
+
 #[tauri::command]
 pub async fn start_submit(
     app: tauri::AppHandle,
@@ -1599,6 +1604,8 @@ pub async fn start_submit(
     if !matches!(input.mode, SubmitMode::Local) {
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (cancel, cancellation) = mpsc::channel();
+        drop(cancellation);
+        let cancellable = submit_mode_cancellable(&input.mode);
         let operation_id = registry.new_id();
         let started_at_ms = operation_started_at_ms();
         if !registry.insert_if_kind_idle(
@@ -1620,6 +1627,7 @@ pub async fn start_submit(
             "operation-event",
             OperationEvent {
                 phase: Some("apply".to_owned()),
+                cancellable,
                 ..operation_event(
                     &operation_id,
                     "submit",
@@ -1632,7 +1640,6 @@ pub async fn start_submit(
         let registry_for_wait = registry.inner().clone();
         let id_for_wait = operation_id.clone();
         thread::spawn(move || {
-            let _keep_cancellation_open = cancellation;
             let result = p4::submit_change(
                 &input.connection,
                 &input.change,
@@ -1727,6 +1734,7 @@ pub async fn start_submit(
                     item_results,
                     read_back,
                     submit_outcome,
+                    cancellable,
                     ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
                 },
             );
@@ -3124,7 +3132,7 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 mod tests {
     use super::{
         bounded_operation_diagnostics, confirmed_integration_paths, failed_submit_outcome,
-        operation_event, parse_sync_output_record, submit_item_results,
+        operation_event, parse_sync_output_record, submit_item_results, submit_mode_cancellable,
         submitted_change_from_record, sync_operation_scope, sync_operation_succeeded,
         unexpected_integration_paths, validate_reveal_path, workspace_stream_view_paths,
     };
@@ -3302,6 +3310,14 @@ mod tests {
             failure[0].recovery_action_id.as_deref(),
             Some("refresh_changes")
         );
+    }
+
+    #[test]
+    fn only_process_backed_local_submit_claims_cancellation_support() {
+        assert!(submit_mode_cancellable(&SubmitMode::Local));
+        assert!(!submit_mode_cancellable(&SubmitMode::Shelf));
+        assert!(!submit_mode_cancellable(&SubmitMode::LocalDeleteShelf));
+        assert!(!submit_mode_cancellable(&SubmitMode::LocalUpdateShelf));
     }
 
     #[test]
