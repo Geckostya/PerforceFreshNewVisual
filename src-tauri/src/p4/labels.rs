@@ -318,3 +318,54 @@ pub(super) fn parse_labels(records: &[Map<String, Value>]) -> Result<Vec<Label>,
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_label_spec, replace_multiline, validate_label_name, validate_tag_input};
+    use crate::models::{ErrorKind, LabelTagInput};
+
+    #[test]
+    fn label_form_preserves_unknown_fields_and_detects_protection() {
+        let form = "Label:\trelease\nOwner:\talex\nOptions:\tlocked autoreload\nCustom:\tkeep\nDescription:\n\tOld\nView:\n\t//Acme/main/...\n";
+        let parsed = parse_label_spec(form).unwrap();
+        assert_eq!(parsed.label.name, "release");
+        assert!(parsed.locked);
+        assert_eq!(parsed.view, ["//Acme/main/..."]);
+
+        let mut lines = form.lines().map(str::to_owned).collect::<Vec<_>>();
+        replace_multiline(&mut lines, "Description", "New\nDetails").unwrap();
+        let updated = lines.join("\n");
+        assert!(updated.contains("Custom:\tkeep"));
+        assert!(updated.contains("Description:\n\tNew\n\tDetails"));
+    }
+
+    #[test]
+    fn label_boundaries_reject_unsafe_names_and_tag_batches() {
+        assert_eq!(
+            validate_label_name("release@123").unwrap_err().kind,
+            ErrorKind::CommandFailed
+        );
+        assert_eq!(
+            validate_tag_input(&LabelTagInput {
+                label: "release".to_owned(),
+                paths: Vec::new(),
+                remove: false,
+            })
+            .unwrap_err()
+            .kind,
+            ErrorKind::CommandFailed
+        );
+        assert_eq!(
+            validate_tag_input(&LabelTagInput {
+                label: "release".to_owned(),
+                paths: (0..201)
+                    .map(|index| format!("//Acme/main/{index}.txt"))
+                    .collect(),
+                remove: false,
+            })
+            .unwrap_err()
+            .kind,
+            ErrorKind::CommandFailed
+        );
+    }
+}

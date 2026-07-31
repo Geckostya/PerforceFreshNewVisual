@@ -156,4 +156,27 @@ describe("stream hierarchy", () => {
       canOpenSubmit: false,
     });
   });
+
+  it("blocks handoffs after cancellation, failure, or missing read-back", () => {
+    const operation = {
+      kind: "completed",
+      readBack: { status: "succeeded", affectedState: ["opened_files"] },
+      itemResults: [
+        { itemId: "1", path: "//Acme/dev/a.txt", status: "succeeded", compensation: "not_required" },
+      ],
+    } as OperationEvent;
+
+    for (const kind of ["cancelled", "failed"] as const) {
+      expect(streamIntegrationHandoff({ ...operation, kind })).toMatchObject({
+        canResolve: false,
+        canReview: false,
+        canOpenSubmit: false,
+      });
+    }
+    expect(streamIntegrationHandoff({ ...operation, readBack: undefined })).toMatchObject({
+      canResolve: false,
+      canReview: false,
+      canOpenSubmit: false,
+    });
+  });
 });

@@ -77,6 +77,22 @@ describe("operation snapshots", () => {
     expect(state[0]).toMatchObject({ operationKind: "submit", status: "unknown", retryable: false });
   });
 
+  it("never exposes retry for stream integration", () => {
+    const failed = reduceOperationSnapshots([], {
+      ...event("op-integrate", "failed"),
+      operationKind: "integrate",
+      retryable: true,
+    });
+    const unknown = reduceOperationSnapshots([], {
+      ...event("op-integrate-unknown", "unknown"),
+      operationKind: "integrate",
+      retryable: true,
+    });
+
+    expect(failed[0].retryable).toBe(false);
+    expect(unknown[0].retryable).toBe(false);
+  });
+
   it("keeps cancel requested active until a terminal event arrives", () => {
     let state = reduceOperationSnapshots([], event("op-1", "started"));
     state = reduceOperationSnapshots(state, event("op-1", "cancel_requested"));

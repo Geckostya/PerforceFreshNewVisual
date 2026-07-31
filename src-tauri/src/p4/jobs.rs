@@ -312,6 +312,7 @@ pub(super) fn parse_fixes(records: &[Map<String, Value>]) -> Result<Vec<Fix>, Ap
 #[cfg(test)]
 mod tests {
     use super::{created_job_id, parse_job_form, replace_job_fields};
+    use crate::models::ErrorKind;
     use std::collections::BTreeMap;
 
     #[test]
@@ -367,5 +368,31 @@ mod tests {
             Some("job00042")
         );
         assert_eq!(created_job_id("created job00042").as_deref(), None);
+    }
+
+    #[test]
+    fn jobspec_parser_rejects_empty_and_oversized_forms() {
+        assert_eq!(
+            parse_job_form("").unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
+        let oversized = (0..=super::MAX_JOB_FORM_FIELDS)
+            .map(|index| format!("Field{index}:\tvalue"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            parse_job_form(&oversized).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
+    }
+
+    #[test]
+    fn save_rejects_a_field_missing_from_the_fresh_server_form() {
+        let error = replace_job_fields(
+            "Job:\tjob0001\nDescription:\n\tKeep\n",
+            &BTreeMap::from([("Removed_Field".to_owned(), "value".to_owned())]),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidOutput);
     }
 }
