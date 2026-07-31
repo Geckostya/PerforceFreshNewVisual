@@ -4,27 +4,21 @@ Current status for streams, integration, shared shelves, jobs, labels, and locks
 
 ## Available
 
-- [x] P1 Bounded stream catalog/tree/graph with hierarchy, filtering, multi-select, persisted visibility, current-workspace context, selected spec details, bounded history, and integration hints.
-- [x] P1 Child stream creation provides graph-context parent selection, server-backed form preview, bounded Paths editing, confirmation, and final server read-back without changing the workspace.
-- [~] P1 Confirmed workspace/stream switching with local/content strategies exists; live standard/commit-edge coverage is not recorded.
-- [x] P1 Basic lock/unlock is available for selected opened files.
-- [~] P1 Shared Shelves can browse, inspect, unshelve, reshelve selected files, and export one file; advanced topology and batch export remain.
-- [x] P1 Exact submitted-changelist cherry-pick previews and opens files from one foreign source stream into the current stream without automatic resolve or submit.
-- [x] P1 Adjacent stream merge-down/copy-up has an unmistakable bounded server preview, target changelist, stale-context gate, common operation/read-back, and explicit Resolve → Review/Submit handoff without automatic resolve or submit.
-- [~] P1 Jobs can search, inspect fixes, attach/detach, and filter history; create/edit/status workflows remain.
-- [~] P1 Labels can search, inspect files, and use safe sync; create/edit/delete/tag operations remain.
+- [x] P1 Bounded stream catalog/tree/graph with hierarchy, filtering, selection, selected spec details, bounded history, and integration hints.
+- [x] P1 Child stream creation with server-backed form preview, bounded Paths editing, confirmation, and final read-back.
+- [~] P1 Workspace/stream switching with local/content strategies; live standard/commit-edge coverage remains.
+- [x] P1 Basic lock/unlock for selected opened files and detected lock topology in mutation preflight.
+- [x] P1 Shared Shelves browse/inspect/unshelve/reshelve/export with explicit topology and conflict states.
+- [x] P1 Exact foreign-stream cherry-pick preview without automatic resolve or submit.
+- [x] P1 Merge-down/copy-up preview with explicit source/target, target changelist, stale gate, operation/read-back, and Resolve → Review/Submit handoff.
+- [x] P1 Stream specs/history, compatible workspaces, Paths/Remapped/Ignored, and bounded server hints.
+- [x] P1 Specialized file-move, filetype, and stream-spec conflict actions with partial outcomes and exact affected items.
+- [x] P1 Jobs search/inspect/create/edit/status from server jobspec and Labels search/inspect/create/edit/delete/tag with safe preview.
 
-## P1 gaps
+## Remaining reliability work
 
-- [~] Add compatible-workspace discovery; selected stream specs/history, Paths/Remapped/Ignored, and server-backed `istat` hints are available.
-- [~] Add specialized file-move, filetype, and stream-spec conflict actions; partial outcomes and exact affected items already route through shared read-back and Resolve.
-- [ ] Distinguish explicit, exclusive-filetype, local, and global locks using detected topology.
-- [ ] Create/edit jobs from custom jobspecs and show the server-defined post-submit status.
-- [ ] Create/edit/delete labels and preview tag/untag safely.
+- [~] Complete topology matrix coverage for explicit, exclusive-filetype, local, and global locks.
 
-## P2 only on demand
+## Only on demand
 
-- [ ] Promoted shelves and commit-edge-specific actions.
-- [ ] Classic branch maps and advanced integration ranges.
-- [ ] P4 Code Review integration with a configured endpoint.
-- [ ] Graph/hybrid depot, DVCS/remotes, spec depot, archive/unload, and P4 Search as explicit product modes.
+- [ ] Promoted shelves, commit-edge-only actions, classic branch maps, advanced integration ranges, P4 Code Review, DVCS/remotes, spec/archive depots, and P4 Search are separate product modes, not current milestones.

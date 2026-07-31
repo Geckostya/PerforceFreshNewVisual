@@ -15,18 +15,17 @@ A feature is complete only when its narrow Rust/Tauri path validates inputs, ris
 
 | Area | Current posture | Checklist |
 |---|---|---|
-| Connection and workspaces | Daily basics work; trust, modern auth, capability gating, and mapping correctness remain. | [`checklists/CONNECTION_AND_WORKSPACES.md`](checklists/CONNECTION_AND_WORKSPACES.md) |
-| Files, Depot, sync, and history | Broad usable implementation; mapping edge cases, scale, richer compare, and content tools remain. | [`checklists/FILES_AND_HISTORY.md`](checklists/FILES_AND_HISTORY.md) |
-| Changes, shelves, submit, and resolve | Core changelist/shelf flows are strong; full resolve and unknown-submit recovery remain P0. | [`checklists/CHANGES_AND_SUBMIT.md`](checklists/CHANGES_AND_SUBMIT.md) |
-| Streams and collaboration | Browse/graph/switch exists; integration workflows and advanced collaboration remain P1. | [`checklists/STREAMS_AND_COLLABORATION.md`](checklists/STREAMS_AND_COLLABORATION.md) |
-| Operations, errors, settings, and accessibility | Shared foundations exist; complete operation coverage, stale mode, preferences, and accessibility verification remain. | [`checklists/OPERATIONS_AND_UX.md`](checklists/OPERATIONS_AND_UX.md) |
+| Connection and workspaces | Daily connection, auth, capability, client-spec, and mapping workflows are available; only live environment coverage remains. | [`checklists/CONNECTION_AND_WORKSPACES.md`](checklists/CONNECTION_AND_WORKSPACES.md) |
+| Files, Depot, sync, and history | Main file workflows, manual/focused reconcile, unopened-change discovery, sync, and history are available; edge matrices remain. | [`checklists/FILES_AND_HISTORY.md`](checklists/FILES_AND_HISTORY.md) |
+| Changes, shelves, submit, and resolve | Core submit, recovery, three-way resolve, shelf preservation, and stream handoff are available; compound-result polish remains. | [`checklists/CHANGES_AND_SUBMIT.md`](checklists/CHANGES_AND_SUBMIT.md) |
+| Streams and collaboration | Browse, switch, integration, jobs, labels, and lock workflows are available; only topology evidence remains. | [`checklists/STREAMS_AND_COLLABORATION.md`](checklists/STREAMS_AND_COLLABORATION.md) |
+| Operations, errors, settings, and accessibility | Shared operations and bounded discovery are available; stale coverage, compound-result consistency, and targeted native QA remain. | [`checklists/OPERATIONS_AND_UX.md`](checklists/OPERATIONS_AND_UX.md) |
 
 ## Development order
 
-1. Complete P0 reliability: trust/auth capability detection, mapping/reconcile correctness, three-way resolve, submit read-back, and partial/stale recovery.
-2. Complete P0 scale and access: incremental server queries, keyboard/pane navigation, Narrator, and 100/125/200% verification.
-3. Verify stream switching on a disposable server, then implement Integration → Resolve → Review → Submit as one P1 workflow.
-4. Add external content tools, Jobs/Labels CRUD, and persistent appearance/productivity settings.
-5. Take P2 work only for a concrete user or server requirement.
+1. Close the remaining daily reliability gaps: stale gating on every screen, compound-operation outcomes, and the live mapping/lock/environment matrix.
+2. Use the product with real workspaces and fix measured friction in Files, Changes, and My Changes; do not start a broad scale/accessibility project without a reproduced problem.
+3. Verify stream switching and integration on disposable servers; extend only when a real team workflow exposes a gap.
+4. Keep advanced Perforce modes, broad preferences, and specialized content views on demand rather than in the default roadmap.
 
 For reusable CLI constraints and live-server cases, see [`P4_CAPABILITY_REFERENCE.md`](research/P4_CAPABILITY_REFERENCE.md) and [`P4_VERIFICATION_SCENARIOS.md`](research/P4_VERIFICATION_SCENARIOS.md). These research files do not own current status.
