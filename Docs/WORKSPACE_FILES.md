@@ -16,11 +16,7 @@ Local and Depot sources share row hierarchy, selection, search/filter, inspector
 - the inspector scrolls internally and gives description more prominence than revision/user/client/date metadata;
 - single-file diff/export requires exactly one printable revision, while sync may target selected files and folders in one batch;
 - history is paged without prepending rows and displacing the reader; opening a change shows all affected files;
-- file history exposes every `filelog -i` integration record with the server-returned path and revision bounds; only a complete, non-cyclic exact path can be followed, while incomplete and cyclic records remain visible without inferred edges;
-- a folder-history changelist can be compared with the current folder state through two complete read-only `p4 files -e` snapshots; sets are keyed only by returned depot identity and report added, changed, deleted, and type-changed files without path inference;
 - exact file, folder-at-change, label, and stream-follow-up downloads enter the same safe-sync flow.
-
-Workspace search is an explicit server request within the current scope, never an implicit fetch of every file. Rust applies a case-insensitive `p4 fstat -F` path filter and requests at most 201 mapped records; the UI exposes no more than 200 and marks the result partial when the extra record or a server diagnostic proves that more may exist. Status filters apply only to that bounded result. Starting a newer search or cancelling supersedes the prior response and returns keyboard focus to the search input; a bounded CLI request already running may finish in the background, but its stale result is discarded. Successful non-empty searches move focus to the first result, while empty and failed searches retain input focus.
 
 Depot/client/local identity is resolved only through a bounded batch `p4 where` command. Its DTO keeps the caller's order, distinguishes mapped, excluded, and unmapped results, and carries server diagnostics/partial state. Copy and cross-source navigation actions appear only for identities returned by the server; an unmapped or excluded depot path never receives an invented local path.
 
@@ -47,8 +43,6 @@ Keep Local Files mounted for the workspace session so navigation does not duplic
 ## Safe sync
 
 All retrieval entry points use one frontend controller, one array-of-scopes IPC contract, one writable-conflict dialog, and the shared long-operation protocol.
-
-Date retrieval accepts a wall-clock target explicitly in the P4 Server time zone reported by fresh `p4 info`. Rust validates the target, rejects future or already-revisioned scopes, and returns the exact dated scopes with the ordinary server sync preview. Confirmation starts the same Safe Sync operation, so cancellation, writable-file decisions, exact-revision overwrite recovery, and workspace/have-list read-back remain unchanged.
 
 1. Start ordinary retrieval with `p4 sync -s`; it downloads safe files and skips unsafe overwrites. A folder scope is sent as `folder/...` in the same batch as other selections.
 2. Before the terminal event, find remaining incoming paths with `p4 sync -n` and compare that exact set through one validated `p4 diff -f -sa` using `p4 -x -` stdin. Here `-f` is read-only comparison, not overwrite.

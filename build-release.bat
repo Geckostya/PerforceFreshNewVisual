@@ -18,6 +18,9 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
   "Write-Host ('Release artifact: ' + $artifact);" ^
   "Write-Host ('SHA256: ' + $hash)"
 
+echo Done
+pause
+
 set "P4FNV_BUILD_EXIT_CODE=%ERRORLEVEL%"
 if not "%P4FNV_BUILD_EXIT_CODE%"=="0" echo Release build failed with exit code %P4FNV_BUILD_EXIT_CODE%.
 exit /b %P4FNV_BUILD_EXIT_CODE%
