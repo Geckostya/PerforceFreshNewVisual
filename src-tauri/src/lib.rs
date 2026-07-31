@@ -114,6 +114,8 @@ pub fn run() {
             commands::preview_revert_selected,
             commands::revert_unchanged,
             commands::edit_change,
+            commands::preview_change_identity,
+            commands::update_change_identity,
             commands::delete_change,
             commands::create_change,
             commands::list_cli_log,

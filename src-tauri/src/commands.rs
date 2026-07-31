@@ -2,19 +2,21 @@ use crate::{
     diagnostics, locales,
     models::{
         AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
-        CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
-        CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
-        DepotStateComparison, DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff,
-        FileOperationInput, FileRevision, Fix, HistoryPage, Job, Label, LocaleCatalog, MoveInput,
-        OpenedFile, OperationCompensationStatus, OperationDiagnostic, OperationEvent,
-        OperationEventKind, OperationItemResult, OperationItemStatus, OperationReadBack,
-        OperationReadBackStatus, P4Detection, P4Info, PendingChange, PreviewUnshelveInput,
-        ReconcileItem, ReopenInput, ReshelveInput, ResolveApplyResult, ResolveContent,
-        ResolveInput, ResolveResultInput, RevertInput, RevertPreviewItem, SaveChangeFilesInput,
-        SaveRevisionInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
-        ShelvedFile, StreamDetail, StreamIntegrationInput, StreamIntegrationPreview, StreamSummary,
-        SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmitReadBack,
-        SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFilterOptions,
+        ChangeIdentityPreflight, ChangeIdentityPreflightInput, ChangeIdentityState,
+        ChangeIdentityUpdateInput, CherryPickPreviewItem, CliLogEntry, ConnectionInput,
+        CreateChangeInput, CreateStreamInput, CreateStreamPreview, DeleteChangeInput,
+        DeleteShelfInput, DepotDirectory, DepotFile, DepotStateComparison, DepotSummary, DiffInput,
+        EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, HistoryPage,
+        Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationCompensationStatus,
+        OperationDiagnostic, OperationEvent, OperationEventKind, OperationItemResult,
+        OperationItemStatus, OperationReadBack, OperationReadBackStatus, P4Detection, P4Info,
+        PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
+        ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput, RevertInput,
+        RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
+        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
+        StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
+        SubmitOutcome, SubmitPreflightSummary, SubmitReadBack, SubmitStepResult,
+        SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFilterOptions,
         SubmittedHistoryPageInput, SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge,
         TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput,
         WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary,
@@ -2902,6 +2904,41 @@ pub async fn revert_unchanged(input: ConnectionInput, change: String) -> Result<
 pub async fn edit_change(input: EditChangeInput) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::edit_change_description(&input.connection, &input.change, &input.description)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_change_identity(
+    input: ChangeIdentityPreflightInput,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn update_change_identity(
+    input: ChangeIdentityUpdateInput,
+) -> Result<ChangeIdentityState, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::update_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+            &input.preview_token,
+        )
     })
     .await
     .map_err(task_error)?

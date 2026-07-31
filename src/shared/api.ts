@@ -24,6 +24,9 @@ import type {
   SubmittedChangeDetail,
   SubmittedFilterOptions,
   ChangeExportResult,
+  ChangeIdentityPreflight,
+  ChangeIdentityState,
+  ChangeVisibility,
   CherryPickPreviewItem,
   UndoPreviewItem,
   UnshelvePreview,
@@ -545,6 +548,31 @@ export async function editChange(
   description: string,
 ): Promise<void> {
   return invoke("edit_change", { input: { connection, change, description } });
+}
+
+export async function previewChangeIdentity(
+  connection: ConnectionInput,
+  change: string,
+  owner: string,
+  client: string,
+  visibility: ChangeVisibility,
+): Promise<ChangeIdentityPreflight> {
+  return invoke<ChangeIdentityPreflight>("preview_change_identity", {
+    input: { connection, change, owner, client, visibility },
+  });
+}
+
+export async function updateChangeIdentity(
+  connection: ConnectionInput,
+  change: string,
+  owner: string,
+  client: string,
+  visibility: ChangeVisibility,
+  previewToken: string,
+): Promise<ChangeIdentityState> {
+  return invoke<ChangeIdentityState>("update_change_identity", {
+    input: { connection, change, owner, client, visibility, previewToken },
+  });
 }
 
 export async function deleteChange(connection: ConnectionInput, change: string): Promise<void> {

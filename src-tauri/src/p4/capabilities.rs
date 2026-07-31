@@ -22,6 +22,8 @@ pub(super) fn build(input: &ConnectionInput, info: &P4Info) -> CapabilitySnapsho
         "copy",
         "istat",
         "streamlog",
+        "change",
+        "protects",
     ] {
         commands.insert(command.to_owned(), probe_help(input, command));
     }
@@ -29,6 +31,8 @@ pub(super) fn build(input: &ConnectionInput, info: &P4Info) -> CapabilitySnapsho
         ("login2:-S", "login2", "-S"),
         ("topology:-m", "topology", "-m"),
         ("trust:-i", "trust", "-i"),
+        ("change:-U", "change", "-U"),
+        ("change:-t", "change", "-t"),
     ] {
         commands.insert(key.to_owned(), probe_help_flag(input, command, flag));
     }
@@ -154,14 +158,14 @@ fn classify_help_output(success: bool, text: &str) -> CapabilityFact {
             "command_missing",
             CapabilityEvidence::Client,
         )
-    } else if text.contains("permission") || text.contains("protections") {
-        unknown("permission_denied", CapabilityEvidence::Permission)
     } else if success {
         fact(
             CapabilityState::Supported,
             "verified_help",
             CapabilityEvidence::Client,
         )
+    } else if text.contains("permission") || text.contains("protections") {
+        unknown("permission_denied", CapabilityEvidence::Permission)
     } else {
         unknown("probe_unavailable", CapabilityEvidence::Unavailable)
     }

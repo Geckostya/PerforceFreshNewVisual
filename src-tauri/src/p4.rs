@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::models::{
     AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
+    ChangeIdentityBlocker, ChangeIdentityPreflight, ChangeIdentityState, ChangeVisibility,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
     CreateStreamType, DepotDirectory, DepotFile, DepotStateComparison, DepotStateDifference,
     DepotSummary, DiffMode, ErrorKind, FileDiff, FileIntegrationRecord, FileRevision, HistoryPage,
@@ -4749,6 +4750,431 @@ pub fn edit_change_description(
     Ok(())
 }
 
+pub fn preview_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    change_identity_preflight(input, change, owner, client, visibility)
+}
+
+pub fn update_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+    preview_token: &str,
+) -> Result<ChangeIdentityState, AppError> {
+    let preflight = change_identity_preflight(input, change, owner, client, visibility)?;
+    if preflight.preview_token != preview_token {
+        return Err(
+            AppError::new(ErrorKind::Stale, "Changelist preflight is stale.")
+                .with_hint("Run the server preflight again before applying the change."),
+        );
+    }
+    if !preflight.blockers.is_empty() {
+        return Err(change_identity_blocked_error(&preflight.blockers));
+    }
+    if preflight.current == preflight.target {
+        return Ok(preflight.current);
+    }
+
+    let (path, mut output_command) = configured_command(input)?;
+    output_command.args(["change", "-o"]);
+    if preflight.requires_admin {
+        output_command.arg("-f");
+    }
+    output_command.arg(change);
+    let output = output_command
+        .output()
+        .map_err(|error| launch_error(&path, error))?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    let spec = replace_change_identity_fields(
+        &String::from_utf8_lossy(&output.stdout),
+        &preflight.target,
+    )?;
+    let (_, mut input_command) = configured_command(input)?;
+    input_command.args(["change", "-i"]);
+    if preflight.requires_admin {
+        input_command.arg("-f");
+    }
+    input_command.args(["-U", change]);
+    let applied = run_output_with_stdin(&path, &mut input_command, spec.as_bytes())?;
+    if !applied.status.success() {
+        return Err(command_error(&applied));
+    }
+    log_stderr_warning(&applied, "p4 change identity update returned a warning.");
+
+    let read_back = read_change_identity(input, change, preflight.requires_admin)?;
+    if read_back != preflight.target {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Server read-back did not match the requested changelist identity.",
+        )
+        .with_hint("Refresh the changelist before attempting another update."));
+    }
+    Ok(read_back)
+}
+
+fn change_identity_preflight(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    required_client(input)?;
+    validate_numbered_change(change)?;
+    let owner = validate_form_value(owner.trim(), "changelist owner")?.to_owned();
+    let client = validate_form_value(client.trim(), "changelist workspace")?.to_owned();
+    let info = info(input)?;
+    let current = read_change_identity(input, change, false)?;
+    let target = ChangeIdentityState {
+        owner,
+        client,
+        visibility,
+    };
+    let mut blockers = Vec::new();
+
+    let capabilities = info.capabilities.as_ref();
+    for name in ["change:-U", "change:-t"] {
+        match capabilities
+            .and_then(|snapshot| snapshot.commands.get(name))
+            .map(|fact| &fact.state)
+        {
+            Some(CapabilityState::Supported) => {}
+            Some(CapabilityState::Unsupported) => {
+                push_blocker(&mut blockers, ChangeIdentityBlocker::Unsupported)
+            }
+            _ => push_blocker(&mut blockers, ChangeIdentityBlocker::CapabilityUnknown),
+        }
+    }
+
+    let topology = change_topology(&info, &mut blockers);
+    let (permission_level, permission_known) = change_permission_level(input);
+    if !permission_known {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::PermissionUnknown);
+    }
+
+    let has_opened_files = change_has_records(input, ["opened", "-c", change])?;
+    let has_jobs = change_has_records(input, ["fixes", "-c", change])?;
+    let has_shelved_files = change_has_shelf(input, change)?;
+    let changes_identity = current.owner != target.owner || current.client != target.client;
+    let requires_admin = changes_identity
+        && (has_opened_files
+            || has_shelved_files
+            || has_jobs
+            || !server_name_eq(
+                &current.owner,
+                input.user.trim(),
+                info.case_handling.as_deref(),
+            ));
+    if permission_known && !permission_allows_change(&permission_level, requires_admin) {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::PermissionDenied);
+    }
+
+    if !read_change_status(input, change, requires_admin)?.eq_ignore_ascii_case("pending") {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::NotPending);
+    }
+    let target_client = read_target_client(input, &target.client)?;
+    if !server_name_eq(
+        &target_client.owner,
+        &target.owner,
+        info.case_handling.as_deref(),
+    ) {
+        push_blocker(
+            &mut blockers,
+            ChangeIdentityBlocker::TargetClientOwnerMismatch,
+        );
+    }
+    validate_change_topology(&info, target_client.server_id.as_deref(), &mut blockers);
+
+    let mut preflight = ChangeIdentityPreflight {
+        change: change.to_owned(),
+        current,
+        target,
+        has_opened_files,
+        has_shelved_files,
+        has_jobs,
+        requires_admin,
+        permission_level,
+        topology,
+        blockers,
+        preview_token: String::new(),
+    };
+    preflight.preview_token = change_identity_token(&preflight);
+    Ok(preflight)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetClientIdentity {
+    owner: String,
+    server_id: Option<String>,
+}
+
+fn read_target_client(
+    input: &ConnectionInput,
+    client: &str,
+) -> Result<TargetClientIdentity, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "client", "-o", client]);
+    let records = run_json(&path, &mut command)?;
+    let record = records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return the target workspace.",
+            )
+        })?;
+    Ok(TargetClientIdentity {
+        owner: required_field(record, &["Owner", "owner"], "workspace owner")?,
+        server_id: optional_field(record, &["ServerID", "serverID"]),
+    })
+}
+
+fn read_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<ChangeIdentityState, AppError> {
+    let records = read_change_records(input, change, force)?;
+    let record = records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return the changelist form.",
+            )
+        })?;
+    let visibility = match optional_field(record, &["Type", "type"])
+        .unwrap_or_else(|| "public".to_owned())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "public" => ChangeVisibility::Public,
+        "restricted" => ChangeVisibility::Restricted,
+        _ => {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server returned an unknown changelist type.",
+            ));
+        }
+    };
+    Ok(ChangeIdentityState {
+        owner: required_field(record, &["User", "user"], "changelist owner")?,
+        client: required_field(record, &["Client", "client"], "changelist workspace")?,
+        visibility,
+    })
+}
+
+fn read_change_status(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<String, AppError> {
+    let records = read_change_records(input, change, force)?;
+    records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .and_then(|record| optional_field(record, &["Status", "status"]))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return changelist status.",
+            )
+        })
+}
+
+fn read_change_records(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<Vec<Map<String, Value>>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "change", "-o"]);
+    if force {
+        command.arg("-f");
+    }
+    command.arg(change);
+    run_json(&path, &mut command)
+}
+
+fn change_has_records<const N: usize>(
+    input: &ConnectionInput,
+    args: [&str; N],
+) -> Result<bool, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj"]).args(args);
+    Ok(run_json_allowing_empty_match(&path, &mut command)?
+        .iter()
+        .any(|record| !is_message_record(record)))
+}
+
+fn change_has_shelf(input: &ConnectionInput, change: &str) -> Result<bool, AppError> {
+    let records = read_change_records(input, change, false)?;
+    Ok(records.iter().any(|record| {
+        record
+            .keys()
+            .any(|key| key.to_ascii_lowercase().starts_with("shelvedaccess"))
+    }))
+}
+
+fn change_permission_level(input: &ConnectionInput) -> (String, bool) {
+    let Ok((path, mut command)) = configured_command(input) else {
+        return ("unknown".to_owned(), false);
+    };
+    command.args(["-ztag", "-Mj", "protects", "-m"]);
+    match run_json_probe(&path, &mut command) {
+        Ok(records) => records
+            .iter()
+            .find_map(|record| optional_field(record, &["permMax", "perm"]))
+            .map(|permission| (permission, true))
+            .unwrap_or_else(|| ("unknown".to_owned(), false)),
+        Err(_) => ("unknown".to_owned(), false),
+    }
+}
+
+fn permission_allows_change(permission: &str, requires_admin: bool) -> bool {
+    let permission = permission.to_ascii_lowercase();
+    if requires_admin {
+        matches!(permission.as_str(), "admin" | "super")
+    } else {
+        matches!(permission.as_str(), "open" | "write" | "admin" | "super")
+    }
+}
+
+fn change_topology(
+    info: &crate::models::P4Info,
+    blockers: &mut Vec<ChangeIdentityBlocker>,
+) -> String {
+    match info.server_services.as_deref().map(str::to_ascii_lowercase) {
+        Some(services) if services == "standard" => services,
+        Some(services) if services.contains("edge") || services.contains("commit") => {
+            if info.server_id.as_deref().is_none_or(str::is_empty) {
+                push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown);
+            }
+            services
+        }
+        Some(services) if !services.is_empty() => {
+            push_blocker(blockers, ChangeIdentityBlocker::Unsupported);
+            services
+        }
+        _ => {
+            push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown);
+            "unknown".to_owned()
+        }
+    }
+}
+
+fn validate_change_topology(
+    info: &crate::models::P4Info,
+    target_server_id: Option<&str>,
+    blockers: &mut Vec<ChangeIdentityBlocker>,
+) {
+    let services = info
+        .server_services
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if services.contains("edge") || services.contains("commit") {
+        match (info.server_id.as_deref(), target_server_id) {
+            (Some(current), Some(target)) if current == target => {}
+            (Some(_), Some(_)) => push_blocker(blockers, ChangeIdentityBlocker::TopologyMismatch),
+            _ => push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown),
+        }
+    }
+}
+
+fn server_name_eq(left: &str, right: &str, case_handling: Option<&str>) -> bool {
+    match case_handling.map(str::to_ascii_lowercase).as_deref() {
+        Some("insensitive" | "hybrid") => left.eq_ignore_ascii_case(right),
+        _ => left == right,
+    }
+}
+
+fn push_blocker(blockers: &mut Vec<ChangeIdentityBlocker>, blocker: ChangeIdentityBlocker) {
+    if !blockers.contains(&blocker) {
+        blockers.push(blocker);
+    }
+}
+
+fn change_identity_token(preflight: &ChangeIdentityPreflight) -> String {
+    let mut hasher = DefaultHasher::new();
+    preflight.change.hash(&mut hasher);
+    preflight.current.hash(&mut hasher);
+    preflight.target.hash(&mut hasher);
+    preflight.has_opened_files.hash(&mut hasher);
+    preflight.has_shelved_files.hash(&mut hasher);
+    preflight.has_jobs.hash(&mut hasher);
+    preflight.requires_admin.hash(&mut hasher);
+    preflight.permission_level.hash(&mut hasher);
+    preflight.topology.hash(&mut hasher);
+    preflight.blockers.hash(&mut hasher);
+    format!("change-identity-v1-{:016x}", hasher.finish())
+}
+
+fn replace_change_identity_fields(
+    spec: &str,
+    target: &ChangeIdentityState,
+) -> Result<String, AppError> {
+    let mut lines = spec.lines().map(str::to_owned).collect::<Vec<_>>();
+    replace_single_form_field(&mut lines, "User", &target.owner)?;
+    replace_single_form_field(&mut lines, "Client", &target.client)?;
+    replace_or_insert_change_type(
+        &mut lines,
+        match target.visibility {
+            ChangeVisibility::Public => "public",
+            ChangeVisibility::Restricted => "restricted",
+        },
+    );
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn replace_or_insert_change_type(lines: &mut Vec<String>, value: &str) {
+    if let Some(line) = lines.iter_mut().find(|line| line.starts_with("Type:")) {
+        *line = format!("Type:\t{value}");
+        return;
+    }
+    let index = lines
+        .iter()
+        .position(|line| line.starts_with("Description:"))
+        .unwrap_or(lines.len());
+    lines.splice(index..index, [format!("Type:\t{value}"), String::new()]);
+}
+
+fn change_identity_blocked_error(blockers: &[ChangeIdentityBlocker]) -> AppError {
+    let kind = if blockers.iter().any(|blocker| {
+        matches!(
+            blocker,
+            ChangeIdentityBlocker::PermissionDenied | ChangeIdentityBlocker::PermissionUnknown
+        )
+    }) {
+        ErrorKind::Permission
+    } else if blockers.iter().any(|blocker| {
+        matches!(
+            blocker,
+            ChangeIdentityBlocker::TopologyMismatch | ChangeIdentityBlocker::NotPending
+        )
+    }) {
+        ErrorKind::Conflict
+    } else {
+        ErrorKind::UnsupportedCapability
+    };
+    AppError::new(
+        kind,
+        "Changelist identity update is blocked by server preflight.",
+    )
+    .with_hint("Review the preflight blockers and refresh before retrying.")
+}
+
 pub fn delete_change(input: &ConnectionInput, change: &str) -> Result<(), AppError> {
     required_client(input)?;
     validate_numbered_change(change)?;
@@ -5790,6 +6216,58 @@ mod tests {
             .unwrap();
         assert!(lines.contains(&"\tPaths: still description".to_owned()));
         assert_eq!(form_single_value(&lines, "Name").as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn change_identity_form_update_preserves_restricted_payload_fields() {
+        let source = "Change:\t42\n\nClient:\told-ws\n\nUser:\talex\n\nStatus:\tpending\n\nType:\trestricted\n\nDescription:\n\tsecret text\n\nJobs:\n\tjob-secret\n\nFiles:\n\t//secret/main/file.txt\n";
+        let target = ChangeIdentityState {
+            owner: "maria".to_owned(),
+            client: "maria-main".to_owned(),
+            visibility: ChangeVisibility::Public,
+        };
+        let updated = replace_change_identity_fields(source, &target).unwrap();
+        assert!(updated.contains("Client:\tmaria-main"));
+        assert!(updated.contains("User:\tmaria"));
+        assert!(updated.contains("Type:\tpublic"));
+        assert!(updated.contains("\tsecret text"));
+        assert!(updated.contains("\tjob-secret"));
+        assert!(updated.contains("\t//secret/main/file.txt"));
+    }
+
+    #[test]
+    fn change_identity_permissions_distinguish_owner_and_forced_transfer() {
+        assert!(permission_allows_change("open", false));
+        assert!(permission_allows_change("write", false));
+        assert!(!permission_allows_change("write", true));
+        assert!(permission_allows_change("admin", true));
+        assert!(permission_allows_change("super", true));
+        assert!(!permission_allows_change("unknown", false));
+    }
+
+    #[test]
+    fn change_identity_token_covers_server_preflight_state_without_payloads() {
+        let state = ChangeIdentityState {
+            owner: "alex".to_owned(),
+            client: "alex-main".to_owned(),
+            visibility: ChangeVisibility::Restricted,
+        };
+        let mut preflight = ChangeIdentityPreflight {
+            change: "42".to_owned(),
+            current: state.clone(),
+            target: state,
+            has_opened_files: false,
+            has_shelved_files: false,
+            has_jobs: false,
+            requires_admin: false,
+            permission_level: "write".to_owned(),
+            topology: "standard".to_owned(),
+            blockers: Vec::new(),
+            preview_token: String::new(),
+        };
+        let before = change_identity_token(&preflight);
+        preflight.has_jobs = true;
+        assert_ne!(before, change_identity_token(&preflight));
     }
 
     #[test]

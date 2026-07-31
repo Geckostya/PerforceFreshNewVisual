@@ -26,5 +26,5 @@ Current status for pending changelists, shelves, submit, revert, jobs in submit,
 ## P1/P2 extensions
 
 - [ ] P1 Complete shelf conflict taxonomy, batch export, native picker, and topology-aware reshelve/promote.
-- [ ] P1 Change owner/workspace and public/restricted type with shelf/jobs/topology preflight.
+- [x] P1 Change owner/workspace and public/restricted type with capability/permission plus shelf/jobs/topology preflight, stale-token rejection, and restricted-safe server read-back.
 - [ ] P2 Handle shelved stream specs and P4 Code Review only when the server/integration supports them.

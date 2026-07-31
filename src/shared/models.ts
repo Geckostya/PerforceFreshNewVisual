@@ -365,6 +365,38 @@ export interface PendingChange {
   stream?: string;
 }
 
+export type ChangeVisibility = "public" | "restricted";
+
+export interface ChangeIdentityState {
+  owner: string;
+  client: string;
+  visibility: ChangeVisibility;
+}
+
+export type ChangeIdentityBlocker =
+  | "capability_unknown"
+  | "unsupported"
+  | "permission_unknown"
+  | "permission_denied"
+  | "topology_unknown"
+  | "topology_mismatch"
+  | "target_client_owner_mismatch"
+  | "not_pending";
+
+export interface ChangeIdentityPreflight {
+  change: string;
+  current: ChangeIdentityState;
+  target: ChangeIdentityState;
+  hasOpenedFiles: boolean;
+  hasShelvedFiles: boolean;
+  hasJobs: boolean;
+  requiresAdmin: boolean;
+  permissionLevel: string;
+  topology: string;
+  blockers: ChangeIdentityBlocker[];
+  previewToken: string;
+}
+
 export interface HistoryPage<T> {
   items: T[];
   nextCursor?: string;

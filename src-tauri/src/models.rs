@@ -668,6 +668,50 @@ pub struct PendingChange {
     pub stream: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeVisibility {
+    Public,
+    Restricted,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityState {
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeIdentityBlocker {
+    CapabilityUnknown,
+    Unsupported,
+    PermissionUnknown,
+    PermissionDenied,
+    TopologyUnknown,
+    TopologyMismatch,
+    TargetClientOwnerMismatch,
+    NotPending,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityPreflight {
+    pub change: String,
+    pub current: ChangeIdentityState,
+    pub target: ChangeIdentityState,
+    pub has_opened_files: bool,
+    pub has_shelved_files: bool,
+    pub has_jobs: bool,
+    pub requires_admin: bool,
+    pub permission_level: String,
+    pub topology: String,
+    pub blockers: Vec<ChangeIdentityBlocker>,
+    pub preview_token: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryPage<T> {
@@ -1283,6 +1327,27 @@ pub struct EditChangeInput {
     pub connection: ConnectionInput,
     pub change: String,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityPreflightInput {
+    pub connection: ConnectionInput,
+    pub change: String,
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityUpdateInput {
+    pub connection: ConnectionInput,
+    pub change: String,
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+    pub preview_token: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
