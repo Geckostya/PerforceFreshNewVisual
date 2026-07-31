@@ -18,6 +18,11 @@ import type {
   JobForm,
   JobFormField,
   Label,
+  LabelInput,
+  LabelSpec,
+  LabelTagInput,
+  LabelTagPreview,
+  LabelTagResult,
   Fix,
   ShelvedFile,
   SubmitMode,
@@ -234,6 +239,13 @@ export async function saveJob(input: ConnectionInput, job: string | undefined, f
 export async function listLabels(input: ConnectionInput, search?: string): Promise<Label[]> {
   return invoke<Label[]>("list_labels", { input, search });
 }
+
+export async function inspectLabel(input: ConnectionInput, name: string): Promise<LabelSpec> { return invoke<LabelSpec>("inspect_label", { input, name }); }
+export async function createLabel(input: ConnectionInput, draft: LabelInput): Promise<LabelSpec> { return invoke<LabelSpec>("create_label", { input, draft }); }
+export async function updateLabel(input: ConnectionInput, draft: LabelInput): Promise<LabelSpec> { return invoke<LabelSpec>("update_label", { input, draft }); }
+export async function deleteLabel(input: ConnectionInput, name: string): Promise<void> { return invoke<void>("delete_label", { input, name }); }
+export async function previewLabelTag(input: ConnectionInput, tag: LabelTagInput): Promise<LabelTagPreview> { return invoke<LabelTagPreview>("preview_label_tag", { input, tag }); }
+export async function applyLabelTag(input: ConnectionInput, tag: LabelTagInput): Promise<LabelTagResult> { return invoke<LabelTagResult>("apply_label_tag", { input, tag }); }
 
 export async function listFixes(input: ConnectionInput, job: string): Promise<Fix[]> {
   return invoke<Fix[]>("list_fixes", { input, job });
