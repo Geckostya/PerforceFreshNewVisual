@@ -42,9 +42,12 @@ use jobs::parse_fixes;
 #[cfg(test)]
 use jobs::parse_jobs;
 pub use jobs::{fix_job, list_fixes, list_jobs};
-pub use labels::{apply_label_tag, create_label, delete_label, inspect_label, list_labels, preview_label_tag, update_label};
 #[cfg(test)]
 use labels::parse_labels;
+pub use labels::{
+    apply_label_tag, create_label, delete_label, inspect_label, list_labels, preview_label_tag,
+    update_label,
+};
 use runner::*;
 pub use runner::{clear_cli_log, cli_log};
 #[cfg(test)]
