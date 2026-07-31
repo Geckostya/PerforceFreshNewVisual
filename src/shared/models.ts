@@ -364,6 +364,12 @@ export interface Label {
   description: string;
 }
 
+export interface LabelInput { name: string; description: string; view: string[]; }
+export interface LabelSpec { label: Label; view: string[]; locked: boolean; }
+export interface LabelTagInput { label: string; paths: string[]; remove: boolean; }
+export interface LabelTagPreview { label: string; remove: boolean; scopes: string[]; protected: boolean; items: string[]; partial: boolean; }
+export interface LabelTagResult { label: LabelSpec; items: string[]; diagnostics: string[]; partial: boolean; }
+
 export interface Fix {
   job: string;
   change: string;

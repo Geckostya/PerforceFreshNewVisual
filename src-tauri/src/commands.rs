@@ -5,7 +5,8 @@ use crate::{
         CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
         CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
         DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        FileRevision, Fix, Job, Label, LabelInput, LabelSpec, LabelTagInput, LabelTagPreview,
+        LabelTagResult, LocaleCatalog, MoveInput, OpenedFile,
         OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
         OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
         P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
@@ -553,6 +554,36 @@ pub async fn list_labels(
     tauri::async_runtime::spawn_blocking(move || p4::list_labels(&input, search.as_deref()))
         .await
         .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_label(input: ConnectionInput, name: String) -> Result<LabelSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::inspect_label(&input, &name)).await.map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn create_label(input: ConnectionInput, draft: LabelInput) -> Result<LabelSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::create_label(&input, &draft)).await.map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn update_label(input: ConnectionInput, draft: LabelInput) -> Result<LabelSpec, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::update_label(&input, &draft)).await.map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn delete_label(input: ConnectionInput, name: String) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::delete_label(&input, &name)).await.map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn preview_label_tag(input: ConnectionInput, tag: LabelTagInput) -> Result<LabelTagPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::preview_label_tag(&input, &tag)).await.map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn apply_label_tag(input: ConnectionInput, tag: LabelTagInput) -> Result<LabelTagResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::apply_label_tag(&input, &tag)).await.map_err(task_error)?
 }
 
 #[tauri::command]

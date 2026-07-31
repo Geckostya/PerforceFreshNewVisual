@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { listDepotFiles, listLabels, normalizeAppError, previewSync } from "../../shared/api";
+import { applyLabelTag, createLabel, deleteLabel, inspectLabel as fetchLabelSpec, listDepotFiles, listLabels, normalizeAppError, previewLabelTag, previewSync, updateLabel } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
 import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
-import type { AppError, ConnectionInput, DepotFile, Label, SyncPreview } from "../../shared/models";
+import type { AppError, ConnectionInput, DepotFile, Label, LabelInput, LabelSpec, LabelTagPreview, SyncPreview } from "../../shared/models";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDetails, useSafeSync } from "../../shared/SafeSync";
-import { BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
+import { ActionDialog, BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
 
 const LABEL_DETAIL_LIMIT = 100;
+type LabelDialog = { kind: "create" | "edit"; draft: LabelInput } | { kind: "delete" } | { kind: "tag" | "untag"; preview?: LabelTagPreview };
 
 export function LabelsView({ connection, initialSearch }: { connection: ConnectionInput; initialSearch?: string }) {
   const { t } = useLocale();
@@ -22,6 +23,8 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
   const [syncPreviewState, setSyncPreviewState] = useState<SyncPreview>();
   const [syncAcknowledged, setSyncAcknowledged] = useState(false);
   const [notice, setNotice] = useState("");
+  const [spec, setSpec] = useState<LabelSpec>();
+  const [dialog, setDialog] = useState<LabelDialog>();
   const safeSync = useSafeSync(connection, {
     refresh: () => selectedLabel ? inspectLabel(selectedLabel) : load(),
     setNotice,
@@ -54,6 +57,28 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
     catch (reason) { setError(normalizeAppError(reason)); }
     finally { setDetailBusy(false); }
   }
+
+  async function openEdit(kind: "create" | "edit") {
+    if (kind === "create") { setDialog({ kind, draft: { name: "", description: "", view: ["//..."] } }); return; }
+    if (!selectedLabel) return;
+    setDetailBusy(true); setError(undefined);
+    try { const next = await fetchLabelSpec(connection, selectedLabel.name); setSpec(next); setDialog({ kind, draft: { name: next.label.name, description: next.label.description, view: next.view } }); }
+    catch (reason) { setError(normalizeAppError(reason)); }
+    finally { setDetailBusy(false); }
+  }
+
+  async function applyDialog() {
+    if (!dialog) return;
+    setDetailBusy(true); setError(undefined);
+    try {
+      if (dialog.kind === "create" || dialog.kind === "edit") { const next = dialog.kind === "create" ? await createLabel(connection, dialog.draft) : await updateLabel(connection, dialog.draft); setSpec(next); setSelectedLabel(next.label); setDialog(undefined); await load(); await inspectLabelFiles(next.label); setNotice(t("labelSaved")); }
+      else if (dialog.kind === "delete" && selectedLabel) { await deleteLabel(connection, selectedLabel.name); setSelectedLabel(undefined); setSpec(undefined); setLabelFiles([]); setDialog(undefined); await load(); setNotice(t("labelDeleted")); }
+      else if ((dialog.kind === "tag" || dialog.kind === "untag") && selectedLabel) { const tag = { label: selectedLabel.name, paths: labelFiles.map((file) => file.depotPath), remove: dialog.kind === "untag" }; if (!dialog.preview) { setDialog({ ...dialog, preview: await previewLabelTag(connection, tag) }); } else { const result = await applyLabelTag(connection, tag); setSpec(result.label); setDialog(undefined); setNotice(result.partial ? t("labelTagPartial") : t("labelTagApplied")); } }
+    } catch (reason) { setError(normalizeAppError(reason)); }
+    finally { setDetailBusy(false); }
+  }
+
+  async function inspectLabelFiles(label: Label) { setLabelFiles(await listDepotFiles(connection, `//...@${label.name}`, true)); }
 
   async function showLabelSync() {
     if (!selectedLabel) return;
@@ -102,11 +127,17 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
           <div><h2>{selectedLabel.name}</h2><p>{selectedLabel.description || t("labelNoDescription")}</p></div>
           <dl className="file-facts"><dt>{t("factUser")}</dt><dd>{selectedLabel.owner || "—"}</dd><dt>{t("labelUpdated")}</dt><dd>{selectedLabel.update || "—"}</dd><dt>{t("filesLabel")}</dt><dd>{detailBusy ? t("loadingFiles") : labelFiles.length}</dd></dl>
           {detailBusy ? <CompactEmpty text={t("loadingLabelDetails")} /> : <><div className="resource-detail-list">{labelFiles.slice(0, LABEL_DETAIL_LIMIT).map((file) => <div className="resource-detail-row" key={`${file.depotPath}-${file.revision}`}><span><strong>{file.depotPath}</strong><small>{file.revision ? `#${file.revision}` : ""}</small></span></div>)}</div>{labelFiles.length > LABEL_DETAIL_LIMIT && <BoundedListNotice count={LABEL_DETAIL_LIMIT} />}</>}
+          {spec?.locked && <p className="error-message">{t("labelProtected")}</p>}
+          <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => void openEdit("edit")} disabled={detailBusy}>{t("editLabel")}</button><button className="secondary-button" type="button" onClick={() => setDialog({ kind: "tag" })} disabled={detailBusy || !labelFiles.length}>{t("tagLabel")}</button><button className="secondary-button" type="button" onClick={() => setDialog({ kind: "untag" })} disabled={detailBusy || !labelFiles.length}>{t("untagLabel")}</button><button className="danger-button" type="button" onClick={() => setDialog({ kind: "delete" })} disabled={detailBusy}>{t("deleteLabel")}</button></div>
           <button className="primary-button" type="button" onClick={() => void showLabelSync()} disabled={detailBusy || safeSync.phase !== "idle"}>{t("previewLabelSync")}</button>
           {syncPreviewState && <div className="inline-preview"><strong>{t("syncPreviewTitle")}</strong><SyncPreviewDetails preview={syncPreviewState} acknowledged={syncAcknowledged} onAcknowledged={setSyncAcknowledged} /><button className="primary-button" type="button" onClick={() => void applyLabelSync()} disabled={detailBusy || !syncPreviewState.items.length || (syncPreviewState.modifiedFiles.length > 0 && !syncAcknowledged)}>{t("syncNow")}</button></div>}
         </div>}
       </aside>
     </div>
+    <button className="primary-button" type="button" onClick={() => void openEdit("create")}>{t("createLabel")}</button>
+    {(dialog?.kind === "create" || dialog?.kind === "edit") && <ActionDialog title={dialog.kind === "create" ? t("createLabel") : t("editLabel")} confirmLabel={t("save")} busy={detailBusy} confirmDisabled={!dialog.draft.name.trim() || !dialog.draft.view.length} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><label className="field"><span className="field-label">{t("labelName")}</span><input autoFocus disabled={dialog.kind === "edit"} value={dialog.draft.name} onChange={(event) => setDialog({ ...dialog, draft: { ...dialog.draft, name: event.target.value } })} /></label><label className="field"><span className="field-label">{t("labelDescription")}</span><textarea value={dialog.draft.description} onChange={(event) => setDialog({ ...dialog, draft: { ...dialog.draft, description: event.target.value } })} /></label><label className="field"><span className="field-label">{t("labelView")}</span><textarea value={dialog.draft.view.join("\n")} onChange={(event) => setDialog({ ...dialog, draft: { ...dialog.draft, view: event.target.value.split("\n").filter(Boolean) } })} /></label></ActionDialog>}
+    {dialog?.kind === "delete" && selectedLabel && <ActionDialog danger title={t("deleteLabel")} confirmLabel={t("deleteLabel")} busy={detailBusy} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{t("deleteLabelConfirm")}</p><strong>{selectedLabel.name}</strong></ActionDialog>}
+    {(dialog?.kind === "tag" || dialog?.kind === "untag") && selectedLabel && <ActionDialog title={dialog.kind === "tag" ? t("tagLabel") : t("untagLabel")} confirmLabel={dialog.kind === "tag" ? t("tagLabel") : t("untagLabel")} busy={detailBusy} confirmDisabled={Boolean(dialog.preview?.protected || dialog.preview?.partial)} onClose={() => setDialog(undefined)} onConfirm={() => void applyDialog()}><p>{dialog.preview ? t("labelTagPreviewReady") : t("labelTagPreviewPrompt")}</p>{dialog.preview && <><dl className="dialog-facts"><dt>{t("labelScope")}</dt><dd>{dialog.preview.scopes.length}</dd><dt>{t("labelProtected")}</dt><dd>{dialog.preview.protected ? t("labelProtected") : t("labelNoDescription")}</dd></dl><div className="file-selection-summary">{dialog.preview.scopes.map((scope) => <span key={scope}>{scope}</span>)}</div></>}</ActionDialog>}
     <SafeSyncConflictDialog sync={safeSync} />
   </View>;
 }

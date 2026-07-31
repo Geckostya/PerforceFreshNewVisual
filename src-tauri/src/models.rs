@@ -661,6 +661,22 @@ pub struct Label {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelInput { pub name: String, pub description: String, pub view: Vec<String> }
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelSpec { pub label: Label, pub view: Vec<String>, pub locked: bool }
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelTagInput { pub label: String, pub paths: Vec<String>, pub remove: bool }
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelTagPreview { pub label: String, pub remove: bool, pub scopes: Vec<String>, pub protected: bool, pub items: Vec<String>, pub partial: bool }
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelTagResult { pub label: LabelSpec, pub items: Vec<String>, pub diagnostics: Vec<String>, pub partial: bool }
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Fix {
