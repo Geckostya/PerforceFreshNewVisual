@@ -4,6 +4,8 @@ import {
   writeUiAgentResponse,
   writeUiSnapshot,
 } from "./api";
+import { LogicalSize } from "@tauri-apps/api/dpi";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   UiAgentCommand,
   UiAgentResponse,
@@ -222,7 +224,7 @@ async function pollAgentCommands(): Promise<void> {
       const command = await readUiAgentCommand(lastRequestId);
       if (command) {
         lastRequestId = command.id;
-        const response = executeAgentCommand(command);
+        const response = await executeAgentCommand(command);
         await writeUiAgentResponse(response);
       }
     } catch (error) {
@@ -232,7 +234,7 @@ async function pollAgentCommands(): Promise<void> {
   }
 }
 
-function executeAgentCommand(command: UiAgentCommand): UiAgentResponse {
+async function executeAgentCommand(command: UiAgentCommand): Promise<UiAgentResponse> {
   const beforeStateVersion = stateVersion;
   const response: UiAgentResponse = {
     id: command.id,
@@ -246,12 +248,19 @@ function executeAgentCommand(command: UiAgentCommand): UiAgentResponse {
     if (command.expectedStateVersion !== stateVersion || publishedStateVersion !== stateVersion) {
       throw new Error(`Stale UI state: expected ${command.expectedStateVersion}, current ${stateVersion}.`);
     }
-    const element = resolveTarget(command.target);
-    if (!element) throw new Error(`UI target not found: ${command.target}.`);
-    if (isDisabled(element) && command.method !== "ui.focus") {
-      throw new Error(`UI target is disabled: ${command.target}.`);
+    if (command.method === "ui.resize") {
+      if (!Number.isInteger(command.width) || !Number.isInteger(command.height)) throw new Error("ui.resize requires integer width and height.");
+      const width = command.width!;
+      const height = command.height!;
+      await getCurrentWindow().setSize(new LogicalSize(width, height));
+    } else {
+      const element = resolveTarget(command.target);
+      if (!element) throw new Error(`UI target not found: ${command.target}.`);
+      if (isDisabled(element) && command.method !== "ui.focus") {
+        throw new Error(`UI target is disabled: ${command.target}.`);
+      }
+      runAgentAction(element, command);
     }
-    runAgentAction(element, command);
     markStateChanged();
     response.ok = true;
   } catch (error) {
@@ -266,7 +275,7 @@ export function isUiAgentCommand(value: unknown): value is UiAgentCommand {
   const command = value as Partial<UiAgentCommand>;
   return typeof command.id === "string"
     && typeof command.token === "string"
-    && ["ui.click", "ui.input", "ui.key", "ui.focus"].includes(command.method ?? "")
+    && ["ui.click", "ui.input", "ui.key", "ui.focus", "ui.resize"].includes(command.method ?? "")
     && Number.isSafeInteger(command.expectedStateVersion)
     && typeof command.target === "string";
 }

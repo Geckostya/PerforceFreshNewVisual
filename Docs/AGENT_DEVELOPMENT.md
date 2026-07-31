@@ -19,6 +19,7 @@ Available tools:
 - `app_start`, `app_status`, `app_stop` — lifecycle of one child process;
 - `ui_snapshot` — compact snapshot v2 with optional sanitized HTML;
 - `ui_click`, `ui_input`, `ui_focus`, `ui_key` — allow-listed DOM actions;
+- `ui_resize` — resizes the visible native window within bounded logical dimensions for responsive-layout verification;
 - `ui_wait` — wait for a version, text, locator, or settled/busy state.
 
 Structured `elements` includes `ignored` for Files rows representing files and folders. Folders have a stable `agent:workspace-folder:<client-path>` locator, so ignored state can be verified without parsing HTML.
@@ -27,7 +28,7 @@ Structured `elements` includes `ignored` for Files rows representing files and f
 
 The low-level snapshot transport is enabled only by an absolute `P4FNV_UI_SNAPSHOT_PATH`. The frontend writes the timestamp, URL, viewport, active element, form state, and sanitized `body.outerHTML` through an allow-listed Tauri command. Password values are replaced with `[redacted]`, `value` attributes are removed, and snapshot size is limited to 8 MiB. Without the environment variable, the transport is completely disabled; there is no listener or HTTP port.
 
-The MCP adds exact `P4FNV_AGENT_COMMAND_PATH`, `P4FNV_AGENT_RESPONSE_PATH`, and a random `P4FNV_AGENT_TOKEN`. Rust accepts no more than 64 KiB and verifies the token, request ID, expected `stateVersion`, and the `ui.click`/`ui.input`/`ui.key`/`ui.focus` allow list. Arbitrary selectors, JavaScript, Tauri invoke, filesystem, shell, and `p4` commands are unsupported.
+The MCP adds exact `P4FNV_AGENT_COMMAND_PATH`, `P4FNV_AGENT_RESPONSE_PATH`, and a random `P4FNV_AGENT_TOKEN`. Rust accepts no more than 64 KiB and verifies the token, request ID, expected `stateVersion`, and the allow-listed UI methods. `ui.resize` accepts only 640–4000 × 480–3000 logical pixels. Arbitrary selectors, JavaScript, Tauri invoke, filesystem, shell, and `p4` commands are unsupported.
 
 Snapshot schema v2 contains a monotonic `stateVersion`, `settled`/`busy`, and structured elements. A `data-agent-id` or HTML `id` provides a stable locator; an indexed locator is valid only for the same version. An action sends ordinary DOM/React events and does not bypass production preview, dialog, IPC, or refresh behavior. The response is written atomically and does not return form values.
 

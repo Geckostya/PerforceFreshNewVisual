@@ -676,7 +676,7 @@ export interface UiSnapshot {
   html: string;
 }
 
-export type UiAgentMethod = "ui.click" | "ui.input" | "ui.key" | "ui.focus";
+export type UiAgentMethod = "ui.click" | "ui.input" | "ui.key" | "ui.focus" | "ui.resize";
 
 export interface UiAgentCommand {
   id: string;
@@ -684,6 +684,8 @@ export interface UiAgentCommand {
   method: UiAgentMethod;
   expectedStateVersion: number;
   target: string;
+  width?: number;
+  height?: number;
   value?: string;
   key?: string;
   ctrlKey?: boolean;

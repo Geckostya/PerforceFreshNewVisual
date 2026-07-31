@@ -122,20 +122,27 @@ fn validate_agent_message(value: &Value, command: bool) -> Result<(), AppError> 
             .get("method")
             .and_then(Value::as_str)
             .ok_or_else(invalid_agent_message)?;
-        if !matches!(method, "ui.click" | "ui.input" | "ui.key" | "ui.focus") {
+        if !matches!(method, "ui.click" | "ui.input" | "ui.key" | "ui.focus" | "ui.resize") {
             return Err(invalid_agent_message());
         }
         if object
             .get("expectedStateVersion")
             .and_then(Value::as_u64)
             .is_none()
-            || object
+            || (method != "ui.resize" && object
                 .get("target")
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty() && value.len() <= 256)
-                .is_none()
+                .is_none())
         {
             return Err(invalid_agent_message());
+        }
+        if method == "ui.resize" {
+            let width = object.get("width").and_then(Value::as_u64).ok_or_else(invalid_agent_message)?;
+            let height = object.get("height").and_then(Value::as_u64).ok_or_else(invalid_agent_message)?;
+            if !(640..=4_000).contains(&width) || !(480..=3_000).contains(&height) {
+                return Err(invalid_agent_message());
+            }
         }
     }
     Ok(())

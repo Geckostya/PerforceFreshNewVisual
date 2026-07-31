@@ -177,6 +177,28 @@ server.registerTool(
   async ({ includeHtml, ...wait }) => toolResult(snapshotForTool(await session.waitForSnapshot(wait), includeHtml)),
 );
 
+server.registerTool(
+  "ui_resize",
+  {
+    title: "Resize P4FNV window",
+    description: "Resize the visible native P4FNV window to a bounded logical size and return a fresh UI snapshot.",
+    inputSchema: {
+      width: z.number().int().min(640).max(4_000),
+      height: z.number().int().min(480).max(3_000),
+      expectedStateVersion: z.number().int().nonnegative().optional(),
+      timeoutMs: z.number().int().min(50).max(120_000).default(10_000),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ width, height, expectedStateVersion, timeoutMs }) => commandResult({
+    method: "ui.resize",
+    target: "window",
+    width,
+    height,
+    expectedStateVersion,
+  }, timeoutMs),
+);
+
 async function commandResult(input: UiCommandInput, timeoutMs: number) {
   const result = await session.sendCommand(input, timeoutMs);
   return toolResult({ response: result.response, snapshot: snapshotForTool(result.snapshot) }, !result.response.ok);

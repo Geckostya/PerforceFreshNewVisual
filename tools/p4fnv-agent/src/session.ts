@@ -51,7 +51,7 @@ export interface UiAgentResponse {
 }
 
 export interface UiCommandInput {
-  method: "ui.click" | "ui.input" | "ui.key" | "ui.focus";
+  method: "ui.click" | "ui.input" | "ui.key" | "ui.focus" | "ui.resize";
   target: string;
   expectedStateVersion?: number;
   value?: string;
@@ -60,6 +60,8 @@ export interface UiCommandInput {
   shiftKey?: boolean;
   altKey?: boolean;
   metaKey?: boolean;
+  width?: number;
+  height?: number;
 }
 
 export interface SessionStatus {
@@ -235,6 +237,8 @@ export class P4FnvAgentSession {
         shiftKey: input.shiftKey,
         altKey: input.altKey,
         metaKey: input.metaKey,
+        width: input.width,
+        height: input.height,
       };
       await writeJsonAtomic(this.commandPath!, command);
       const rawResponse = await waitForJson<UiAgentResponse & { token?: string }>(
