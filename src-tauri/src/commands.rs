@@ -12,15 +12,15 @@ use crate::{
         OperationItemStatus, OperationReadBack, OperationReadBackStatus, P4Detection, P4Info,
         PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
         ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput, RevertInput,
-        RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
-        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, SpecializedResolveInput,
-        StreamDetail, StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput,
-        SubmitMode, SubmitOutcome, SubmitPreflightSummary, SubmitReadBack, SubmitStepResult,
-        SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFilterOptions,
-        SubmittedHistoryPageInput, SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge,
-        TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput,
-        WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary,
-        WorkspaceUpdateInput,
+        RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedFilesInput,
+        SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile,
+        SpecializedResolveInput, StreamDetail, StreamIntegrationInput, StreamIntegrationPreview,
+        StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
+        SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail,
+        SubmittedFilterOptions, SubmittedHistoryPageInput, SwitchStreamInput, SyncPreview,
+        ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
+        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
+        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -2773,6 +2773,22 @@ pub async fn save_shelved_file(input: SaveShelvedInput) -> Result<(), AppError> 
             &input.source_change,
             &input.depot_path,
             &input.output_path,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_shelved_files(
+    input: SaveShelvedFilesInput,
+) -> Result<ChangeExportResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_shelved_files(
+            &input.connection,
+            &input.source_change,
+            &input.depot_paths,
+            &input.output_directory,
         )
     })
     .await

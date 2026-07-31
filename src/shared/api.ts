@@ -437,6 +437,17 @@ export async function saveShelvedFile(connection: ConnectionInput, sourceChange:
   return invoke("save_shelved_file", { input: { connection, sourceChange, depotPath, outputPath } });
 }
 
+export async function saveShelvedFiles(
+  connection: ConnectionInput,
+  sourceChange: string,
+  depotPaths: string[],
+  outputDirectory: string,
+): Promise<ChangeExportResult> {
+  return invoke<ChangeExportResult>("save_shelved_files", {
+    input: { connection, sourceChange, depotPaths, outputDirectory },
+  });
+}
+
 export async function diffRevisions(connection: ConnectionInput, depotPath: string, left: string, right: string, mode: DiffMode = "default"): Promise<FileDiff> {
   return invoke<FileDiff>("diff_revisions", { input: { connection, depotPath, mode }, left, right });
 }

@@ -1143,6 +1143,15 @@ pub struct SaveShelvedInput {
     pub output_path: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveShelvedFilesInput {
+    pub connection: ConnectionInput,
+    pub source_change: String,
+    pub depot_paths: Vec<String>,
+    pub output_directory: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DiffMode {
