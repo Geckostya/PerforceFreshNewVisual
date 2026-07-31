@@ -75,6 +75,19 @@
   gap: 12px;
 }
 
+.settings-menu { position: relative; }
+.settings-menu-trigger { min-height: var(--control-default); padding: 0 10px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-secondary); cursor: pointer; font: inherit; }
+.settings-menu-trigger:hover, .settings-menu-trigger[aria-expanded="true"] { border-color: var(--accent); color: var(--text); }
+.settings-menu-popover { position: absolute; z-index: 20; top: calc(100% + 8px); right: 0; width: 230px; padding: 8px; display: grid; gap: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--elevation-3, 0 12px 32px rgb(0 0 0 / 18%)); }
+.settings-menu-section { padding: 4px; display: grid; gap: 8px; }
+.settings-menu-label { color: var(--text-tertiary); font-size: var(--font-caption); font-weight: 650; }
+.settings-menu-section .language-picker, .settings-menu-section .theme-picker { justify-content: space-between; }
+.settings-menu-section .language-word, .settings-menu-section .theme-word { display: inline; }
+.settings-menu-item { min-height: var(--control-default); padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; font: inherit; text-align: left; }
+.settings-menu-item:hover { background: var(--surface-muted); color: var(--text); }
+.settings-menu-item.danger { color: var(--danger-text); }
+.settings-menu-divider { height: 1px; margin: 4px 0; background: var(--border); }
+
 .language-picker,
 .theme-picker {
   display: flex;

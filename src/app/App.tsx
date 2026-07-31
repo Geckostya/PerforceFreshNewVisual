@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Archive, CircleHelp, ClipboardList, EyeOff, FolderTree, GitBranch, History as HistoryIcon, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
+import { Archive, CircleHelp, ClipboardList, EyeOff, FolderTree, GitBranch, History as HistoryIcon, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, Settings, type LucideIcon } from "lucide-react";
 import { ConnectionScreen, type ConnectedSession } from "../features/connection/ConnectionScreen";
 import { clearCliLog, listWorkspaces, loadLocales, loadSettings, logout, normalizeAppError, openWorkspace } from "../shared/api";
 import { CliLogCenter } from "../shared/CliLogCenter";
@@ -57,6 +57,7 @@ function AppContent() {
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<AppError>();
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const goToInputRef = useRef<HTMLInputElement>(null);
   const handleFileCount = useCallback((count: number) => setFileCount(count), []);
 
@@ -195,11 +196,16 @@ function AppContent() {
           <button className="link-button" type="submit">{t("goTo")}</button>
         </form>
         <div className="header-actions">
-          <button data-agent-id="shortcut-help" data-focus-fallback className="link-button" type="button" title={t("keyboardShortcuts")} onClick={() => setShortcutHelpOpen(true)}><CircleHelp className="ui-icon" aria-hidden="true" />{t("shortcuts")}</button>
-          <ThemePicker />
-          <LanguagePicker />
-          <button className="link-button" type="button" title={t("logoutHint")} onClick={() => setLogoutConfirmOpen(true)} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>
-          <button className="link-button" type="button" title={t("exitWorkspaceHint")} onClick={exitWorkspace}>{t("exitWorkspace")}</button>
+          <div className="settings-menu">
+            <button data-agent-id="settings-menu" data-focus-fallback className="settings-menu-trigger" type="button" title={t("settingsHint")} aria-label={t("settings")} aria-expanded={settingsOpen} aria-haspopup="true" onClick={() => setSettingsOpen((open) => !open)}><Settings className="ui-icon" aria-hidden="true" />{t("settings")}</button>
+            {settingsOpen && <div className="settings-menu-popover" role="menu" aria-label={t("settings")}>
+              <div className="settings-menu-section"><span className="settings-menu-label">{t("appearance")}</span><ThemePicker /><LanguagePicker /></div>
+              <div className="settings-menu-divider" role="separator" />
+              <button data-agent-id="shortcut-help" className="settings-menu-item" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setShortcutHelpOpen(true); }}><CircleHelp className="ui-icon" aria-hidden="true" />{t("shortcuts")}</button>
+              <button className="settings-menu-item" type="button" role="menuitem" title={t("exitWorkspaceHint")} onClick={() => { setSettingsOpen(false); exitWorkspace(); }}><EyeOff className="ui-icon" aria-hidden="true" />{t("exitWorkspace")}</button>
+              <button className="settings-menu-item danger" type="button" role="menuitem" title={t("logoutHint")} onClick={() => { setSettingsOpen(false); setLogoutConfirmOpen(true); }} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>
+            </div>}
+          </div>
         </div>
       </header>
       {goToError && <div className="top-error" role="alert">{goToError}</div>}
