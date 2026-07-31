@@ -2385,8 +2385,9 @@
 .depot-state-comparison-group { overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
 .depot-state-comparison-group > h3 { margin: 0; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); font-size: var(--font-body); line-height: var(--line-body); }
 .depot-state-comparison-group > h3 span { color: var(--text-tertiary); font-size: var(--font-caption); }
-.depot-state-comparison-group > .history-compact-row { border-bottom: 1px solid var(--border); }
-.depot-state-comparison-group > .history-compact-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.depot-state-comparison-items > .history-compact-row { border-bottom: 1px solid var(--border); }
+.depot-state-comparison-items > .history-compact-row:last-child { border-bottom: 0; }
+.depot-state-comparison-items > .history-compact-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .depot-history-pagination { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
 .depot-history-pagination > span { color: var(--text-secondary); font-size: var(--font-caption); font-weight: 650; text-align: center; }
 .depot-history-pagination > button:first-child { justify-self: start; }
@@ -2423,7 +2424,7 @@
 .revision-graph-how { min-width: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 760px) {
-  .view-heading { align-items: stretch; flex-direction: column; }
+  .view-heading { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
   .view-actions, .resource-toolbar, .workspace-toolbar, .shelves-toolbar { flex-wrap: wrap; }
   .resource-workbench,
   .resource-workbench.three-pane,

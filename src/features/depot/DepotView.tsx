@@ -227,12 +227,14 @@ function DepotStateComparisonView({ comparison }: { comparison: DepotStateCompar
 
   if (!total) return <CompactEmpty text={t("depotCompareNoChanges")} />;
   return <div className="depot-state-comparison-groups">
-    {groups.map((group) => <section className="depot-state-comparison-group" key={group.key} data-agent-id={`depot-state-comparison-${group.key}`}>
-      <h3>{group.title}<span>{group.items.length}</span></h3>
-      {group.items.map((item) => <div className="history-compact-row" key={item.depotPath}>
+    {groups.map((group) => <section className="depot-state-comparison-group" key={group.key} data-agent-id={`depot-state-comparison-${group.key}`} aria-labelledby={`depot-state-comparison-${group.key}-heading`}>
+      <h3 id={`depot-state-comparison-${group.key}-heading`}>{group.title}<span>{group.items.length}</span></h3>
+      <div className="depot-state-comparison-items" role="list">
+      {group.items.map((item) => <div className="history-compact-row" role="listitem" key={item.depotPath}>
         <strong title={item.depotPath}>{item.depotPath}</strong>
         <small>{formatComparedState(t("depotCompareBefore"), item.beforeRevision, item.beforeFileType)} → {formatComparedState(t("depotCompareAfter"), item.afterRevision, item.afterFileType)}</small>
       </div>)}
+      </div>
     </section>)}
   </div>;
 }

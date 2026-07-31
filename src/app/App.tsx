@@ -15,7 +15,7 @@ import { classifyGoTo } from "./goTo";
 import { CommandPalette } from "./CommandPalette";
 import { ActionDialog, Modal } from "../shared/View";
 import { connectionForServer } from "../shared/connection";
-import { focusNextPane } from "../shared/focus";
+import { focusCurrentViewHeading, focusNextPane } from "../shared/focus";
 
 const ChangesView = lazy(() => import("../features/changes/ChangesView").then((module) => ({ default: module.ChangesView })));
 const WorkspaceView = lazy(() => import("../features/workspace/WorkspaceView").then((module) => ({ default: module.WorkspaceView })));
@@ -107,7 +107,7 @@ function AppContent() {
       }
       if (editing || !(event.ctrlKey || event.metaKey)) return;
       const nextView = ({ "1": "workspace", "2": "changes", "3": "streams", "4": "shelves", "5": "jobs" } as const)[event.key];
-      if (nextView) { event.preventDefault(); setView(nextView); }
+      if (nextView) { event.preventDefault(); navigateView(nextView); }
     }
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
@@ -125,6 +125,11 @@ function AppContent() {
     setAutoOpenError(undefined);
     setFileCount(0);
     setCliLogOpen(false);
+  }
+
+  function navigateView(nextView: typeof view) {
+    setView(nextView);
+    window.requestAnimationFrame(() => focusCurrentViewHeading());
   }
 
   async function signOut() {
@@ -228,7 +233,7 @@ function AppContent() {
         else if (actionId === "refresh_streams") setView("streams");
         else setView("workspace");
       }} />
-      <CommandPalette onNavigate={(target) => { if (target === "depot") { setFilesSource("depot"); setView("workspace"); } else setView(target); }} onFocusGoTo={() => goToInputRef.current?.focus()} onShowShortcuts={() => setShortcutHelpOpen(true)} />
+      <CommandPalette onNavigate={(target) => { if (target === "depot") { setFilesSource("depot"); navigateView("workspace"); } else navigateView(target); }} onFocusGoTo={() => goToInputRef.current?.focus()} onShowShortcuts={() => setShortcutHelpOpen(true)} />
       {shortcutHelpOpen && <ShortcutHelpDialog onClose={() => setShortcutHelpOpen(false)} />}
       {logoutConfirmOpen && <ActionDialog danger title={t("logout")} confirmLabel={t("logout")} busy={logoutBusy} onClose={() => setLogoutConfirmOpen(false)} onConfirm={() => void signOut()}><p>{t("logoutConfirm")}</p></ActionDialog>}
     </div>
