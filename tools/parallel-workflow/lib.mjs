@@ -1370,6 +1370,7 @@ async function runValidationCommand(workflowConfig, checkoutPath, logDirectory, 
   ].join("; ");
   const validationEnvironment = {
     ...process.env,
+    P4FNV_TOOLCHAIN_ROOT: workflowConfig.toolchainRoot,
     CARGO_TARGET_DIR: validationCargoTargetPath(workflowConfig),
   };
   let result;

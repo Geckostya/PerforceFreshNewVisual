@@ -10,24 +10,26 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::models::{
     AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
+    ChangeIdentityBlocker, ChangeIdentityPreflight, ChangeIdentityState, ChangeVisibility,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
-    CreateStreamType, DepotDirectory, DepotFile, DepotSummary, DiffMode, ErrorKind, FileDiff,
-    FileRevision, LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem,
-    ResolveApplyItem, ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide,
-    ResolveMode, ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile,
-    StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
-    StreamIntegrationInput, StreamIntegrationPreview, StreamIntegrationPreviewItem,
-    StreamLocalStrategy, StreamPathKind, StreamSummary, SubmitMode, SubmitOutcome,
-    SubmitPreflightIssue, SubmitPreflightJob, SubmitPreflightSummary, SubmitReadBack,
-    SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFile,
-    SubmittedFilterOptions, SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry,
-    UndoPreviewItem, UnshelveConflict, UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch,
-    WorkspaceMapping, WorkspaceMappingBatch, WorkspaceMappingState, WorkspaceSpec,
-    WorkspaceSummary,
+    CreateStreamType, DepotDirectory, DepotFile, DepotStateComparison, DepotStateDifference,
+    DepotSummary, DiffMode, ErrorKind, FileDiff, FileIntegrationRecord, FileRevision, HistoryPage,
+    LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem,
+    ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode,
+    ResolvePreviewItem, ResolveReadBackState, RevertPreviewItem, ShelvedFile, StreamDetail,
+    StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint, StreamIntegrationInput,
+    StreamIntegrationPreview, StreamIntegrationPreviewItem, StreamLocalStrategy, StreamPathKind,
+    StreamSummary, SubmitMode, SubmitOutcome, SubmitPreflightIssue, SubmitPreflightJob,
+    SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
+    SubmittedChangeDetail, SubmittedFile, SubmittedFilterOptions, SubmittedHistoryPageInput,
+    SyncPreview, SyncPreviewItem, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveConflict,
+    UnshelvePreview, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMapping, WorkspaceMappingBatch,
+    WorkspaceMappingState, WorkspaceSpec, WorkspaceSummary,
 };
 
 mod auth;
@@ -1040,6 +1042,156 @@ fn depot_file_arguments(scope: &str, include_deleted: bool) -> Vec<String> {
     arguments
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DepotStateFile {
+    revision: String,
+    file_type: String,
+}
+
+pub fn compare_depot_states(
+    input: &ConnectionInput,
+    scope: &str,
+    base_change: &str,
+    target_change: Option<&str>,
+) -> Result<DepotStateComparison, AppError> {
+    validate_depot_state_scope(scope)?;
+    validate_numbered_change(base_change)?;
+    if let Some(change) = target_change {
+        validate_numbered_change(change)?;
+    }
+
+    let before = read_depot_state(input, scope, Some(base_change))?;
+    let after = read_depot_state(input, scope, target_change)?;
+    Ok(compare_depot_state_maps(
+        scope,
+        base_change,
+        target_change,
+        &before,
+        &after,
+    ))
+}
+
+fn validate_depot_state_scope(scope: &str) -> Result<(), AppError> {
+    let scope = scope.trim();
+    validate_depot_path(scope)?;
+    let is_folder_scope = scope == "//..." || scope.ends_with("/...");
+    let prefix = scope.strip_suffix("...").unwrap_or(scope);
+    if !is_folder_scope || prefix.contains(['*', '@', '#']) || scope.contains(['\r', '\n', '\0']) {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "State comparison requires an exact depot folder scope ending in /....",
+        ));
+    }
+    Ok(())
+}
+
+fn depot_state_arguments(scope: &str, change: Option<&str>) -> Vec<String> {
+    let filespec = match change {
+        Some(change) => format!("{}@{change}", scope.trim()),
+        None => format!("{}#head", scope.trim()),
+    };
+    vec![
+        "-ztag".to_owned(),
+        "-Mj".to_owned(),
+        "files".to_owned(),
+        "-e".to_owned(),
+        filespec,
+    ]
+}
+
+fn read_depot_state(
+    input: &ConnectionInput,
+    scope: &str,
+    change: Option<&str>,
+) -> Result<BTreeMap<String, DepotStateFile>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(depot_state_arguments(scope, change));
+    parse_depot_state(&run_json_allowing_empty_match(&path, &mut command)?)
+}
+
+fn parse_depot_state(
+    records: &[Map<String, Value>],
+) -> Result<BTreeMap<String, DepotStateFile>, AppError> {
+    let mut state = BTreeMap::new();
+    for record in records.iter().filter(|record| !is_message_record(record)) {
+        let depot_path = required_field(record, &["depotFile", "file"], "depot file")?;
+        let file = DepotStateFile {
+            revision: required_field(record, &["rev", "revision"], "depot revision")?,
+            file_type: required_field(record, &["type", "filetype"], "depot file type")?,
+        };
+        if state.insert(depot_path.clone(), file).is_some() {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "The server returned duplicate file identity while comparing states.",
+            )
+            .with_diagnostics(depot_path));
+        }
+    }
+    Ok(state)
+}
+
+fn compare_depot_state_maps(
+    scope: &str,
+    base_change: &str,
+    target_change: Option<&str>,
+    before: &BTreeMap<String, DepotStateFile>,
+    after: &BTreeMap<String, DepotStateFile>,
+) -> DepotStateComparison {
+    let mut comparison = DepotStateComparison {
+        scope: scope.trim().to_owned(),
+        base_change: base_change.to_owned(),
+        target_change: target_change.map(str::to_owned),
+        added: Vec::new(),
+        changed: Vec::new(),
+        deleted: Vec::new(),
+        type_changed: Vec::new(),
+    };
+
+    for (depot_path, before_file) in before {
+        let Some(after_file) = after.get(depot_path) else {
+            comparison
+                .deleted
+                .push(depot_state_difference(depot_path, Some(before_file), None));
+            continue;
+        };
+        if before_file.file_type != after_file.file_type {
+            comparison.type_changed.push(depot_state_difference(
+                depot_path,
+                Some(before_file),
+                Some(after_file),
+            ));
+        } else if before_file.revision != after_file.revision {
+            comparison.changed.push(depot_state_difference(
+                depot_path,
+                Some(before_file),
+                Some(after_file),
+            ));
+        }
+    }
+    for (depot_path, after_file) in after {
+        if !before.contains_key(depot_path) {
+            comparison
+                .added
+                .push(depot_state_difference(depot_path, None, Some(after_file)));
+        }
+    }
+    comparison
+}
+
+fn depot_state_difference(
+    depot_path: &str,
+    before: Option<&DepotStateFile>,
+    after: Option<&DepotStateFile>,
+) -> DepotStateDifference {
+    DepotStateDifference {
+        depot_path: depot_path.to_owned(),
+        before_revision: before.map(|file| file.revision.clone()),
+        after_revision: after.map(|file| file.revision.clone()),
+        before_file_type: before.map(|file| file.file_type.clone()),
+        after_file_type: after.map(|file| file.file_type.clone()),
+    }
+}
+
 pub fn list_pending_changes(input: &ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
     let client = required_client(input)?;
     let (path, mut command) = configured_command(input)?;
@@ -1112,6 +1264,146 @@ pub fn list_submitted_changes(
         enrich_submitted_streams(input, &mut changes)?;
     }
     Ok(changes)
+}
+
+const HISTORY_PAGE_LIMIT: u32 = 100;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryCursor {
+    kind: String,
+    scope: String,
+    boundary: String,
+    user: Option<String>,
+    client: Option<String>,
+    job: Option<String>,
+}
+
+fn encode_history_cursor(cursor: &HistoryCursor) -> Result<String, AppError> {
+    Ok(serde_json::to_vec(cursor)
+        .map_err(|error| {
+            AppError::new(ErrorKind::InvalidOutput, "Unable to create history cursor.")
+                .with_diagnostics(error.to_string())
+        })?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn decode_history_cursor(
+    cursor: Option<&str>,
+    expected: &HistoryCursor,
+) -> Result<Option<String>, AppError> {
+    let Some(cursor) = cursor.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if cursor.len() > 2048
+        || cursor.len() % 2 != 0
+        || !cursor.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The history cursor is invalid.",
+        ));
+    }
+    let bytes = (0..cursor.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&cursor[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| AppError::new(ErrorKind::InvalidOutput, "The history cursor is invalid."))?;
+    let decoded: HistoryCursor = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::new(ErrorKind::InvalidOutput, "The history cursor is invalid."))?;
+    if decoded.kind != expected.kind
+        || decoded.scope != expected.scope
+        || decoded.user != expected.user
+        || decoded.client != expected.client
+        || decoded.job != expected.job
+        || !decoded.boundary.chars().all(|value| value.is_ascii_digit())
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The history cursor does not match this request.",
+        ));
+    }
+    Ok(Some(decoded.boundary))
+}
+
+pub fn list_submitted_history_page(
+    request: SubmittedHistoryPageInput,
+) -> Result<HistoryPage<PendingChange>, AppError> {
+    let SubmittedHistoryPageInput {
+        connection: input,
+        scope,
+        limit,
+        cursor,
+        job,
+        user,
+        client,
+        include_streams,
+    } = request;
+    required_client(&input)?;
+    validate_depot_path(&scope)?;
+    if !(1..=HISTORY_PAGE_LIMIT).contains(&limit) {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "History page limit must be between 1 and 100.",
+        ));
+    }
+    let clean = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let expected = HistoryCursor {
+        kind: "submitted".to_owned(),
+        scope: scope.to_owned(),
+        boundary: String::new(),
+        user: clean(user.as_deref()),
+        client: clean(client.as_deref()),
+        job: clean(job.as_deref()),
+    };
+    let boundary = decode_history_cursor(cursor.as_deref(), &expected)?;
+    let query_scope = boundary
+        .as_ref()
+        .map_or_else(|| scope.to_owned(), |value| format!("{scope}@{value}"));
+    let (path, mut command) = configured_command(&input)?;
+    let mut arguments = submitted_change_arguments(
+        &query_scope,
+        &(limit + 1).to_string(),
+        user.as_deref(),
+        client.as_deref(),
+    )?;
+    if let Some(job) = expected.job.as_deref() {
+        arguments.splice(
+            9..9,
+            ["-j".to_owned(), validate_form_value(job, "job")?.to_owned()],
+        );
+    }
+    command.args(arguments);
+    let mut items = parse_pending_changes(&run_json(&path, &mut command)?)?;
+    if let Some(boundary) = boundary {
+        items.retain(|item| item.id != boundary);
+    }
+    let partial = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    if include_streams && !items.is_empty() {
+        enrich_submitted_streams(&input, &mut items)?;
+    }
+    let next_cursor = if partial {
+        encode_history_cursor(&HistoryCursor {
+            boundary: items.last().map(|item| item.id.clone()).unwrap_or_default(),
+            ..expected
+        })?
+        .into()
+    } else {
+        None
+    };
+    Ok(HistoryPage {
+        items,
+        next_cursor,
+        partial,
+    })
 }
 
 fn enrich_submitted_streams(
@@ -2359,11 +2651,8 @@ pub fn resolve_files(
     let (path, mut command) = configured_command(input)?;
     command.args(["-ztag", "-Mj", "resolve", resolve_mode_flag(mode)]);
     command.args(paths);
-    run_json(&path, &mut command)?;
-    Ok(match preview_resolve(input, paths) {
-        Ok(pending) => resolve_read_back(paths, &pending),
-        Err(error) => resolve_unknown_read_back(paths, &error.message),
-    })
+    let apply_error = run_json(&path, &mut command).err();
+    Ok(resolve_read_back(input, paths, apply_error.as_ref()))
 }
 
 pub fn preview_resolve(
@@ -2375,27 +2664,53 @@ pub fn preview_resolve(
     if paths.is_empty() {
         return Err(empty_file_selection());
     }
+    let mappings = map_workspace_paths(input, paths)?;
+    if mappings.partial
+        || mappings
+            .mappings
+            .iter()
+            .any(|mapping| mapping.state != WorkspaceMappingState::Mapped)
+    {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "The server did not return a complete workspace mapping for resolve preview.",
+        ));
+    }
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "resolve", "-n"]);
+    command.args(["-ztag", "-Mj", "resolve", "-n", "-N", "-o"]);
     command.args(paths);
     let records = run_json_allowing_empty_match(&path, &mut command)?;
-    Ok(parse_resolve_preview(&records))
+    parse_resolve_preview(&records, &mappings.mappings)
 }
 
-fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewItem> {
+fn parse_resolve_preview(
+    records: &[Map<String, Value>],
+    mappings: &[WorkspaceMapping],
+) -> Result<Vec<ResolvePreviewItem>, AppError> {
     records
         .iter()
         .filter(|record| !is_message_record(record))
-        .filter_map(|record| {
+        .map(|record| {
+            let mapping = resolve_record_mapping(record, mappings).ok_or_else(|| {
+                AppError::new(
+                    ErrorKind::InvalidOutput,
+                    "The server returned a resolve record without a matching workspace identity.",
+                )
+            })?;
             let conflict_kind = classify_resolve_conflict(record);
             let allowed_actions = resolve_allowed_actions(&conflict_kind);
-            Some(ResolvePreviewItem {
-                depot_path: field(record, &["depotFile", "clientFile", "path"])?,
+            Ok(ResolvePreviewItem {
+                depot_path: mapping.depot_path.clone().ok_or_else(|| {
+                    AppError::new(
+                        ErrorKind::InvalidOutput,
+                        "The server omitted the depot identity for a mapped resolve target.",
+                    )
+                })?,
                 action: field(record, &["how", "action", "status"])
                     .unwrap_or_else(|| "resolve".to_owned()),
-                detail: field(record, &["fromFile", "baseFile", "type"]),
-                client_path: field(record, &["clientFile"]),
-                local_path: field(record, &["path"]),
+                detail: field(record, &["fromFile", "baseFile", "resolveType", "type"]),
+                client_path: mapping.client_path.clone(),
+                local_path: mapping.local_path.clone(),
                 conflict_kind,
                 base_identifier: revision_identifier(
                     record,
@@ -2407,13 +2722,40 @@ fn parse_resolve_preview(records: &[Map<String, Value>]) -> Vec<ResolvePreviewIt
                     "fromFile",
                     &["endFromRev", "fromRev", "sourceRev"],
                 ),
-                workspace_identifier: field(record, &["path", "clientFile", "depotFile"])
-                    .unwrap_or_else(|| "workspace".to_owned()),
+                workspace_identifier: mapping
+                    .local_path
+                    .clone()
+                    .or_else(|| mapping.client_path.clone())
+                    .unwrap_or_else(|| mapping.query.clone()),
                 allowed_actions,
                 read_back: ResolveReadBackState::Pending,
             })
         })
         .collect()
+}
+
+fn resolve_record_mapping<'a>(
+    record: &Map<String, Value>,
+    mappings: &'a [WorkspaceMapping],
+) -> Option<&'a WorkspaceMapping> {
+    let target_identities = ["depotFile", "clientFile", "path", "toFile"]
+        .into_iter()
+        .filter_map(|name| field(record, &[name]))
+        .collect::<Vec<_>>();
+    mappings.iter().find(|mapping| {
+        [
+            mapping.depot_path.as_deref(),
+            mapping.client_path.as_deref(),
+            mapping.local_path.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|identity| {
+            target_identities
+                .iter()
+                .any(|target| identity.eq_ignore_ascii_case(target))
+        })
+    })
 }
 
 fn revision_identifier(
@@ -2431,6 +2773,31 @@ fn revision_identifier(
 }
 
 fn classify_resolve_conflict(record: &Map<String, Value>) -> ResolveConflictKind {
+    let resolve_type = field(record, &["resolveType"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let content_type = field(record, &["contentResolveType"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if resolve_type.contains("stream") {
+        return ResolveConflictKind::StreamSpec;
+    }
+    if resolve_type.contains("move") || resolve_type.contains("filename") {
+        return ResolveConflictKind::MoveName;
+    }
+    if resolve_type.contains("filetype")
+        || resolve_type.contains("attribute")
+        || resolve_type.contains("charset")
+    {
+        return ResolveConflictKind::FiletypeAttribute;
+    }
+    if resolve_type == "content" {
+        return if content_type.contains("text") {
+            ResolveConflictKind::Text
+        } else {
+            ResolveConflictKind::Binary
+        };
+    }
     let description = ["resolveType", "type", "how", "action", "status"]
         .into_iter()
         .filter_map(|name| field(record, &[name]))
@@ -2469,39 +2836,67 @@ fn resolve_allowed_actions(kind: &ResolveConflictKind) -> Vec<ResolveMode> {
     }
 }
 
-fn resolve_read_back(paths: &[String], pending: &[ResolvePreviewItem]) -> ResolveApplyResult {
+fn resolve_read_back(
+    input: &ConnectionInput,
+    paths: &[String],
+    apply_error: Option<&AppError>,
+) -> ResolveApplyResult {
     ResolveApplyResult {
         items: paths
             .iter()
-            .map(|path| {
-                let unresolved = pending.iter().any(|item| item.depot_path == *path);
-                ResolveApplyItem {
-                    depot_path: path.clone(),
-                    state: if unresolved {
-                        ResolveReadBackState::Pending
-                    } else {
-                        ResolveReadBackState::Resolved
-                    },
-                    reason: unresolved
-                        .then(|| "Server still reports a pending resolve.".to_owned()),
-                }
-            })
+            .map(|path| resolve_path_read_back(input, path, apply_error))
             .collect(),
     }
 }
 
-fn resolve_unknown_read_back(paths: &[String], reason: &str) -> ResolveApplyResult {
-    ResolveApplyResult {
-        items: paths
-            .iter()
-            .map(|path| ResolveApplyItem {
-                depot_path: path.clone(),
+fn resolve_path_read_back(
+    input: &ConnectionInput,
+    depot_path: &str,
+    apply_error: Option<&AppError>,
+) -> ResolveApplyItem {
+    match preview_resolve(input, &[depot_path.to_owned()]) {
+        Ok(pending) if !pending.is_empty() => ResolveApplyItem {
+            depot_path: depot_path.to_owned(),
+            state: ResolveReadBackState::Pending,
+            reason: Some(match apply_error {
+                Some(error) => format!(
+                    "Server still reports a pending resolve after apply failed: {}",
+                    error.message
+                ),
+                None => "Server still reports a pending resolve.".to_owned(),
+            }),
+        },
+        Ok(_) => match resolved_path_is_reported(input, depot_path) {
+            Ok(true) => ResolveApplyItem {
+                depot_path: depot_path.to_owned(),
+                state: ResolveReadBackState::Resolved,
+                reason: None,
+            },
+            Ok(false) => ResolveApplyItem {
+                depot_path: depot_path.to_owned(),
                 state: ResolveReadBackState::Unknown,
-                reason: Some(format!(
-                    "Resolve was applied, but read-back failed: {reason}"
-                )),
-            })
-            .collect(),
+                reason: Some(
+                    "The server reports neither a pending nor a completed resolve.".to_owned(),
+                ),
+            },
+            Err(error) => resolve_unknown_item(depot_path, &error.message),
+        },
+        Err(error) => resolve_unknown_item(depot_path, &error.message),
+    }
+}
+
+fn resolved_path_is_reported(input: &ConnectionInput, depot_path: &str) -> Result<bool, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "resolved", "-o", depot_path]);
+    let records = run_json_allowing_empty_match(&path, &mut command)?;
+    Ok(records.iter().any(|record| !is_message_record(record)))
+}
+
+fn resolve_unknown_item(depot_path: &str, reason: &str) -> ResolveApplyItem {
+    ResolveApplyItem {
+        depot_path: depot_path.to_owned(),
+        state: ResolveReadBackState::Unknown,
+        reason: Some(format!("Resolve read-back failed: {reason}")),
     }
 }
 
@@ -3034,7 +3429,76 @@ pub fn file_history(
     command.args([
         "-ztag", "-Mj", "filelog", "-i", "-l", "-t", "-m", &limit, depot_path,
     ]);
-    parse_file_history(&run_json_allowing_empty_match(&path, &mut command)?)
+    parse_file_history(
+        &run_json_allowing_empty_match(&path, &mut command)?,
+        depot_path,
+    )
+}
+
+pub fn file_history_page(
+    input: &ConnectionInput,
+    depot_path: &str,
+    limit: u32,
+    cursor: Option<&str>,
+) -> Result<HistoryPage<FileRevision>, AppError> {
+    required_client(input)?;
+    validate_depot_path(depot_path)?;
+    if !(1..=HISTORY_PAGE_LIMIT).contains(&limit) {
+        return Err(AppError::new(
+            ErrorKind::InvalidOutput,
+            "History page limit must be between 1 and 100.",
+        ));
+    }
+    let expected = HistoryCursor {
+        kind: "file".to_owned(),
+        scope: depot_path.to_owned(),
+        boundary: String::new(),
+        user: None,
+        client: None,
+        job: None,
+    };
+    let boundary = decode_history_cursor(cursor, &expected)?;
+    let spec = boundary.as_ref().map_or_else(
+        || depot_path.to_owned(),
+        |value| format!("{depot_path}#{value}"),
+    );
+    let (path, mut command) = configured_command(input)?;
+    command.args([
+        "-ztag",
+        "-Mj",
+        "filelog",
+        "-i",
+        "-l",
+        "-t",
+        "-m",
+        &(limit + 1).to_string(),
+        &spec,
+    ]);
+    let mut items = parse_file_history(
+        &run_json_allowing_empty_match(&path, &mut command)?,
+        depot_path,
+    )?;
+    if let Some(boundary) = boundary {
+        items.retain(|item| item.revision != boundary);
+    }
+    let partial = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    let next_cursor = if partial {
+        Some(encode_history_cursor(&HistoryCursor {
+            boundary: items
+                .last()
+                .map(|item| item.revision.clone())
+                .unwrap_or_default(),
+            ..expected
+        })?)
+    } else {
+        None
+    };
+    Ok(HistoryPage {
+        items,
+        next_cursor,
+        partial,
+    })
 }
 
 pub fn print_revision(
@@ -3472,7 +3936,7 @@ fn submit_outcome(
             .iter()
             .map(|step| SubmitStepResult {
                 step: (*step).to_owned(),
-                status: "completed".to_owned(),
+                status: "succeeded".to_owned(),
                 detail: None,
             })
             .collect(),
@@ -4286,6 +4750,431 @@ pub fn edit_change_description(
     Ok(())
 }
 
+pub fn preview_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    change_identity_preflight(input, change, owner, client, visibility)
+}
+
+pub fn update_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+    preview_token: &str,
+) -> Result<ChangeIdentityState, AppError> {
+    let preflight = change_identity_preflight(input, change, owner, client, visibility)?;
+    if preflight.preview_token != preview_token {
+        return Err(
+            AppError::new(ErrorKind::Stale, "Changelist preflight is stale.")
+                .with_hint("Run the server preflight again before applying the change."),
+        );
+    }
+    if !preflight.blockers.is_empty() {
+        return Err(change_identity_blocked_error(&preflight.blockers));
+    }
+    if preflight.current == preflight.target {
+        return Ok(preflight.current);
+    }
+
+    let (path, mut output_command) = configured_command(input)?;
+    output_command.args(["change", "-o"]);
+    if preflight.requires_admin {
+        output_command.arg("-f");
+    }
+    output_command.arg(change);
+    let output = output_command
+        .output()
+        .map_err(|error| launch_error(&path, error))?;
+    if !output.status.success() {
+        return Err(command_error(&output));
+    }
+    let spec = replace_change_identity_fields(
+        &String::from_utf8_lossy(&output.stdout),
+        &preflight.target,
+    )?;
+    let (_, mut input_command) = configured_command(input)?;
+    input_command.args(["change", "-i"]);
+    if preflight.requires_admin {
+        input_command.arg("-f");
+    }
+    input_command.args(["-U", change]);
+    let applied = run_output_with_stdin(&path, &mut input_command, spec.as_bytes())?;
+    if !applied.status.success() {
+        return Err(command_error(&applied));
+    }
+    log_stderr_warning(&applied, "p4 change identity update returned a warning.");
+
+    let read_back = read_change_identity(input, change, preflight.requires_admin)?;
+    if read_back != preflight.target {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "Server read-back did not match the requested changelist identity.",
+        )
+        .with_hint("Refresh the changelist before attempting another update."));
+    }
+    Ok(read_back)
+}
+
+fn change_identity_preflight(
+    input: &ConnectionInput,
+    change: &str,
+    owner: &str,
+    client: &str,
+    visibility: ChangeVisibility,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    required_client(input)?;
+    validate_numbered_change(change)?;
+    let owner = validate_form_value(owner.trim(), "changelist owner")?.to_owned();
+    let client = validate_form_value(client.trim(), "changelist workspace")?.to_owned();
+    let info = info(input)?;
+    let current = read_change_identity(input, change, false)?;
+    let target = ChangeIdentityState {
+        owner,
+        client,
+        visibility,
+    };
+    let mut blockers = Vec::new();
+
+    let capabilities = info.capabilities.as_ref();
+    for name in ["change:-U", "change:-t"] {
+        match capabilities
+            .and_then(|snapshot| snapshot.commands.get(name))
+            .map(|fact| &fact.state)
+        {
+            Some(CapabilityState::Supported) => {}
+            Some(CapabilityState::Unsupported) => {
+                push_blocker(&mut blockers, ChangeIdentityBlocker::Unsupported)
+            }
+            _ => push_blocker(&mut blockers, ChangeIdentityBlocker::CapabilityUnknown),
+        }
+    }
+
+    let topology = change_topology(&info, &mut blockers);
+    let (permission_level, permission_known) = change_permission_level(input);
+    if !permission_known {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::PermissionUnknown);
+    }
+
+    let has_opened_files = change_has_records(input, ["opened", "-c", change])?;
+    let has_jobs = change_has_records(input, ["fixes", "-c", change])?;
+    let has_shelved_files = change_has_shelf(input, change)?;
+    let changes_identity = current.owner != target.owner || current.client != target.client;
+    let requires_admin = changes_identity
+        && (has_opened_files
+            || has_shelved_files
+            || has_jobs
+            || !server_name_eq(
+                &current.owner,
+                input.user.trim(),
+                info.case_handling.as_deref(),
+            ));
+    if permission_known && !permission_allows_change(&permission_level, requires_admin) {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::PermissionDenied);
+    }
+
+    if !read_change_status(input, change, requires_admin)?.eq_ignore_ascii_case("pending") {
+        push_blocker(&mut blockers, ChangeIdentityBlocker::NotPending);
+    }
+    let target_client = read_target_client(input, &target.client)?;
+    if !server_name_eq(
+        &target_client.owner,
+        &target.owner,
+        info.case_handling.as_deref(),
+    ) {
+        push_blocker(
+            &mut blockers,
+            ChangeIdentityBlocker::TargetClientOwnerMismatch,
+        );
+    }
+    validate_change_topology(&info, target_client.server_id.as_deref(), &mut blockers);
+
+    let mut preflight = ChangeIdentityPreflight {
+        change: change.to_owned(),
+        current,
+        target,
+        has_opened_files,
+        has_shelved_files,
+        has_jobs,
+        requires_admin,
+        permission_level,
+        topology,
+        blockers,
+        preview_token: String::new(),
+    };
+    preflight.preview_token = change_identity_token(&preflight);
+    Ok(preflight)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetClientIdentity {
+    owner: String,
+    server_id: Option<String>,
+}
+
+fn read_target_client(
+    input: &ConnectionInput,
+    client: &str,
+) -> Result<TargetClientIdentity, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "client", "-o", client]);
+    let records = run_json(&path, &mut command)?;
+    let record = records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return the target workspace.",
+            )
+        })?;
+    Ok(TargetClientIdentity {
+        owner: required_field(record, &["Owner", "owner"], "workspace owner")?,
+        server_id: optional_field(record, &["ServerID", "serverID"]),
+    })
+}
+
+fn read_change_identity(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<ChangeIdentityState, AppError> {
+    let records = read_change_records(input, change, force)?;
+    let record = records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return the changelist form.",
+            )
+        })?;
+    let visibility = match optional_field(record, &["Type", "type"])
+        .unwrap_or_else(|| "public".to_owned())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "public" => ChangeVisibility::Public,
+        "restricted" => ChangeVisibility::Restricted,
+        _ => {
+            return Err(AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server returned an unknown changelist type.",
+            ));
+        }
+    };
+    Ok(ChangeIdentityState {
+        owner: required_field(record, &["User", "user"], "changelist owner")?,
+        client: required_field(record, &["Client", "client"], "changelist workspace")?,
+        visibility,
+    })
+}
+
+fn read_change_status(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<String, AppError> {
+    let records = read_change_records(input, change, force)?;
+    records
+        .iter()
+        .find(|record| !is_message_record(record))
+        .and_then(|record| optional_field(record, &["Status", "status"]))
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::InvalidOutput,
+                "Server did not return changelist status.",
+            )
+        })
+}
+
+fn read_change_records(
+    input: &ConnectionInput,
+    change: &str,
+    force: bool,
+) -> Result<Vec<Map<String, Value>>, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "change", "-o"]);
+    if force {
+        command.arg("-f");
+    }
+    command.arg(change);
+    run_json(&path, &mut command)
+}
+
+fn change_has_records<const N: usize>(
+    input: &ConnectionInput,
+    args: [&str; N],
+) -> Result<bool, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj"]).args(args);
+    Ok(run_json_allowing_empty_match(&path, &mut command)?
+        .iter()
+        .any(|record| !is_message_record(record)))
+}
+
+fn change_has_shelf(input: &ConnectionInput, change: &str) -> Result<bool, AppError> {
+    let records = read_change_records(input, change, false)?;
+    Ok(records.iter().any(|record| {
+        record
+            .keys()
+            .any(|key| key.to_ascii_lowercase().starts_with("shelvedaccess"))
+    }))
+}
+
+fn change_permission_level(input: &ConnectionInput) -> (String, bool) {
+    let Ok((path, mut command)) = configured_command(input) else {
+        return ("unknown".to_owned(), false);
+    };
+    command.args(["-ztag", "-Mj", "protects", "-m"]);
+    match run_json_probe(&path, &mut command) {
+        Ok(records) => records
+            .iter()
+            .find_map(|record| optional_field(record, &["permMax", "perm"]))
+            .map(|permission| (permission, true))
+            .unwrap_or_else(|| ("unknown".to_owned(), false)),
+        Err(_) => ("unknown".to_owned(), false),
+    }
+}
+
+fn permission_allows_change(permission: &str, requires_admin: bool) -> bool {
+    let permission = permission.to_ascii_lowercase();
+    if requires_admin {
+        matches!(permission.as_str(), "admin" | "super")
+    } else {
+        matches!(permission.as_str(), "open" | "write" | "admin" | "super")
+    }
+}
+
+fn change_topology(
+    info: &crate::models::P4Info,
+    blockers: &mut Vec<ChangeIdentityBlocker>,
+) -> String {
+    match info.server_services.as_deref().map(str::to_ascii_lowercase) {
+        Some(services) if services == "standard" => services,
+        Some(services) if services.contains("edge") || services.contains("commit") => {
+            if info.server_id.as_deref().is_none_or(str::is_empty) {
+                push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown);
+            }
+            services
+        }
+        Some(services) if !services.is_empty() => {
+            push_blocker(blockers, ChangeIdentityBlocker::Unsupported);
+            services
+        }
+        _ => {
+            push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown);
+            "unknown".to_owned()
+        }
+    }
+}
+
+fn validate_change_topology(
+    info: &crate::models::P4Info,
+    target_server_id: Option<&str>,
+    blockers: &mut Vec<ChangeIdentityBlocker>,
+) {
+    let services = info
+        .server_services
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if services.contains("edge") || services.contains("commit") {
+        match (info.server_id.as_deref(), target_server_id) {
+            (Some(current), Some(target)) if current == target => {}
+            (Some(_), Some(_)) => push_blocker(blockers, ChangeIdentityBlocker::TopologyMismatch),
+            _ => push_blocker(blockers, ChangeIdentityBlocker::TopologyUnknown),
+        }
+    }
+}
+
+fn server_name_eq(left: &str, right: &str, case_handling: Option<&str>) -> bool {
+    match case_handling.map(str::to_ascii_lowercase).as_deref() {
+        Some("insensitive" | "hybrid") => left.eq_ignore_ascii_case(right),
+        _ => left == right,
+    }
+}
+
+fn push_blocker(blockers: &mut Vec<ChangeIdentityBlocker>, blocker: ChangeIdentityBlocker) {
+    if !blockers.contains(&blocker) {
+        blockers.push(blocker);
+    }
+}
+
+fn change_identity_token(preflight: &ChangeIdentityPreflight) -> String {
+    let mut hasher = DefaultHasher::new();
+    preflight.change.hash(&mut hasher);
+    preflight.current.hash(&mut hasher);
+    preflight.target.hash(&mut hasher);
+    preflight.has_opened_files.hash(&mut hasher);
+    preflight.has_shelved_files.hash(&mut hasher);
+    preflight.has_jobs.hash(&mut hasher);
+    preflight.requires_admin.hash(&mut hasher);
+    preflight.permission_level.hash(&mut hasher);
+    preflight.topology.hash(&mut hasher);
+    preflight.blockers.hash(&mut hasher);
+    format!("change-identity-v1-{:016x}", hasher.finish())
+}
+
+fn replace_change_identity_fields(
+    spec: &str,
+    target: &ChangeIdentityState,
+) -> Result<String, AppError> {
+    let mut lines = spec.lines().map(str::to_owned).collect::<Vec<_>>();
+    replace_single_form_field(&mut lines, "User", &target.owner)?;
+    replace_single_form_field(&mut lines, "Client", &target.client)?;
+    replace_or_insert_change_type(
+        &mut lines,
+        match target.visibility {
+            ChangeVisibility::Public => "public",
+            ChangeVisibility::Restricted => "restricted",
+        },
+    );
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn replace_or_insert_change_type(lines: &mut Vec<String>, value: &str) {
+    if let Some(line) = lines.iter_mut().find(|line| line.starts_with("Type:")) {
+        *line = format!("Type:\t{value}");
+        return;
+    }
+    let index = lines
+        .iter()
+        .position(|line| line.starts_with("Description:"))
+        .unwrap_or(lines.len());
+    lines.splice(index..index, [format!("Type:\t{value}"), String::new()]);
+}
+
+fn change_identity_blocked_error(blockers: &[ChangeIdentityBlocker]) -> AppError {
+    let kind = if blockers.iter().any(|blocker| {
+        matches!(
+            blocker,
+            ChangeIdentityBlocker::PermissionDenied | ChangeIdentityBlocker::PermissionUnknown
+        )
+    }) {
+        ErrorKind::Permission
+    } else if blockers.iter().any(|blocker| {
+        matches!(
+            blocker,
+            ChangeIdentityBlocker::TopologyMismatch | ChangeIdentityBlocker::NotPending
+        )
+    }) {
+        ErrorKind::Conflict
+    } else {
+        ErrorKind::UnsupportedCapability
+    };
+    AppError::new(
+        kind,
+        "Changelist identity update is blocked by server preflight.",
+    )
+    .with_hint("Review the preflight blockers and refresh before retrying.")
+}
+
 pub fn delete_change(input: &ConnectionInput, change: &str) -> Result<(), AppError> {
     required_client(input)?;
     validate_numbered_change(change)?;
@@ -4769,14 +5658,13 @@ fn limit_change_detail(
     detail
 }
 
-fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision>, AppError> {
+fn parse_file_history(
+    records: &[Map<String, Value>],
+    depot_path: &str,
+) -> Result<Vec<FileRevision>, AppError> {
     let mut revisions = Vec::new();
     for record in records.iter().filter(|record| !is_message_record(record)) {
         if let Some(revision) = optional_field(record, &["rev", "revision"]) {
-            let integrations = ["how", "srev", "erev", "sfile"]
-                .iter()
-                .filter_map(|name| optional_field(record, &[*name]))
-                .collect();
             revisions.push(FileRevision {
                 revision,
                 change: optional_field(record, &["change"]).unwrap_or_default(),
@@ -4787,7 +5675,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
                 client: optional_field(record, &["client"]),
                 size: optional_field(record, &["fileSize", "size"]),
                 description: optional_field(record, &["desc", "description"]),
-                integrations,
+                integration_records: flat_integration_records(record, depot_path),
                 labels: ["label", "labelName"]
                     .iter()
                     .filter_map(|name| optional_field(record, &[*name]))
@@ -4803,10 +5691,6 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
         for index in indices {
             let revision = numbered_field(record, &["rev", "revision"], index)
                 .expect("revision index was collected from this record");
-            let integrations = ["how", "srev", "erev", "sfile", "file"]
-                .iter()
-                .flat_map(|name| numbered_fields(record, name, index))
-                .collect();
             revisions.push(FileRevision {
                 revision,
                 change: numbered_field(record, &["change"], index).unwrap_or_default(),
@@ -4817,7 +5701,7 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
                 client: numbered_field(record, &["client"], index),
                 size: numbered_field(record, &["fileSize", "size"], index),
                 description: numbered_field(record, &["desc", "description"], index),
-                integrations,
+                integration_records: indexed_integration_records(record, index, depot_path),
                 labels: ["label", "labelName"]
                     .iter()
                     .flat_map(|name| numbered_fields(record, name, index))
@@ -4826,6 +5710,100 @@ fn parse_file_history(records: &[Map<String, Value>]) -> Result<Vec<FileRevision
         }
     }
     Ok(revisions)
+}
+
+fn flat_integration_records(
+    record: &Map<String, Value>,
+    depot_path: &str,
+) -> Vec<FileIntegrationRecord> {
+    let integration = integration_record(
+        optional_field(record, &["how"]),
+        optional_field(record, &["sfile", "file"]),
+        optional_field(record, &["srev"]),
+        optional_field(record, &["erev"]),
+        depot_path,
+    );
+    integration.into_iter().collect()
+}
+
+fn indexed_integration_records(
+    record: &Map<String, Value>,
+    revision_index: usize,
+    depot_path: &str,
+) -> Vec<FileIntegrationRecord> {
+    let how = numbered_integration_fields(record, "how", revision_index);
+    let source_file = numbered_integration_fields(record, "sfile", revision_index);
+    let related_file = numbered_integration_fields(record, "file", revision_index);
+    let start = numbered_integration_fields(record, "srev", revision_index);
+    let end = numbered_integration_fields(record, "erev", revision_index);
+    let indices = how
+        .keys()
+        .chain(source_file.keys())
+        .chain(related_file.keys())
+        .chain(start.keys())
+        .chain(end.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+
+    indices
+        .into_iter()
+        .filter_map(|index| {
+            integration_record(
+                how.get(&index).cloned(),
+                source_file
+                    .get(&index)
+                    .cloned()
+                    .or_else(|| related_file.get(&index).cloned()),
+                start.get(&index).cloned(),
+                end.get(&index).cloned(),
+                depot_path,
+            )
+        })
+        .collect()
+}
+
+fn numbered_integration_fields(
+    record: &Map<String, Value>,
+    prefix: &str,
+    revision_index: usize,
+) -> BTreeMap<usize, String> {
+    let exact = format!("{prefix}{revision_index}");
+    let nested = format!("{exact},");
+    record
+        .iter()
+        .filter_map(|(key, value)| {
+            let integration_index = if key == &exact {
+                Some(0)
+            } else {
+                key.strip_prefix(&nested)
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+            }?;
+            Some((integration_index, value_text(value)?))
+        })
+        .collect()
+}
+
+fn integration_record(
+    how: Option<String>,
+    file_path: Option<String>,
+    start_revision: Option<String>,
+    end_revision: Option<String>,
+    depot_path: &str,
+) -> Option<FileIntegrationRecord> {
+    if how.is_none() && file_path.is_none() && start_revision.is_none() && end_revision.is_none() {
+        return None;
+    }
+    let complete =
+        how.is_some() && file_path.is_some() && start_revision.is_some() && end_revision.is_some();
+    let cyclic = file_path.as_deref() == Some(depot_path);
+    Some(FileIntegrationRecord {
+        how,
+        file_path,
+        start_revision,
+        end_revision,
+        complete,
+        cyclic,
+    })
 }
 
 fn parse_opened_files(records: &[Map<String, Value>]) -> Result<Vec<OpenedFile>, AppError> {
@@ -5172,6 +6150,17 @@ mod tests {
         }
     }
 
+    fn test_resolve_mapping(depot_path: &str, local_path: &str) -> WorkspaceMapping {
+        WorkspaceMapping {
+            query: depot_path.to_owned(),
+            state: WorkspaceMappingState::Mapped,
+            depot_path: Some(depot_path.to_owned()),
+            client_path: Some(depot_path.replacen("//Acme/main", "//client", 1)),
+            local_path: Some(local_path.to_owned()),
+            diagnostics: Vec::new(),
+        }
+    }
+
     #[test]
     fn derives_child_stream_path_in_the_parent_namespace() {
         assert_eq!(
@@ -5227,6 +6216,58 @@ mod tests {
             .unwrap();
         assert!(lines.contains(&"\tPaths: still description".to_owned()));
         assert_eq!(form_single_value(&lines, "Name").as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn change_identity_form_update_preserves_restricted_payload_fields() {
+        let source = "Change:\t42\n\nClient:\told-ws\n\nUser:\talex\n\nStatus:\tpending\n\nType:\trestricted\n\nDescription:\n\tsecret text\n\nJobs:\n\tjob-secret\n\nFiles:\n\t//secret/main/file.txt\n";
+        let target = ChangeIdentityState {
+            owner: "maria".to_owned(),
+            client: "maria-main".to_owned(),
+            visibility: ChangeVisibility::Public,
+        };
+        let updated = replace_change_identity_fields(source, &target).unwrap();
+        assert!(updated.contains("Client:\tmaria-main"));
+        assert!(updated.contains("User:\tmaria"));
+        assert!(updated.contains("Type:\tpublic"));
+        assert!(updated.contains("\tsecret text"));
+        assert!(updated.contains("\tjob-secret"));
+        assert!(updated.contains("\t//secret/main/file.txt"));
+    }
+
+    #[test]
+    fn change_identity_permissions_distinguish_owner_and_forced_transfer() {
+        assert!(permission_allows_change("open", false));
+        assert!(permission_allows_change("write", false));
+        assert!(!permission_allows_change("write", true));
+        assert!(permission_allows_change("admin", true));
+        assert!(permission_allows_change("super", true));
+        assert!(!permission_allows_change("unknown", false));
+    }
+
+    #[test]
+    fn change_identity_token_covers_server_preflight_state_without_payloads() {
+        let state = ChangeIdentityState {
+            owner: "alex".to_owned(),
+            client: "alex-main".to_owned(),
+            visibility: ChangeVisibility::Restricted,
+        };
+        let mut preflight = ChangeIdentityPreflight {
+            change: "42".to_owned(),
+            current: state.clone(),
+            target: state,
+            has_opened_files: false,
+            has_shelved_files: false,
+            has_jobs: false,
+            requires_admin: false,
+            permission_level: "write".to_owned(),
+            topology: "standard".to_owned(),
+            blockers: Vec::new(),
+            preview_token: String::new(),
+        };
+        let before = change_identity_token(&preflight);
+        preflight.has_jobs = true;
+        assert_ne!(before, change_identity_token(&preflight));
     }
 
     #[test]
@@ -5349,6 +6390,106 @@ mod tests {
             "Fix menu"
         );
         assert!(validate_description(Some("  ")).is_err());
+    }
+
+    #[test]
+    fn depot_state_queries_are_read_only_and_server_scoped() {
+        assert_eq!(
+            depot_state_arguments("//Acme/main/...", Some("42")),
+            ["-ztag", "-Mj", "files", "-e", "//Acme/main/...@42"]
+        );
+        assert_eq!(
+            depot_state_arguments("//Acme/main/...", None),
+            ["-ztag", "-Mj", "files", "-e", "//Acme/main/...#head"]
+        );
+        assert!(validate_depot_state_scope("//Acme/main/...").is_ok());
+        assert!(validate_depot_state_scope("//...").is_ok());
+        assert!(validate_depot_state_scope("//Acme/main/file.txt").is_err());
+        assert!(validate_depot_state_scope("//Acme/*/...").is_err());
+        assert!(validate_depot_state_scope("//Acme/main/...@42").is_err());
+    }
+
+    #[test]
+    fn compares_exact_server_file_identities_into_disjoint_sets() {
+        let before = parse_depot_state(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/changed.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/deleted.txt","rev":"4","type":"binary"}
+{"depotFile":"//Acme/main/type.txt","rev":"2","type":"text"}
+{"depotFile":"//Acme/main/unchanged.txt","rev":"7","type":"utf8"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let after = parse_depot_state(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/added.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/changed.txt","rev":"2","type":"text"}
+{"depotFile":"//Acme/main/type.txt","rev":"3","type":"binary+l"}
+{"depotFile":"//Acme/main/unchanged.txt","rev":"7","type":"utf8"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let comparison = compare_depot_state_maps("//Acme/main/...", "42", None, &before, &after);
+
+        assert_eq!(
+            comparison
+                .added
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/added.txt"]
+        );
+        assert_eq!(comparison.added[0].before_revision, None);
+        assert_eq!(comparison.added[0].after_revision.as_deref(), Some("1"));
+        assert_eq!(
+            comparison
+                .changed
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/changed.txt"]
+        );
+        assert_eq!(
+            comparison
+                .deleted
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/deleted.txt"]
+        );
+        assert_eq!(
+            comparison
+                .type_changed
+                .iter()
+                .map(|item| item.depot_path.as_str())
+                .collect::<Vec<_>>(),
+            ["//Acme/main/type.txt"]
+        );
+        assert_eq!(
+            comparison.type_changed[0].before_file_type.as_deref(),
+            Some("text")
+        );
+        assert_eq!(
+            comparison.type_changed[0].after_file_type.as_deref(),
+            Some("binary+l")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_server_identity_in_a_state_snapshot() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/a.txt","rev":"1","type":"text"}
+{"depotFile":"//Acme/main/a.txt","rev":"2","type":"text"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            parse_depot_state(&records).unwrap_err().kind,
+            ErrorKind::InvalidOutput
+        );
     }
 
     #[test]
@@ -6221,13 +7362,19 @@ mod tests {
 
     #[test]
     fn parses_resolve_preview_candidates_and_details() {
+        let mappings = [
+            test_resolve_mapping("//Acme/main/a.txt", "C:/ws/a.txt"),
+            test_resolve_mapping("//Acme/main/b.txt", "C:/ws/b.txt"),
+        ];
         let items = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.txt","how":"vs","fromFile":"//Acme/main/a.txt#8"}
 {"depotFile":"//Acme/main/b.txt","action":"copy"}"#,
             )
             .unwrap(),
-        );
+            &mappings,
+        )
+        .unwrap();
         assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
         assert_eq!(items[0].action, "vs");
         assert_eq!(items[0].detail.as_deref(), Some("//Acme/main/a.txt#8"));
@@ -6240,12 +7387,15 @@ mod tests {
 
     #[test]
     fn resolve_editor_token_rejects_changed_preview_or_workspace_content() {
+        let mappings = [test_resolve_mapping("//Acme/main/a.txt", "C:/ws/a.txt")];
         let mut preview = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.txt","path":"C:/ws/a.txt","type":"text","baseFile":"//Acme/main/a.txt#7","fromFile":"//Acme/main/a.txt#8"}"#,
             )
             .unwrap(),
+            &mappings,
         )
+        .unwrap()
         .remove(0);
         let original = resolve_editor_token(&preview, b"workspace");
 
@@ -6260,6 +7410,12 @@ mod tests {
 
     #[test]
     fn classifies_specialized_resolves_without_exposing_text_editor() {
+        let mappings = [
+            test_resolve_mapping("//Acme/main/a.bin", "C:/ws/a.bin"),
+            test_resolve_mapping("//Acme/main/name.txt", "C:/ws/name.txt"),
+            test_resolve_mapping("//Acme/main/type.txt", "C:/ws/type.txt"),
+            test_resolve_mapping("//Acme/main/stream", "C:/ws/stream"),
+        ];
         let items = parse_resolve_preview(
             &parse_json_lines(
                 r#"{"depotFile":"//Acme/main/a.bin","type":"binary"}
@@ -6268,7 +7424,9 @@ mod tests {
 {"depotFile":"//Acme/main/stream","resolveType":"stream spec"}"#,
             )
             .unwrap(),
-        );
+            &mappings,
+        )
+        .unwrap();
         assert_eq!(items[0].conflict_kind, ResolveConflictKind::Binary);
         assert_eq!(items[1].conflict_kind, ResolveConflictKind::MoveName);
         assert_eq!(
@@ -6284,22 +7442,47 @@ mod tests {
     }
 
     #[test]
-    fn post_mutation_readback_distinguishes_pending_resolved_and_unknown() {
-        let paths = vec![
-            "//Acme/main/a.txt".to_owned(),
-            "//Acme/main/b.txt".to_owned(),
-        ];
-        let pending = parse_resolve_preview(
-            &parse_json_lines(r#"{"depotFile":"//Acme/main/a.txt","type":"text"}"#).unwrap(),
+    fn maps_real_file_resolve_shape_to_server_depot_identity() {
+        let mappings = [test_resolve_mapping(
+            "//Acme/main/a.txt",
+            "C:\\workspace\\a.txt",
+        )];
+        let items = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"baseFile":"//Acme/main/a.txt","baseRev":"7","clientFile":"C:\\workspace\\a.txt","contentResolveType":"3waytext","endFromRev":"8","fromFile":"//Acme/main/a.txt","resolveFlag":"c","resolveType":"content","startFromRev":"7"}"#,
+            )
+            .unwrap(),
+            &mappings,
+        )
+        .unwrap();
+
+        assert_eq!(items[0].depot_path, "//Acme/main/a.txt");
+        assert_eq!(items[0].local_path.as_deref(), Some("C:\\workspace\\a.txt"));
+        assert_eq!(
+            items[0].base_identifier.as_deref(),
+            Some("//Acme/main/a.txt#7")
         );
-        let result = resolve_read_back(&paths, &pending);
-        assert_eq!(result.items[0].state, ResolveReadBackState::Pending);
-        assert_eq!(result.items[1].state, ResolveReadBackState::Resolved);
-        assert!(
-            resolve_unknown_read_back(&paths, "offline")
-                .items
-                .iter()
-                .all(|item| item.state == ResolveReadBackState::Unknown)
+        assert_eq!(
+            items[0].source_identifier.as_deref(),
+            Some("//Acme/main/a.txt#8")
+        );
+        assert_eq!(items[0].conflict_kind, ResolveConflictKind::Text);
+    }
+
+    #[test]
+    fn rejects_resolve_records_without_server_mapping_identity() {
+        let error = parse_resolve_preview(
+            &parse_json_lines(
+                r#"{"clientFile":"C:\\other\\a.txt","contentResolveType":"3waytext","resolveType":"content"}"#,
+            )
+            .unwrap(),
+            &[test_resolve_mapping("//Acme/main/a.txt", "C:\\workspace\\a.txt")],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidOutput);
+        assert_eq!(
+            resolve_unknown_item("//Acme/main/a.txt", "offline").state,
+            ResolveReadBackState::Unknown
         );
     }
 
@@ -6324,9 +7507,14 @@ mod tests {
 
     #[test]
     fn parses_filelog_revisions_and_keeps_integration_records() {
-        let revisions = parse_file_history(&parse_json_lines(
-            r#"{"rev":"4","change":"88","action":"edit","user":"alex","time":"1750000000","type":"text","client":"alex-main","fileSize":"128","label":"release_1","desc":"Fix parser","how":"merge","srev":"3","erev":"4","sfile":"//Acme/dev/a.txt"}"#,
-        ).unwrap()).unwrap();
+        let revisions = parse_file_history(
+            &parse_json_lines(
+                r#"{"rev":"4","change":"88","action":"edit","user":"alex","time":"1750000000","type":"text","client":"alex-main","fileSize":"128","label":"release_1","desc":"Fix parser","how":"merge","srev":"3","erev":"4","sfile":"//Acme/dev/a.txt"}"#,
+            )
+            .unwrap(),
+            "//Acme/main/a.txt",
+        )
+        .unwrap();
         assert_eq!(revisions.len(), 1);
         assert_eq!(revisions[0].revision, "4");
         assert_eq!(revisions[0].description.as_deref(), Some("Fix parser"));
@@ -6334,8 +7522,15 @@ mod tests {
         assert_eq!(revisions[0].size.as_deref(), Some("128"));
         assert_eq!(revisions[0].labels, ["release_1"]);
         assert_eq!(
-            revisions[0].integrations,
-            ["merge", "3", "4", "//Acme/dev/a.txt"]
+            revisions[0].integration_records,
+            [FileIntegrationRecord {
+                how: Some("merge".to_owned()),
+                file_path: Some("//Acme/dev/a.txt".to_owned()),
+                start_revision: Some("3".to_owned()),
+                end_revision: Some("4".to_owned()),
+                complete: true,
+                cyclic: false,
+            }]
         );
     }
 
@@ -6346,6 +7541,7 @@ mod tests {
                 r#"{"depotFile":"//Acme/main/a.txt","rev0":"5","rev1":"4","change0":"20","change1":"19","action0":"edit","action1":"add","user0":"alex","user1":"sam","desc0":"Latest","desc1":"Initial","how0,0":"branch into","file0,0":"//Acme/release/a.txt"}"#,
             )
             .unwrap(),
+            "//Acme/main/a.txt",
         )
         .unwrap();
 
@@ -6354,11 +7550,36 @@ mod tests {
         assert_eq!(revisions[0].change, "20");
         assert_eq!(revisions[0].description.as_deref(), Some("Latest"));
         assert_eq!(
-            revisions[0].integrations,
-            ["branch into", "//Acme/release/a.txt"]
+            revisions[0].integration_records,
+            [FileIntegrationRecord {
+                how: Some("branch into".to_owned()),
+                file_path: Some("//Acme/release/a.txt".to_owned()),
+                start_revision: None,
+                end_revision: None,
+                complete: false,
+                cyclic: false,
+            }]
         );
         assert_eq!(revisions[1].revision, "4");
         assert_eq!(revisions[1].action, "add");
+    }
+
+    #[test]
+    fn keeps_incomplete_and_cyclic_filelog_records_explicit() {
+        let revisions = parse_file_history(
+            &parse_json_lines(
+                r#"{"rev0":"4","how0,0":"move/add","sfile0,0":"//Acme/main/a.txt","how0,1":"merge","srev0,1":"1"}"#,
+            )
+            .unwrap(),
+            "//Acme/main/a.txt",
+        )
+        .unwrap();
+
+        assert_eq!(revisions[0].integration_records.len(), 2);
+        assert!(revisions[0].integration_records[0].cyclic);
+        assert!(!revisions[0].integration_records[0].complete);
+        assert_eq!(revisions[0].integration_records[1].file_path, None);
+        assert!(!revisions[0].integration_records[1].complete);
     }
 
     #[test]

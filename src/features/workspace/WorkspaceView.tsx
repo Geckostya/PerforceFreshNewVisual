@@ -414,7 +414,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
       const pending = readBack.items.filter((item) => item.state !== "resolved");
       await refreshLoadedDirectories();
       if (pending.length) {
-        setError({ kind: "partial_result", message: t("resolveStillPending"), hints: pending.map((item) => item.depotPath) });
+        setError({ kind: "partial_result", message: t("resolveStillPending"), hints: pending.map((item) => item.reason ? `${item.depotPath}: ${item.reason}` : item.depotPath) });
       } else {
         setNotice(t("resolveSucceeded"));
       }
@@ -426,7 +426,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     setBusy(true);
     setError(undefined);
     try {
-      const item = (await previewResolve(connection, [path])).find((candidate) => candidate.depotPath === path);
+      const item = (await previewResolve(connection, [path])).find((candidate) => candidate.depotPath === path && candidate.conflictKind === "text");
       if (!item || item.conflictKind !== "text" || !item.allowedActions.includes("editResult")) {
         setError({ kind: "command_failed", message: t("resolveEditorUnsupportedContent"), hints: [] });
         return;

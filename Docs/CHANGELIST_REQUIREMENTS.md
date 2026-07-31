@@ -29,7 +29,7 @@ All actions below are subject to server permission and race checks. Hide an acti
 
 | Object | Supported intent | Required behavior |
 |---|---|---|
-| Numbered changelist | create, edit description, delete empty | preserve unknown form fields; confirm deletion |
+| Numbered changelist | create, edit description, change owner/workspace/access, delete empty | preserve unknown form fields; confirm deletion; preflight ownership/access changes against server capability, effective permission, linked shelf/jobs/files, and target-workspace topology |
 | Opened files | move, shelve/update, revert, lock/unlock | apply to the exact selection in a batch |
 | Shelf | unshelve, delete, reshelve, submit | identify source and target changes; confirm destructive removal |
 | Local and shelf copies | compare or choose submit source | never merge the two states implicitly |
@@ -68,6 +68,8 @@ An ordinary `submit -c` cannot proceed while shelved files remain, while direct 
 All submit modes use the shared long-operation transport, and a same-workspace submit conflict is rejected before process launch. Submit terminal state is the typed `submitted`, `pending`, or `unknown` read-back result, never a substring parsed from diagnostics; `unknown` is not retryable and provides refresh/preflight recovery actions. Shelf-preserving modes keep their ordered compensation-safe command workflow inside that transport and return the same typed outcome plus completed steps and recovery IDs. All modes reread pending and submitted state after the command; refresh also reconciles opened and shelf state.
 
 Do not promise shelf submit from a task stream or the wrong distributed-server origin. Capability checks improve the explanation but never replace the server decision.
+
+Ownership and access changes use a distinct two-stage server contract. The preview returns only identity fields, booleans for linked opened files/shelves/jobs, effective permission, topology classification, blockers, and a snapshot token; it never returns descriptions, job IDs, or file paths. Editing the draft invalidates the token. Apply repeats the full preflight, preserves the complete server form in memory, uses the server's ownership-transfer form mode with force only when verified admin permission is required, and succeeds only after `User`, `Client`, and `Type` read back exactly. Unknown capability, permission, or topology blocks mutation rather than being guessed locally.
 
 ## Submitted history
 

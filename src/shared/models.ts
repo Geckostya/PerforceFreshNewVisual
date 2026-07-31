@@ -243,6 +243,22 @@ export interface DepotFile {
   change?: string;
   fileType?: string;
 }
+export interface DepotStateDifference {
+  depotPath: string;
+  beforeRevision?: string;
+  afterRevision?: string;
+  beforeFileType?: string;
+  afterFileType?: string;
+}
+export interface DepotStateComparison {
+  scope: string;
+  baseChange: string;
+  targetChange?: string;
+  added: DepotStateDifference[];
+  changed: DepotStateDifference[];
+  deleted: DepotStateDifference[];
+  typeChanged: DepotStateDifference[];
+}
 
 export interface TrustEntry { server: string; fingerprint: string; }
 
@@ -347,6 +363,44 @@ export interface PendingChange {
   client: string;
   time?: string;
   stream?: string;
+}
+
+export type ChangeVisibility = "public" | "restricted";
+
+export interface ChangeIdentityState {
+  owner: string;
+  client: string;
+  visibility: ChangeVisibility;
+}
+
+export type ChangeIdentityBlocker =
+  | "capability_unknown"
+  | "unsupported"
+  | "permission_unknown"
+  | "permission_denied"
+  | "topology_unknown"
+  | "topology_mismatch"
+  | "target_client_owner_mismatch"
+  | "not_pending";
+
+export interface ChangeIdentityPreflight {
+  change: string;
+  current: ChangeIdentityState;
+  target: ChangeIdentityState;
+  hasOpenedFiles: boolean;
+  hasShelvedFiles: boolean;
+  hasJobs: boolean;
+  requiresAdmin: boolean;
+  permissionLevel: string;
+  topology: string;
+  blockers: ChangeIdentityBlocker[];
+  previewToken: string;
+}
+
+export interface HistoryPage<T> {
+  items: T[];
+  nextCursor?: string;
+  partial: boolean;
 }
 
 export interface Job {
@@ -614,8 +668,17 @@ export interface FileRevision {
   client?: string;
   size?: string;
   description?: string;
-  integrations: string[];
+  integrationRecords: FileIntegrationRecord[];
   labels: string[];
+}
+
+export interface FileIntegrationRecord {
+  how?: string;
+  filePath?: string;
+  startRevision?: string;
+  endRevision?: string;
+  complete: boolean;
+  cyclic: boolean;
 }
 
 export interface SubmittedFile { depotPath: string; action: string; revision?: string; fileType?: string; }

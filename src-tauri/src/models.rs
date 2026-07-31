@@ -520,6 +520,32 @@ pub struct DepotFile {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DepotStateDifference {
+    pub depot_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_file_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_file_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DepotStateComparison {
+    pub scope: String,
+    pub base_change: String,
+    pub target_change: Option<String>,
+    pub added: Vec<DepotStateDifference>,
+    pub changed: Vec<DepotStateDifference>,
+    pub deleted: Vec<DepotStateDifference>,
+    pub type_changed: Vec<DepotStateDifference>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TrustEntry {
     pub server: String,
     pub fingerprint: String,
@@ -640,6 +666,72 @@ pub struct PendingChange {
     pub time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeVisibility {
+    Public,
+    Restricted,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityState {
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeIdentityBlocker {
+    CapabilityUnknown,
+    Unsupported,
+    PermissionUnknown,
+    PermissionDenied,
+    TopologyUnknown,
+    TopologyMismatch,
+    TargetClientOwnerMismatch,
+    NotPending,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityPreflight {
+    pub change: String,
+    pub current: ChangeIdentityState,
+    pub target: ChangeIdentityState,
+    pub has_opened_files: bool,
+    pub has_shelved_files: bool,
+    pub has_jobs: bool,
+    pub requires_admin: bool,
+    pub permission_level: String,
+    pub topology: String,
+    pub blockers: Vec<ChangeIdentityBlocker>,
+    pub preview_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage<T> {
+    pub items: Vec<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub partial: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmittedHistoryPageInput {
+    pub connection: ConnectionInput,
+    pub scope: String,
+    pub limit: u32,
+    pub cursor: Option<String>,
+    pub job: Option<String>,
+    pub user: Option<String>,
+    pub client: Option<String>,
+    pub include_streams: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -925,8 +1017,19 @@ pub struct FileRevision {
     pub client: Option<String>,
     pub size: Option<String>,
     pub description: Option<String>,
-    pub integrations: Vec<String>,
+    pub integration_records: Vec<FileIntegrationRecord>,
     pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileIntegrationRecord {
+    pub how: Option<String>,
+    pub file_path: Option<String>,
+    pub start_revision: Option<String>,
+    pub end_revision: Option<String>,
+    pub complete: bool,
+    pub cyclic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1224,6 +1327,27 @@ pub struct EditChangeInput {
     pub connection: ConnectionInput,
     pub change: String,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityPreflightInput {
+    pub connection: ConnectionInput,
+    pub change: String,
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeIdentityUpdateInput {
+    pub connection: ConnectionInput,
+    pub change: String,
+    pub owner: String,
+    pub client: String,
+    pub visibility: ChangeVisibility,
+    pub preview_token: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

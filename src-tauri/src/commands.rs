@@ -2,22 +2,25 @@ use crate::{
     diagnostics, locales,
     models::{
         AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
-        CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
-        CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
-        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
-        OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
-        OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
-        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
-        ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput,
-        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
+        ChangeIdentityPreflight, ChangeIdentityPreflightInput, ChangeIdentityState,
+        ChangeIdentityUpdateInput, CherryPickPreviewItem, CliLogEntry, ConnectionInput,
+        CreateChangeInput, CreateStreamInput, CreateStreamPreview, DeleteChangeInput,
+        DeleteShelfInput, DepotDirectory, DepotFile, DepotStateComparison, DepotSummary, DiffInput,
+        EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, HistoryPage,
+        Job, Label, LocaleCatalog, MoveInput, OpenedFile, OperationCompensationStatus,
+        OperationDiagnostic, OperationEvent, OperationEventKind, OperationItemResult,
+        OperationItemStatus, OperationReadBack, OperationReadBackStatus, P4Detection, P4Info,
+        PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
+        ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput, RevertInput,
+        RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
         ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
         StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
-        SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
-        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
-        TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
-        WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
-        WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        SubmitOutcome, SubmitPreflightSummary, SubmitReadBack, SubmitStepResult,
+        SubmitTerminalOutcome, SubmittedChangeDetail, SubmittedFilterOptions,
+        SubmittedHistoryPageInput, SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge,
+        TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceCreateInput,
+        WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch, WorkspaceSpec, WorkspaceSummary,
+        WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -529,6 +532,20 @@ pub async fn list_depot_files(
 }
 
 #[tauri::command]
+pub async fn compare_depot_states(
+    input: ConnectionInput,
+    scope: String,
+    base_change: String,
+    target_change: Option<String>,
+) -> Result<DepotStateComparison, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::compare_depot_states(&input, &scope, &base_change, target_change.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn list_pending_changes(input: ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_pending_changes(&input))
         .await
@@ -607,6 +624,15 @@ pub async fn list_submitted_changes(
     })
     .await
     .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn list_submitted_history_page(
+    request: SubmittedHistoryPageInput,
+) -> Result<HistoryPage<PendingChange>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::list_submitted_history_page(request))
+        .await
+        .map_err(task_error)?
 }
 
 #[tauri::command]
@@ -1482,6 +1508,37 @@ pub async fn start_sync(
     Ok(operation_id)
 }
 
+fn failed_submit_outcome(readback: &SubmitReadBack, error: &AppError) -> SubmitOutcome {
+    SubmitOutcome {
+        preserved_local_change: None,
+        terminal: readback.outcome,
+        affected_change: readback.affected_change.clone(),
+        recovery_actions: readback.recovery_actions.clone(),
+        steps: vec![SubmitStepResult {
+            step: "submit".to_owned(),
+            status: "failed".to_owned(),
+            detail: Some(error.message.clone()),
+        }],
+    }
+}
+
+fn submit_recovery_item_results(change: &str, outcome: &SubmitOutcome) -> Vec<OperationItemResult> {
+    matches!(outcome.terminal, SubmitTerminalOutcome::Unknown)
+        .then(|| OperationItemResult {
+            item_id: format!("submit-{change}"),
+            path: None,
+            status: OperationItemStatus::Skipped,
+            reason: Some(
+                "Submit outcome is unknown; refresh Changes and rerun preflight before a new confirmation."
+                    .to_owned(),
+            ),
+            compensation: OperationCompensationStatus::NotRequired,
+            recovery_action_id: Some("refresh_changes".to_owned()),
+        })
+        .into_iter()
+        .collect()
+}
+
 #[tauri::command]
 pub async fn start_submit(
     app: tauri::AppHandle,
@@ -1570,6 +1627,7 @@ pub async fn start_submit(
                 }
                 Err(error) => {
                     let readback = p4::submit_readback(&input.connection, &input.change);
+                    let outcome = failed_submit_outcome(&readback, &error);
                     let kind = match readback.outcome {
                         SubmitTerminalOutcome::Submitted => OperationEventKind::Partial,
                         SubmitTerminalOutcome::Pending if was_cancelled => {
@@ -1597,10 +1655,14 @@ pub async fn start_submit(
                             ],
                             message: Some(readback.message),
                         },
-                        None,
+                        Some(outcome),
                     )
                 }
             };
+            let item_results = submit_outcome
+                .as_ref()
+                .map(|outcome| submit_recovery_item_results(&input.change, outcome))
+                .unwrap_or_default();
             let _ = app_for_wait.emit(
                 "operation-event",
                 OperationEvent {
@@ -1610,6 +1672,7 @@ pub async fn start_submit(
                     message,
                     phase: Some("validate".to_owned()),
                     diagnostics,
+                    item_results,
                     read_back,
                     submit_outcome,
                     ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
@@ -1766,8 +1829,8 @@ pub async fn start_submit(
             recovery_actions: readback.recovery_actions.clone(),
             steps: vec![SubmitStepResult {
                 step: "submit_local".to_owned(),
-                status: if success { "completed" } else { "uncertain" }.to_owned(),
-                detail: None,
+                status: if success { "succeeded" } else { "failed" }.to_owned(),
+                detail: (!success).then(|| readback.message.clone()),
             }],
         };
         let message = if !success && !was_cancelled {
@@ -1790,6 +1853,7 @@ pub async fn start_submit(
             SubmitTerminalOutcome::Unknown => OperationEventKind::Unknown,
         };
         let diagnostics = bounded_operation_diagnostics(message.as_deref());
+        let item_results = submit_recovery_item_results(&change, &submit_outcome);
         let _ = app_for_wait.emit(
             "operation-event",
             OperationEvent {
@@ -1808,6 +1872,7 @@ pub async fn start_submit(
                 reconcile_items: None,
                 submit_outcome: Some(submit_outcome),
                 diagnostics,
+                item_results,
                 read_back: OperationReadBack {
                     status: match readback.outcome {
                         SubmitTerminalOutcome::Submitted | SubmitTerminalOutcome::Pending => {
@@ -2590,6 +2655,20 @@ pub async fn file_history(
 }
 
 #[tauri::command]
+pub async fn file_history_page(
+    input: ConnectionInput,
+    depot_path: String,
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<HistoryPage<FileRevision>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::file_history_page(&input, &depot_path, limit, cursor.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn print_revision(input: DiffInput, revision: String) -> Result<FileDiff, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::print_revision(&input.connection, &input.depot_path, &revision)
@@ -2831,6 +2910,41 @@ pub async fn edit_change(input: EditChangeInput) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub async fn preview_change_identity(
+    input: ChangeIdentityPreflightInput,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn update_change_identity(
+    input: ChangeIdentityUpdateInput,
+) -> Result<ChangeIdentityState, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::update_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+            &input.preview_token,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn delete_change(input: DeleteChangeInput) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::delete_change(&input.connection, &input.change)
@@ -2930,12 +3044,14 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
-        parse_sync_output_record, submitted_change_from_record, sync_operation_scope,
-        sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
-        workspace_stream_view_paths,
+        bounded_operation_diagnostics, confirmed_integration_paths, failed_submit_outcome,
+        operation_event, parse_sync_output_record, submit_recovery_item_results,
+        submitted_change_from_record, sync_operation_scope, sync_operation_succeeded,
+        unexpected_integration_paths, validate_reveal_path, workspace_stream_view_paths,
     };
-    use crate::models::{OpenedFile, OperationEventKind};
+    use crate::models::{
+        AppError, ErrorKind, OpenedFile, OperationEventKind, SubmitReadBack, SubmitTerminalOutcome,
+    };
     use std::{collections::BTreeSet, fs};
 
     #[test]
@@ -3036,6 +3152,29 @@ mod tests {
         assert_eq!(value["startedAtMs"], 42);
         assert_eq!(value["readBack"]["status"], "not_required");
         assert_eq!(value["retryable"], false);
+    }
+
+    #[test]
+    fn unknown_submit_failure_keeps_recovery_and_never_exposes_retry() {
+        let readback = SubmitReadBack {
+            outcome: SubmitTerminalOutcome::Unknown,
+            affected_change: None,
+            message: "unknown".to_owned(),
+            recovery_actions: vec!["refresh and rerun preflight".to_owned()],
+        };
+        let outcome = failed_submit_outcome(
+            &readback,
+            &AppError::new(ErrorKind::Offline, "connection lost"),
+        );
+        let items = submit_recovery_item_results("42", &outcome);
+
+        assert_eq!(outcome.terminal, SubmitTerminalOutcome::Unknown);
+        assert_eq!(outcome.recovery_actions, ["refresh and rerun preflight"]);
+        assert_eq!(outcome.steps[0].status, "failed");
+        assert_eq!(
+            items[0].recovery_action_id.as_deref(),
+            Some("refresh_changes")
+        );
     }
 
     #[test]

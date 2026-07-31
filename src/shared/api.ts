@@ -8,6 +8,7 @@ import type {
   AnnotationLine,
   DiffMode,
   FileRevision,
+  HistoryPage,
   LocaleCatalog,
   OpenedFile,
   P4Detection,
@@ -23,6 +24,9 @@ import type {
   SubmittedChangeDetail,
   SubmittedFilterOptions,
   ChangeExportResult,
+  ChangeIdentityPreflight,
+  ChangeIdentityState,
+  ChangeVisibility,
   CherryPickPreviewItem,
   UndoPreviewItem,
   UnshelvePreview,
@@ -32,6 +36,7 @@ import type {
   WorkspaceUpdateInput,
   DepotDirectory,
   DepotFile,
+  DepotStateComparison,
   DepotSummary,
   TrustEntry,
   TrustChallenge,
@@ -213,6 +218,10 @@ export async function listDepotFiles(input: ConnectionInput, scope: string, incl
   return invoke<DepotFile[]>("list_depot_files", { input, scope, includeDeleted });
 }
 
+export async function compareDepotStates(input: ConnectionInput, scope: string, baseChange: string, targetChange?: string): Promise<DepotStateComparison> {
+  return invoke<DepotStateComparison>("compare_depot_states", { input, scope, baseChange, targetChange });
+}
+
 export async function listPendingChanges(input: ConnectionInput): Promise<PendingChange[]> {
   return invoke<PendingChange[]>("list_pending_changes", { input });
 }
@@ -247,6 +256,10 @@ export async function listSubmittedChanges(input: ConnectionInput, scope: string
     client: client?.trim() || undefined,
     includeStreams,
   });
+}
+
+export async function listSubmittedHistoryPage(input: ConnectionInput, scope: string, limit = 100, cursor?: string, job?: string, user?: string, client?: string, includeStreams = false): Promise<HistoryPage<PendingChange>> {
+  return invoke<HistoryPage<PendingChange>>("list_submitted_history_page", { request: { connection: input, scope, limit, cursor, job: job?.trim() || undefined, user: user?.trim() || undefined, client: client?.trim() || undefined, includeStreams } });
 }
 
 export async function listSubmittedFilterOptions(input: ConnectionInput): Promise<SubmittedFilterOptions> {
@@ -394,6 +407,10 @@ export async function fileHistory(connection: ConnectionInput, depotPath: string
   return invoke<FileRevision[]>("file_history", { input: connection, depotPath, limit });
 }
 
+export async function fileHistoryPage(connection: ConnectionInput, depotPath: string, limit = 100, cursor?: string): Promise<HistoryPage<FileRevision>> {
+  return invoke<HistoryPage<FileRevision>>("file_history_page", { input: connection, depotPath, limit, cursor });
+}
+
 export async function printRevision(connection: ConnectionInput, depotPath: string, revision: string): Promise<FileDiff> {
   return invoke<FileDiff>("print_revision", { input: { connection, depotPath }, revision });
 }
@@ -531,6 +548,31 @@ export async function editChange(
   description: string,
 ): Promise<void> {
   return invoke("edit_change", { input: { connection, change, description } });
+}
+
+export async function previewChangeIdentity(
+  connection: ConnectionInput,
+  change: string,
+  owner: string,
+  client: string,
+  visibility: ChangeVisibility,
+): Promise<ChangeIdentityPreflight> {
+  return invoke<ChangeIdentityPreflight>("preview_change_identity", {
+    input: { connection, change, owner, client, visibility },
+  });
+}
+
+export async function updateChangeIdentity(
+  connection: ConnectionInput,
+  change: string,
+  owner: string,
+  client: string,
+  visibility: ChangeVisibility,
+  previewToken: string,
+): Promise<ChangeIdentityState> {
+  return invoke<ChangeIdentityState>("update_change_identity", {
+    input: { connection, change, owner, client, visibility, previewToken },
+  });
 }
 
 export async function deleteChange(connection: ConnectionInput, change: string): Promise<void> {
