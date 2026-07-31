@@ -153,8 +153,15 @@ fn write_snapshot_file(path: &Path, contents: &[u8]) -> Result<(), AppError> {
         .ok_or_else(|| AppError::new(ErrorKind::Settings, "Некорректный путь к UI snapshot."))?;
     fs::create_dir_all(parent).map_err(snapshot_error)?;
     let temporary = temporary_path(path);
-    fs::write(&temporary, contents).map_err(snapshot_error)?;
-    settings::replace_file(&temporary, path).map_err(snapshot_error)
+    if let Err(error) = fs::write(&temporary, contents) {
+        let _ = fs::remove_file(&temporary);
+        return Err(snapshot_error(error));
+    }
+    if let Err(error) = settings::replace_file(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(snapshot_error(error));
+    }
+    Ok(())
 }
 
 fn temporary_path(path: &Path) -> PathBuf {

@@ -93,15 +93,32 @@ impl WorkspaceRootRegistry {
     }
 }
 
-fn validate_reveal_path(path: &str) -> Result<&str, AppError> {
+fn validate_reveal_path(path: &str) -> Result<PathBuf, AppError> {
     let path = path.trim();
-    if path.is_empty() || path.contains(['\r', '\n']) {
+    if path.is_empty() || path.contains(['\r', '\n', '\0']) {
         return Err(AppError::new(
             ErrorKind::CommandFailed,
             "Не указан корректный локальный путь.",
         ));
     }
-    Ok(path)
+    let path = PathBuf::from(path);
+    let metadata = fs::metadata(&path).map_err(|error| {
+        AppError::new(ErrorKind::CommandFailed, "Локальный путь не существует.")
+            .with_diagnostics(error.to_string())
+    })?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Локальный путь не является файлом или папкой.",
+        ));
+    }
+    fs::canonicalize(path).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не удалось проверить локальный путь.",
+        )
+        .with_diagnostics(error.to_string())
+    })
 }
 
 #[tauri::command]
@@ -109,8 +126,19 @@ pub fn reveal_path(path: String) -> Result<(), AppError> {
     let path = validate_reveal_path(&path)?;
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
+        let explorer = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .map(|directory| directory.join("explorer.exe"))
+            .filter(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                AppError::new(ErrorKind::CommandFailed, "Не найден Windows Explorer.")
+            })?;
+        std::process::Command::new(explorer)
+            .arg({
+                let mut select_argument = std::ffi::OsString::from("/select,");
+                select_argument.push(path);
+                select_argument
+            })
             .spawn()
             .map_err(|error| {
                 AppError::new(
@@ -3089,7 +3117,11 @@ mod tests {
         OperationItemStatus, SubmitMode, SubmitOutcome, SubmitReadBack, SubmitStepResult,
         SubmitTerminalOutcome,
     };
-    use std::{collections::BTreeSet, fs};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -3279,10 +3311,25 @@ mod tests {
     fn reveal_path_rejects_empty_and_multiline_values() {
         assert!(validate_reveal_path("  ").is_err());
         assert!(validate_reveal_path("C:\\work\\file.txt\nexplorer.exe").is_err());
+        assert!(validate_reveal_path("C:\\work\\missing.txt").is_err());
+    }
+
+    #[test]
+    fn reveal_path_requires_an_existing_file_or_directory() {
+        let directory = std::env::temp_dir().join(format!(
+            "p4fnv-reveal-path-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
         assert_eq!(
-            validate_reveal_path(" C:\\work\\file.txt ").unwrap(),
-            "C:\\work\\file.txt"
+            validate_reveal_path(directory.to_str().unwrap()).unwrap(),
+            fs::canonicalize(&directory).unwrap()
         );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

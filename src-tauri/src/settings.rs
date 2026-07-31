@@ -102,10 +102,15 @@ fn save_unlocked(path: &Path, settings: &AppSettings) -> Result<(), AppError> {
     let temporary = temporary_path(path);
     let bytes = serde_json::to_vec_pretty(settings)
         .map_err(|error| settings_error("Не удалось подготовить настройки.", error))?;
-    fs::write(&temporary, bytes)
-        .map_err(|error| settings_error("Не удалось записать настройки.", error))?;
-    replace_file(&temporary, path)
-        .map_err(|error| settings_error("Не удалось сохранить настройки.", error))
+    if let Err(error) = fs::write(&temporary, bytes) {
+        let _ = fs::remove_file(&temporary);
+        return Err(settings_error("Не удалось записать настройки.", error));
+    }
+    if let Err(error) = replace_file(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(settings_error("Не удалось сохранить настройки.", error));
+    }
+    Ok(())
 }
 
 fn remember(settings: &mut AppSettings, input: ConnectionInput) {
