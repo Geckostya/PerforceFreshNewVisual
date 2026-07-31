@@ -92,19 +92,56 @@ export interface CapabilityFact {
   evidence: CapabilityEvidence;
 }
 
+export type CapabilityCommand = "login2" | "topology" | "trust" | "integrate" | "copy" | "istat" | "streamlog" | "reshelve" | "change" | "protects";
+export type CapabilityFlag =
+  | "login2State"
+  | "topologyFields"
+  | "trustInstall"
+  | "integrateStream"
+  | "integrateParent"
+  | "integrateForceBranch"
+  | "integrateReverse"
+  | "copyStream"
+  | "copyForceBranch"
+  | "istatForceBranch"
+  | "istatReverse"
+  | "streamlogLimit"
+  | "changeUser"
+  | "changeType";
+export type CapabilityName =
+  | "cliVersion"
+  | "serverVersion"
+  | "serverServices"
+  | "topology"
+  | "depots"
+  | "unicodeServer"
+  | "streamWorkspace"
+  | "caseSensitiveMapping"
+  | "taskStreamSubmit"
+  | "promotedShelves"
+  | "globalLocks";
+
+export interface TopologyService {
+  serverId?: string;
+  serverAddress?: string;
+  services?: string;
+  serverType?: string;
+}
+
 export interface CapabilitySnapshot {
   cliVersion?: string;
   serverVersion?: string;
   serverServices?: string;
   serverId?: string;
-  topology?: string;
+  topology: TopologyService[];
   unicode?: string;
   caseHandling?: string;
   security?: string;
   workspaceKind: "stream" | "classic" | "unknown";
   depotModes: string[];
-  commands: Record<string, CapabilityFact>;
-  facts: Record<string, CapabilityFact>;
+  commands: Record<CapabilityCommand, CapabilityFact>;
+  flags: Record<CapabilityFlag, CapabilityFact>;
+  facts: Record<CapabilityName, CapabilityFact>;
 }
 
 export interface LoginStatus {
@@ -147,8 +184,15 @@ export interface StreamSummary {
 }
 
 export type StreamIntegrationDirection = "mergeDown" | "copyUp";
-export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; time?: string; description?: string; }
-export interface StreamIntegrationHint { direction: StreamIntegrationDirection; state: "supported" | "unsupported" | "unknown"; message: string; }
+export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; client?: string; time?: string; description?: string; }
+export interface StreamIntegrationHint {
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  state: "supported" | "unsupported" | "unknown";
+  partial: boolean;
+  message: string;
+}
 export interface StreamDetail {
   stream: StreamSummary;
   parentView: string;
@@ -156,8 +200,12 @@ export interface StreamDetail {
   paths: string[];
   remapped: string[];
   ignored: string[];
+  specTruncated: boolean;
   history: StreamHistoryEntry[];
+  historyTruncated: boolean;
+  historyPartial: boolean;
   hints: StreamIntegrationHint[];
+  partial: boolean;
   warnings: string[];
 }
 export interface StreamIntegrationInput {

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::models::{
-    AnnotationLine, AppError, AuthStage, CapabilityState, ChangeExportResult,
+    AnnotationLine, AppError, AuthStage, CapabilityFlag, CapabilityState, ChangeExportResult,
     ChangeIdentityBlocker, ChangeIdentityPreflight, ChangeIdentityState, ChangeVisibility,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
     CreateStreamType, DepotDirectory, DepotFile, DepotStateComparison, DepotStateDifference,
@@ -499,26 +499,147 @@ fn quote_stream_view_path(path: &str) -> String {
     }
 }
 
+const MAX_STREAM_SPEC_ITEMS: usize = 200;
+const MAX_STREAM_OPTION_ITEMS: usize = 32;
+const MAX_STREAM_HISTORY_ITEMS: usize = 20;
+const MAX_STREAM_HISTORY_QUERY_ITEMS: usize = MAX_STREAM_HISTORY_ITEMS + 1;
+const MAX_STREAM_DETAIL_WARNINGS: usize = 20;
+const MAX_STREAM_DETAIL_TEXT_CHARS: usize = 2_048;
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedStreamSpec {
+    parent_view: String,
+    options: Vec<String>,
+    paths: Vec<String>,
+    remapped: Vec<String>,
+    ignored: Vec<String>,
+    truncated: bool,
+}
+
+fn bounded_stream_text(value: &str) -> String {
+    value.chars().take(MAX_STREAM_DETAIL_TEXT_CHARS).collect()
+}
+
 fn form_single_value(lines: &[String], field: &str) -> Option<String> {
     let prefix = format!("{field}:");
     lines
         .iter()
         .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
         .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+        .map(bounded_stream_text)
 }
 
-fn form_multiline_values(lines: &[String], field: &str) -> Vec<String> {
+fn form_multiline_values(lines: &[String], field: &str) -> (Vec<String>, bool) {
     let prefix = format!("{field}:");
     let Some(start) = lines.iter().position(|line| line.starts_with(&prefix)) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
-    lines[start + 1..]
+    let mut values = lines[start + 1..]
         .iter()
         .take_while(|line| line.starts_with('\t') || line.starts_with(' '))
-        .map(|line| line.trim().to_owned())
+        .map(|line| bounded_stream_text(line.trim()))
         .filter(|line| !line.is_empty())
-        .collect()
+        .take(MAX_STREAM_SPEC_ITEMS + 1)
+        .collect::<Vec<_>>();
+    let truncated = values.len() > MAX_STREAM_SPEC_ITEMS;
+    values.truncate(MAX_STREAM_SPEC_ITEMS);
+    (values, truncated)
+}
+
+fn parse_stream_spec(lines: &[String]) -> ParsedStreamSpec {
+    let mut options = form_single_value(lines, "Options")
+        .map(|value| {
+            value
+                .split_whitespace()
+                .take(MAX_STREAM_OPTION_ITEMS + 1)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let options_truncated = options.len() > MAX_STREAM_OPTION_ITEMS;
+    options.truncate(MAX_STREAM_OPTION_ITEMS);
+    let (paths, paths_truncated) = form_multiline_values(lines, "Paths");
+    let (remapped, remapped_truncated) = form_multiline_values(lines, "Remapped");
+    let (ignored, ignored_truncated) = form_multiline_values(lines, "Ignored");
+    ParsedStreamSpec {
+        parent_view: form_single_value(lines, "ParentView").unwrap_or_else(|| "inherit".to_owned()),
+        options,
+        paths,
+        remapped,
+        ignored,
+        truncated: options_truncated || paths_truncated || remapped_truncated || ignored_truncated,
+    }
+}
+
+fn stream_history_entry(
+    record: &Map<String, Value>,
+    index: Option<usize>,
+) -> Option<StreamHistoryEntry> {
+    let value = |names: &[&str]| {
+        index
+            .and_then(|index| numbered_field(record, names, index))
+            .or_else(|| index.is_none().then(|| field(record, names)).flatten())
+            .map(|value| bounded_stream_text(&value))
+    };
+    Some(StreamHistoryEntry {
+        revision: value(&["rev", "Rev"])?,
+        action: value(&["action", "Action"])?,
+        change: value(&["change", "Change"]),
+        user: value(&["user", "User"]),
+        client: value(&["client", "Client"]),
+        time: value(&["time", "date", "Date"]),
+        description: value(&["desc", "description", "Description"]),
+    })
+}
+
+fn parse_stream_history(records: &[Map<String, Value>]) -> (Vec<StreamHistoryEntry>, bool, bool) {
+    let mut entries = Vec::new();
+    let mut malformed = false;
+    for record in records.iter().filter(|record| !is_message_record(record)) {
+        let indices = indexed_field_indices(record, "rev");
+        if indices.is_empty() {
+            if let Some(entry) = stream_history_entry(record, None) {
+                entries.push(entry);
+            } else {
+                malformed = true;
+            }
+        } else {
+            for index in indices {
+                if let Some(entry) = stream_history_entry(record, Some(index)) {
+                    entries.push(entry);
+                } else {
+                    malformed = true;
+                }
+            }
+        }
+    }
+    let truncated = entries.len() > MAX_STREAM_HISTORY_ITEMS;
+    entries.truncate(MAX_STREAM_HISTORY_ITEMS);
+    (entries, truncated, malformed)
+}
+
+fn stream_istat_arguments(direction: StreamIntegrationDirection, stream_path: &str) -> Vec<String> {
+    let mut arguments = vec![
+        "-ztag".to_owned(),
+        "-Mj".to_owned(),
+        "istat".to_owned(),
+        "-Af".to_owned(),
+    ];
+    if direction == StreamIntegrationDirection::MergeDown {
+        arguments.push("-r".to_owned());
+    }
+    arguments.push(stream_path.to_owned());
+    arguments
+}
+
+fn append_stream_warning(warnings: &mut Vec<String>, warning: impl AsRef<str>) {
+    if warnings.len() >= MAX_STREAM_DETAIL_WARNINGS {
+        return;
+    }
+    let warning = bounded_stream_text(warning.as_ref().trim());
+    if !warning.is_empty() && !warnings.contains(&warning) {
+        warnings.push(warning);
+    }
 }
 
 pub fn inspect_stream(
@@ -542,82 +663,102 @@ pub fn inspect_stream(
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    let spec = parse_stream_spec(&lines);
 
     let mut warnings = Vec::new();
     let (path, mut command) = configured_command(input)?;
-    command.args(["-ztag", "-Mj", "streamlog", "-m", "20", &stream.path]);
-    let history = match run_json_collecting_diagnostics(&path, &mut command) {
-        Ok((records, diagnostics, _)) => {
-            warnings.extend(diagnostics);
-            records
-                .into_iter()
-                .filter(|record| !is_message_record(record))
-                .map(|record| StreamHistoryEntry {
-                    revision: field(&record, &["rev", "Rev"]).unwrap_or_else(|| "?".to_owned()),
-                    action: field(&record, &["action", "Action"])
-                        .unwrap_or_else(|| "edit".to_owned()),
-                    change: field(&record, &["change", "Change"]),
-                    user: field(&record, &["user", "User"]),
-                    time: field(&record, &["time", "date", "Date"]),
-                    description: field(&record, &["desc", "Description"]),
-                })
-                .collect()
-        }
-        Err(error) => {
-            warnings.push(error.message);
-            Vec::new()
-        }
-    };
+    let history_limit = MAX_STREAM_HISTORY_QUERY_ITEMS.to_string();
+    command.args([
+        "-ztag",
+        "-Mj",
+        "streamlog",
+        "-L",
+        "-t",
+        "-m",
+        &history_limit,
+        &stream.path,
+    ]);
+    let (history, history_truncated, history_partial) =
+        match run_json_collecting_diagnostics(&path, &mut command) {
+            Ok((records, diagnostics, command_partial)) => {
+                for diagnostic in diagnostics {
+                    append_stream_warning(&mut warnings, diagnostic);
+                }
+                let (history, truncated, malformed) = parse_stream_history(&records);
+                (history, truncated, command_partial || malformed)
+            }
+            Err(error) => {
+                append_stream_warning(&mut warnings, &error.message);
+                (Vec::new(), false, true)
+            }
+        };
 
     let mut hints = Vec::new();
-    for (direction, reverse) in [
-        (StreamIntegrationDirection::CopyUp, false),
-        (StreamIntegrationDirection::MergeDown, true),
-    ] {
-        let (path, mut command) = configured_command(input)?;
-        command.args(["-ztag", "-Mj", "istat", "-Af"]);
-        if reverse {
-            command.arg("-r");
-        }
-        command.arg(&stream.path);
-        match run_json_collecting_diagnostics(&path, &mut command) {
-            Ok((records, diagnostics, partial)) => {
-                let message = records
-                    .iter()
-                    .find_map(|record| field(record, &["data", "fmt"]))
-                    .or_else(|| diagnostics.first().cloned())
-                    .unwrap_or_else(|| "Server returned no integration status details.".to_owned());
-                hints.push(StreamIntegrationHint {
+    if let Some(parent) = stream.parent.as_deref() {
+        for direction in [
+            StreamIntegrationDirection::CopyUp,
+            StreamIntegrationDirection::MergeDown,
+        ] {
+            let (source_stream, target_stream) = match direction {
+                StreamIntegrationDirection::CopyUp => (stream.path.clone(), parent.to_owned()),
+                StreamIntegrationDirection::MergeDown => (parent.to_owned(), stream.path.clone()),
+            };
+            let (path, mut command) = configured_command(input)?;
+            command.args(stream_istat_arguments(direction, &stream.path));
+            match run_json_collecting_diagnostics(&path, &mut command) {
+                Ok((records, diagnostics, partial)) => {
+                    let message = records
+                        .iter()
+                        .find_map(|record| field(record, &["data", "fmt"]))
+                        .or_else(|| diagnostics.first().cloned())
+                        .map(|message| bounded_stream_text(&message))
+                        .unwrap_or_else(|| "Server reported no pending integrations.".to_owned());
+                    hints.push(StreamIntegrationHint {
+                        direction,
+                        source_stream,
+                        target_stream,
+                        state: if partial {
+                            CapabilityState::Unknown
+                        } else {
+                            CapabilityState::Supported
+                        },
+                        partial,
+                        message,
+                    });
+                    for diagnostic in diagnostics {
+                        append_stream_warning(&mut warnings, diagnostic);
+                    }
+                }
+                Err(error) => hints.push(StreamIntegrationHint {
                     direction,
-                    state: if partial {
-                        CapabilityState::Unknown
-                    } else {
-                        CapabilityState::Supported
-                    },
-                    message,
-                });
-                warnings.extend(diagnostics);
+                    source_stream,
+                    target_stream,
+                    state: CapabilityState::Unknown,
+                    partial: true,
+                    message: bounded_stream_text(&error.message),
+                }),
             }
-            Err(error) => hints.push(StreamIntegrationHint {
-                direction,
-                state: CapabilityState::Unknown,
-                message: error.message,
-            }),
         }
     }
 
+    let partial = spec.truncated
+        || history_truncated
+        || history_partial
+        || hints.iter().any(|hint| hint.partial);
+
     Ok(StreamDetail {
         stream,
-        parent_view: form_single_value(&lines, "ParentView")
-            .unwrap_or_else(|| "inherit".to_owned()),
-        options: form_single_value(&lines, "Options")
-            .map(|value| value.split_whitespace().map(str::to_owned).collect())
-            .unwrap_or_default(),
-        paths: form_multiline_values(&lines, "Paths"),
-        remapped: form_multiline_values(&lines, "Remapped"),
-        ignored: form_multiline_values(&lines, "Ignored"),
+        parent_view: spec.parent_view,
+        options: spec.options,
+        paths: spec.paths,
+        remapped: spec.remapped,
+        ignored: spec.ignored,
+        spec_truncated: spec.truncated,
         history,
+        history_truncated,
+        history_partial,
         hints,
+        partial,
         warnings,
     })
 }
@@ -5151,9 +5292,9 @@ fn change_identity_preflight(
     let mut blockers = Vec::new();
 
     let capabilities = info.capabilities.as_ref();
-    for name in ["change:-U", "change:-t"] {
+    for flag in [CapabilityFlag::ChangeUser, CapabilityFlag::ChangeType] {
         match capabilities
-            .and_then(|snapshot| snapshot.commands.get(name))
+            .and_then(|snapshot| snapshot.flags.get(&flag))
             .map(|fact| &fact.state)
         {
             Some(CapabilityState::Supported) => {}
@@ -8416,6 +8557,75 @@ mod tests {
         );
         assert!(validate_stream_path("//Acme/dev").is_ok());
         assert!(validate_stream_path("//Acme/dev@42").is_err());
+    }
+
+    #[test]
+    fn stream_spec_parser_bounds_multiline_fields_and_marks_truncation() {
+        let mut lines = vec![
+            "ParentView:\tnoinherit".to_owned(),
+            "Options:\tallsubmit unlocked toparent fromparent mergedown".to_owned(),
+            "Paths:".to_owned(),
+        ];
+        lines.extend((0..=MAX_STREAM_SPEC_ITEMS).map(|index| format!("\tshare path-{index}/...")));
+        lines.push("Remapped:".to_owned());
+        lines.push("\told/... new/...".to_owned());
+
+        let spec = parse_stream_spec(&lines);
+
+        assert_eq!(spec.parent_view, "noinherit");
+        assert_eq!(spec.paths.len(), MAX_STREAM_SPEC_ITEMS);
+        assert_eq!(spec.remapped, ["old/... new/..."]);
+        assert!(spec.truncated);
+    }
+
+    #[test]
+    fn stream_history_parser_preserves_indexed_fields_and_partial_state() {
+        let records = parse_json_lines(
+            r#"{"rev0":"3","action0":"edit","change0":"91","user0":"alex","client0":"alex-dev","time0":"1710000000","desc0":"Third"}
+{"rev":"2","action":"promote","change":"90","user":"sam","description":"Second"}
+{"rev":"1"}"#,
+        )
+        .unwrap();
+
+        let (history, truncated, malformed) = parse_stream_history(&records);
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].revision, "3");
+        assert_eq!(history[0].client.as_deref(), Some("alex-dev"));
+        assert_eq!(history[1].description.as_deref(), Some("Second"));
+        assert!(!truncated);
+        assert!(malformed);
+    }
+
+    #[test]
+    fn stream_history_parser_returns_only_the_bounded_snapshot() {
+        let records = (0..MAX_STREAM_HISTORY_QUERY_ITEMS)
+            .map(|index| {
+                serde_json::from_value::<Map<String, Value>>(serde_json::json!({
+                    "rev": index.to_string(),
+                    "action": "edit"
+                }))
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let (history, truncated, malformed) = parse_stream_history(&records);
+
+        assert_eq!(history.len(), MAX_STREAM_HISTORY_ITEMS);
+        assert!(truncated);
+        assert!(!malformed);
+    }
+
+    #[test]
+    fn stream_istat_arguments_are_read_only_and_direction_specific() {
+        assert_eq!(
+            stream_istat_arguments(StreamIntegrationDirection::CopyUp, "//Acme/dev"),
+            ["-ztag", "-Mj", "istat", "-Af", "//Acme/dev"]
+        );
+        assert_eq!(
+            stream_istat_arguments(StreamIntegrationDirection::MergeDown, "//Acme/dev"),
+            ["-ztag", "-Mj", "istat", "-Af", "-r", "//Acme/dev"]
+        );
     }
 
     #[test]

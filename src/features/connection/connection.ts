@@ -7,8 +7,10 @@ export interface ConnectionFields {
 export type ConnectionError = "portRequired" | "portInvalid" | "userRequired" | "workspaceRequired";
 export type ConnectionErrors = Partial<Record<keyof ConnectionFields, ConnectionError>>;
 
-import type { AppError, AuthStage, CapabilityFact, TrustChallenge } from "../../shared/models";
+import type { AppError, AuthStage, TrustChallenge } from "../../shared/models";
 import type { TranslationKey } from "../../shared/i18n";
+
+export { capabilityGate } from "../../shared/capabilities";
 
 export interface AuthUiState {
   open: boolean;
@@ -41,11 +43,6 @@ export function authReducer(state: AuthUiState, action: AuthUiAction): AuthUiSta
 
 export function authShouldPoll(stage?: AuthStage): boolean {
   return Boolean(stage && ["external_browser", "waiting"].includes(stage.kind) && stage.pollingAttempt < stage.maxPollingAttempts);
-}
-
-export function capabilityGate(fact?: CapabilityFact): { allowed: boolean; reason?: string } {
-  if (!fact || fact.state === "unknown") return { allowed: true, reason: fact?.reason };
-  return { allowed: fact.state === "supported", reason: fact.reason };
 }
 
 export function trustDialogModel(challenge: TrustChallenge): { title: TranslationKey; warning: TranslationKey; fingerprint: string } {

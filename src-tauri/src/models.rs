@@ -116,6 +116,69 @@ pub struct CapabilityFact {
     pub evidence: CapabilityEvidence,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilityCommand {
+    Login2,
+    Topology,
+    Trust,
+    Integrate,
+    Copy,
+    Istat,
+    Streamlog,
+    Reshelve,
+    Change,
+    Protects,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilityFlag {
+    Login2State,
+    TopologyFields,
+    TrustInstall,
+    IntegrateStream,
+    IntegrateParent,
+    IntegrateForceBranch,
+    IntegrateReverse,
+    CopyStream,
+    CopyForceBranch,
+    IstatForceBranch,
+    IstatReverse,
+    StreamlogLimit,
+    ChangeUser,
+    ChangeType,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilityName {
+    CliVersion,
+    ServerVersion,
+    ServerServices,
+    Topology,
+    Depots,
+    UnicodeServer,
+    StreamWorkspace,
+    CaseSensitiveMapping,
+    TaskStreamSubmit,
+    PromotedShelves,
+    GlobalLocks,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TopologyService {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub services: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
@@ -135,8 +198,7 @@ pub struct CapabilitySnapshot {
     pub server_services: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topology: Option<String>,
+    pub topology: Vec<TopologyService>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unicode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,8 +207,9 @@ pub struct CapabilitySnapshot {
     pub security: Option<String>,
     pub workspace_kind: WorkspaceKind,
     pub depot_modes: Vec<String>,
-    pub commands: BTreeMap<String, CapabilityFact>,
-    pub facts: BTreeMap<String, CapabilityFact>,
+    pub commands: BTreeMap<CapabilityCommand, CapabilityFact>,
+    pub flags: BTreeMap<CapabilityFlag, CapabilityFact>,
+    pub facts: BTreeMap<CapabilityName, CapabilityFact>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -332,6 +395,7 @@ pub struct StreamHistoryEntry {
     pub action: String,
     pub change: Option<String>,
     pub user: Option<String>,
+    pub client: Option<String>,
     pub time: Option<String>,
     pub description: Option<String>,
 }
@@ -340,7 +404,10 @@ pub struct StreamHistoryEntry {
 #[serde(rename_all = "camelCase")]
 pub struct StreamIntegrationHint {
     pub direction: StreamIntegrationDirection,
+    pub source_stream: String,
+    pub target_stream: String,
     pub state: CapabilityState,
+    pub partial: bool,
     pub message: String,
 }
 
@@ -353,8 +420,12 @@ pub struct StreamDetail {
     pub paths: Vec<String>,
     pub remapped: Vec<String>,
     pub ignored: Vec<String>,
+    pub spec_truncated: bool,
     pub history: Vec<StreamHistoryEntry>,
+    pub history_truncated: bool,
+    pub history_partial: bool,
     pub hints: Vec<StreamIntegrationHint>,
+    pub partial: bool,
     pub warnings: Vec<String>,
 }
 
