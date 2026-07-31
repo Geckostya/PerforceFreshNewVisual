@@ -414,8 +414,12 @@ async function runProcess(
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temporary, JSON.stringify(value, undefined, 2), "utf8");
-  await rename(temporary, path);
+  try {
+    await writeFile(temporary, JSON.stringify(value, undefined, 2), "utf8");
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 async function waitForJson<T extends object>(

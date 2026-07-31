@@ -26,21 +26,6 @@ export function changeScope(path: string, change: string): string {
 }
 
 export const DEPOT_HISTORY_PAGE_SIZE = 100;
-export const DEPOT_HISTORY_LIMIT = 5000;
-
-export function historyPageLimit(page: number): number {
-  return Math.min((Math.max(0, page) + 1) * DEPOT_HISTORY_PAGE_SIZE + 1, DEPOT_HISTORY_LIMIT);
-}
-
-export function historyPageItems<T>(items: T[], page: number): T[] {
-  const start = Math.max(0, page) * DEPOT_HISTORY_PAGE_SIZE;
-  return items.slice(start, start + DEPOT_HISTORY_PAGE_SIZE);
-}
-
-export function hasNextHistoryPage(itemCount: number, page: number): boolean {
-  const end = (Math.max(0, page) + 1) * DEPOT_HISTORY_PAGE_SIZE;
-  return end < DEPOT_HISTORY_LIMIT && itemCount > end;
-}
 
 export function scopeBase(scope: string): string {
   const value = (scope.trim().replace(/\/+$/, "") || "//...");

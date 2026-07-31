@@ -8,12 +8,14 @@ import { SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
+import { RevisionGraph } from "../../shared/RevisionGraph";
 import { ItemRowCopy, SelectableRow, SelectableSurface, TreeItemRow } from "../../shared/ItemList";
 import { isContextMenuShortcut, retainAvailableSelection, selectionMode, updateSelection } from "../../shared/selection";
 import { ActionDialog, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
 import { ResolveDialog } from "./ResolveDialog";
+import { SpecializedResolveDialog } from "./SpecializedResolveDialog";
 import { buildWorkspaceTree, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, toggleReconcileSelection, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
 type WorkspaceDialog = "details" | "create" | "edit" | "rename" | "delete";
@@ -42,6 +44,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   const [pendingResolvePaths, setPendingResolvePaths] = useState<string[]>([]);
   const [resolvePreview, setResolvePreview] = useState<ResolvePreviewItem[]>([]);
   const [resolveEditorItem, setResolveEditorItem] = useState<ResolvePreviewItem>();
+  const [specializedResolveItems, setSpecializedResolveItems] = useState<ResolvePreviewItem[]>();
   const [workspaceSpec, setWorkspaceSpec] = useState<WorkspaceSpec>();
   const [workspaceDialog, setWorkspaceDialog] = useState<WorkspaceDialog>();
   const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>(emptyDraft);
@@ -386,7 +389,16 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     setBusy(true);
     setError(undefined);
     try {
-      setResolvePreview(await previewResolve(connection, requestedPaths));
+      const preview = await previewResolve(connection, requestedPaths);
+      const specialized = preview.filter((item) => item.conflictKind !== "text" && item.conflictKind !== "unknown");
+      if (specialized.length) {
+        setSpecializedResolveItems(specialized);
+        setPendingResolveMode(undefined);
+        setPendingResolvePaths([]);
+        setResolvePreview([]);
+        return;
+      }
+      setResolvePreview(preview);
       setPendingResolvePaths(requestedPaths);
       setPendingResolveMode(mode);
     } catch (reason) { setError(normalizeAppError(reason)); }
@@ -414,7 +426,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
       const pending = readBack.items.filter((item) => item.state !== "resolved");
       await refreshLoadedDirectories();
       if (pending.length) {
-        setError({ kind: "partial_result", message: t("resolveStillPending"), hints: pending.map((item) => item.depotPath) });
+        setError({ kind: "partial_result", message: t("resolveStillPending"), hints: pending.map((item) => item.reason ? `${item.depotPath}: ${item.reason}` : item.depotPath) });
       } else {
         setNotice(t("resolveSucceeded"));
       }
@@ -426,7 +438,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     setBusy(true);
     setError(undefined);
     try {
-      const item = (await previewResolve(connection, [path])).find((candidate) => candidate.depotPath === path);
+      const item = (await previewResolve(connection, [path])).find((candidate) => candidate.depotPath === path && candidate.conflictKind === "text");
       if (!item || item.conflictKind !== "text" || !item.allowedActions.includes("editResult")) {
         setError({ kind: "command_failed", message: t("resolveEditorUnsupportedContent"), hints: [] });
         return;
@@ -747,7 +759,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
             agentId={(changeItem) => `workspace-history:${changeItem.id}`}
             onSelect={(changeItem) => setHistorySelection({ change: changeItem.id })}
             onOpen={(changeItem) => setHistoryChange(changeItem.id)}
-          /> : <section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <SelectableSurface selected={historySelection?.revision === revision.revision} data-agent-id={`workspace-history:${revision.change}:${revision.revision}`} className="history-compact-row" key={revision.revision} onClick={() => setHistorySelection({ change: revision.change, revision: revision.revision })} onDoubleClick={() => revision.change && setHistoryChange(revision.change)} onKeyDown={(event) => { if (event.key === "Enter" && revision.change) { event.preventDefault(); setHistoryChange(revision.change); } }}><ChangelistDescription value={revision.description} fallback={t("noDescription")} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span>{[revision.user, revision.client, formatWorkspaceHistoryTime(revision.time, language)].filter(Boolean).map((value) => ` · ${value}`)}</span><small>#{revision.revision} · {revision.action || "—"}</small></SelectableSurface>) : <CompactEmpty text={t("depotNoHistory")} />}</section>}
+          /> : <><section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <SelectableSurface selected={historySelection?.revision === revision.revision} data-agent-id={`workspace-history:${revision.change}:${revision.revision}`} className="history-compact-row" key={revision.revision} onClick={() => setHistorySelection({ change: revision.change, revision: revision.revision })} onDoubleClick={() => revision.change && setHistoryChange(revision.change)} onKeyDown={(event) => { if (event.key === "Enter" && revision.change) { event.preventDefault(); setHistoryChange(revision.change); } }}><ChangelistDescription value={revision.description} fallback={t("noDescription")} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span>{[revision.user, revision.client, formatWorkspaceHistoryTime(revision.time, language)].filter(Boolean).map((value) => ` · ${value}`)}</span><small>#{revision.revision} · {revision.action || "—"}</small></SelectableSurface>) : <CompactEmpty text={t("depotNoHistory")} />}</section><RevisionGraph revisions={revisionHistory} historyMayBePartial={revisionHistory.length >= 50} /></>}
         </div>}
       </aside>
     </div>
@@ -770,6 +782,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoSafe", menu.paths)}>{t("resolveAutoSafe")}</MenuButton>}
       {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoMerge", menu.paths)}>{t("resolveAutoMerge")}</MenuButton>}
       {menuCanResolve && menu.paths.length === 1 && <MenuButton onClick={() => void showResolveEditor(menu.paths[0])}>{t("resolveEditor")}</MenuButton>}
+      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("yours", menu.paths)}>{t("resolveSpecializedReview")}</MenuButton>}
       {menuCanRevert && <MenuButton danger onClick={() => void openRevert(menu.paths)}>{t("revertSelected")}</MenuButton>}
       {menu.paths.length === 1 && menu.file.localPath && <MenuButton danger onClick={() => setDeleteLocalPath(menu.file.localPath)}>{t("deleteLocally")}</MenuButton>}
     </ContextMenu>}
@@ -781,6 +794,8 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     {pendingResolveMode && <ActionDialog danger={pendingResolveMode === "theirs"} title={t("resolveConfirmTitle")} confirmLabel={t("resolveConfirm")} busy={busy} confirmDisabled={!resolvePreview.length || resolvePreview.some((item) => !item.allowedActions.includes(pendingResolveMode))} onClose={() => { setPendingResolveMode(undefined); setPendingResolvePaths([]); setResolvePreview([]); }} onConfirm={() => void applyResolve()}><p>{pendingResolveMode === "yours" ? t("resolveKeepWorkspaceBody") : t("resolveAcceptServerBody")}</p>{resolvePreview.length ? resolvePreview.map((item) => <div className="resource-detail-row" key={`${item.depotPath}-${item.conflictKind}-${item.action}`}><span><strong>{item.depotPath}</strong><small>{t(`resolveKind_${item.conflictKind}` as never)} · {item.action} · {item.detail || ""}</small></span></div>) : <CompactEmpty text={t("resolveNoPreview")} />}</ActionDialog>}
 
     {resolveEditorItem && <ResolveDialog connection={connection} item={resolveEditorItem} onClose={() => setResolveEditorItem(undefined)} onResolved={() => { setResolveEditorItem(undefined); setNotice(t("resolveSucceeded")); void refreshLoadedDirectories(); }} onError={setError} />}
+
+    {specializedResolveItems && <SpecializedResolveDialog connection={connection} items={specializedResolveItems} onClose={() => setSpecializedResolveItems(undefined)} onReadBack={() => void refreshLoadedDirectories()} onError={setError} />}
 
     {renameDestination !== undefined && selectedFile && <ActionDialog title={t("renameFile")} confirmLabel={t("renameFile")} busy={busy} confirmDisabled={!renameDestination.trim() || renameDestination.trim() === selectedFile.depotPath} onClose={() => setRenameDestination(undefined)} onConfirm={() => void applyRename()}><p>{selectedFile.depotPath}</p><label className="field"><span className="field-label">{t("renameDestinationPrompt")}</span><input autoFocus value={renameDestination} onChange={(event) => setRenameDestination(event.target.value)} /></label></ActionDialog>}
 

@@ -73,6 +73,7 @@ import {
 import { useChangeDragDrop } from "./useChangeDragDrop";
 import { useChangesData } from "./useChangesData";
 import { useFileSelection } from "./useFileSelection";
+import { ChangeIdentityDialog } from "./ChangeIdentityDialog";
 
 interface Props {
   connection: ConnectionInput;
@@ -86,6 +87,7 @@ type DialogName =
   | "create"
   | "submit"
   | "edit"
+  | "change-identity"
   | "shelve-file"
   | "replace-shelf"
   | "unshelve"
@@ -694,7 +696,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
                   <button className="secondary-button" type="button" disabled={diffLoading} onClick={() => void showDiff("shelved", currentShelved.depotPath, true)}>{t("compareLocalShelf")}</button>
                 )}
               </div>
-              <label className="field diff-mode-field"><span className="field-label">{t("diffMode")}</span><select value={diffMode} onChange={(event) => setDiffMode(event.target.value as DiffMode)}><option value="default">{t("diffModeDefault")}</option><option value="ignoreWhitespaceChanges">{t("diffModeWhitespaceChanges")}</option><option value="ignoreWhitespace">{t("diffModeWhitespace")}</option><option value="ignoreLineEndings">{t("diffModeLineEndings")}</option></select></label>{diff && <div className="diff-panel"><strong>{diffTitle}</strong><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} /></div>}
+              <label className="field diff-mode-field"><span className="field-label">{t("diffMode")}</span><select value={diffMode} onChange={(event) => setDiffMode(event.target.value as DiffMode)}><option value="default">{t("diffModeDefault")}</option><option value="ignoreWhitespaceChanges">{t("diffModeWhitespaceChanges")}</option><option value="ignoreWhitespace">{t("diffModeWhitespace")}</option><option value="ignoreLineEndings">{t("diffModeLineEndings")}</option></select></label>{diff && <div className="diff-panel"><strong>{diffTitle}</strong><DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} binary={diff.binary} invalidEncoding={diff.invalidEncoding} /></div>}
             </div>
           )}
         </aside>
@@ -703,6 +705,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       {menu && changeMenu.menu && <ContextMenu x={changeMenu.menu.x} y={changeMenu.menu.y} onSelect={changeMenu.close}>
         {menu.kind === "change" && contextGroup && <>
           {contextGroup.id !== "default" && <MenuButton disabled={mutationsBlocked} onClick={() => { setDescription(contextGroup.description); setDialog("edit"); }}>{t("editChangelist")}</MenuButton>}
+          {contextGroup.id !== "default" && <MenuButton disabled={mutationsBlocked} onClick={() => setDialog("change-identity")}>{t("changeIdentity")}</MenuButton>}
           {contextGroup.id !== "default" && <MenuButton onClick={() => toggleUnactual(contextGroup.id)}>{archivedChanges.includes(contextGroup.id) ? t("restoreFromUnactual") : t("moveToUnactual")}</MenuButton>}
           {contextGroup.files.length > 0 && contextGroup.id !== "default" && <MenuButton disabled={mutationsBlocked} onClick={() => setDialog("replace-shelf")}>{contextGroup.isShelved ? t("updateShelf") : t("shelveAll")}</MenuButton>}
           {contextGroup.isShelved && <MenuButton disabled={mutationsBlocked} onClick={() => openUnshelve()}>{t("unshelveAll")}</MenuButton>}
@@ -748,6 +751,8 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       {(dialog === "create" || dialog === "edit") && <ActionDialog title={dialog === "create" ? t("newChangelistTitle") : t("editChangelist")} confirmLabel={actionRunning ? t(dialog === "create" ? "creating" : "saving") : t(dialog === "create" ? "createChangelist" : "save")} busy={actionRunning} confirmDisabled={!description.trim()} onClose={() => setDialog(undefined)} onConfirm={() => void execute(() => dialog === "create" ? createChange(connection, description).then((id) => { selectChange(id); }) : editChange(connection, currentGroup.id, description), t(dialog === "create" ? "changeCreated" : "changeUpdated"))}>
         {dialog === "create" && <p>{t("newChangelistBody")}</p>}<DescriptionField value={description} onChange={setDescription} />
       </ActionDialog>}
+
+      {dialog === "change-identity" && <ChangeIdentityDialog connection={connection} change={currentGroup.id} initialOwner={currentGroup.user} initialClient={currentGroup.client} setError={setError} onClose={() => setDialog(undefined)} onApplied={() => { setDialog(undefined); setNotice(t("changeIdentityUpdated")); void refreshData(); }} />}
 
       {dialog === "submit" && <SubmitDialog group={currentGroup} shelfCount={currentShelfFiles.length} description={submitDescription} setDescription={setSubmitDescription} busy={actionRunning} preflightIssues={submitPreflightIssues} preflightSummary={submitPreflightSummary} preflightReady={submitPreflightReady} onClose={() => setDialog(undefined)} onSubmit={(mode) => void confirmSubmit(mode)} />}
 

@@ -2,21 +2,25 @@ use crate::{
     diagnostics, locales,
     models::{
         AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
-        CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
-        CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
-        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, JobForm, JobFormInput, Label, LabelInput, LabelSpec, LabelTagInput,
-        LabelTagPreview, LabelTagResult, LocaleCatalog, MoveInput, OpenedFile,
-        OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
-        OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
-        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
-        ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput,
-        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveJobInput, SaveRevisionInput,
-        SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
-        StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
-        SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
-        SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
-        TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
+        ChangeIdentityPreflight, ChangeIdentityPreflightInput, ChangeIdentityState,
+        ChangeIdentityUpdateInput, CherryPickPreviewItem, CliLogEntry, ConnectionInput,
+        CreateChangeInput, CreateStreamInput, CreateStreamPreview, DeleteChangeInput,
+        DeleteShelfInput, DepotDirectory, DepotFile, DepotStateComparison, DepotSummary, DiffInput,
+        EditChangeInput, ErrorKind, FileDiff, FileOperationInput, FileRevision, Fix, HistoryPage,
+        Job, JobForm, JobFormInput, Label, LabelInput, LabelSpec, LabelTagInput, LabelTagPreview,
+        LabelTagResult, LocaleCatalog, MoveInput, OpenedFile, OperationCompensationStatus,
+        OperationDiagnostic, OperationEvent, OperationEventKind, OperationItemResult,
+        OperationItemStatus, OperationReadBack, OperationReadBackStatus, P4Detection, P4Info,
+        PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput,
+        ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput, RevertInput,
+        RevertPreviewItem, SaveChangeFilesInput, SaveJobInput, SaveRevisionInput,
+        SaveShelvedFilesInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
+        ShelvedFile, SpecializedResolveInput, StreamDetail, StreamIntegrationInput,
+        StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
+        SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
+        SubmittedChangeDetail, SubmittedFilterOptions, SubmittedHistoryPageInput,
+        SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem,
+        UnshelveInput, UnshelvePreview,
         WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch,
         WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
     },
@@ -91,15 +95,32 @@ impl WorkspaceRootRegistry {
     }
 }
 
-fn validate_reveal_path(path: &str) -> Result<&str, AppError> {
+fn validate_reveal_path(path: &str) -> Result<PathBuf, AppError> {
     let path = path.trim();
-    if path.is_empty() || path.contains(['\r', '\n']) {
+    if path.is_empty() || path.contains(['\r', '\n', '\0']) {
         return Err(AppError::new(
             ErrorKind::CommandFailed,
             "Не указан корректный локальный путь.",
         ));
     }
-    Ok(path)
+    let path = PathBuf::from(path);
+    let metadata = fs::metadata(&path).map_err(|error| {
+        AppError::new(ErrorKind::CommandFailed, "Локальный путь не существует.")
+            .with_diagnostics(error.to_string())
+    })?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Локальный путь не является файлом или папкой.",
+        ));
+    }
+    fs::canonicalize(path).map_err(|error| {
+        AppError::new(
+            ErrorKind::CommandFailed,
+            "Не удалось проверить локальный путь.",
+        )
+        .with_diagnostics(error.to_string())
+    })
 }
 
 #[tauri::command]
@@ -107,8 +128,19 @@ pub fn reveal_path(path: String) -> Result<(), AppError> {
     let path = validate_reveal_path(&path)?;
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
+        let explorer = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .map(|directory| directory.join("explorer.exe"))
+            .filter(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                AppError::new(ErrorKind::CommandFailed, "Не найден Windows Explorer.")
+            })?;
+        std::process::Command::new(explorer)
+            .arg({
+                let mut select_argument = std::ffi::OsString::from("/select,");
+                select_argument.push(path);
+                select_argument
+            })
             .spawn()
             .map_err(|error| {
                 AppError::new(
@@ -530,6 +562,20 @@ pub async fn list_depot_files(
 }
 
 #[tauri::command]
+pub async fn compare_depot_states(
+    input: ConnectionInput,
+    scope: String,
+    base_change: String,
+    target_change: Option<String>,
+) -> Result<DepotStateComparison, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::compare_depot_states(&input, &scope, &base_change, target_change.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn list_pending_changes(input: ConnectionInput) -> Result<Vec<PendingChange>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_pending_changes(&input))
         .await
@@ -685,6 +731,15 @@ pub async fn list_submitted_changes(
     })
     .await
     .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn list_submitted_history_page(
+    request: SubmittedHistoryPageInput,
+) -> Result<HistoryPage<PendingChange>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || p4::list_submitted_history_page(request))
+        .await
+        .map_err(task_error)?
 }
 
 #[tauri::command]
@@ -935,6 +990,46 @@ fn bounded_operation_diagnostics(message: Option<&str>) -> Vec<OperationDiagnost
             item_id: None,
         })
         .into_iter()
+        .collect()
+}
+
+fn submit_item_results(
+    change: &str,
+    mode: &SubmitMode,
+    outcome: &SubmitOutcome,
+) -> Vec<OperationItemResult> {
+    outcome
+        .steps
+        .iter()
+        .map(|step| OperationItemResult {
+            item_id: step.step.clone(),
+            path: None,
+            status: match step.status.as_str() {
+                "completed" | "succeeded" => OperationItemStatus::Succeeded,
+                "skipped" => OperationItemStatus::Skipped,
+                _ => OperationItemStatus::Failed,
+            },
+            reason: step.detail.clone(),
+            compensation: if matches!(mode, SubmitMode::Shelf)
+                && !matches!(step.status.as_str(), "completed" | "succeeded" | "skipped")
+            {
+                OperationCompensationStatus::Unknown
+            } else {
+                OperationCompensationStatus::NotRequired
+            },
+            recovery_action_id: (!outcome.recovery_actions.is_empty()
+                || matches!(outcome.terminal, SubmitTerminalOutcome::Unknown)
+                || !matches!(step.status.as_str(), "completed" | "succeeded" | "skipped"))
+            .then(|| "refresh_changes".to_owned()),
+        })
+        .chain((outcome.steps.is_empty()).then(|| OperationItemResult {
+            item_id: format!("submit-{change}"),
+            path: None,
+            status: OperationItemStatus::Skipped,
+            reason: Some("Submit returned no completed step details.".to_owned()),
+            compensation: OperationCompensationStatus::Unknown,
+            recovery_action_id: Some("refresh_changes".to_owned()),
+        }))
         .collect()
 }
 
@@ -1560,6 +1655,20 @@ pub async fn start_sync(
     Ok(operation_id)
 }
 
+fn failed_submit_outcome(readback: &SubmitReadBack, error: &AppError) -> SubmitOutcome {
+    SubmitOutcome {
+        preserved_local_change: None,
+        terminal: readback.outcome,
+        affected_change: readback.affected_change.clone(),
+        recovery_actions: readback.recovery_actions.clone(),
+        steps: vec![SubmitStepResult {
+            step: "submit".to_owned(),
+            status: "failed".to_owned(),
+            detail: Some(error.message.clone()),
+        }],
+    }
+}
+
 #[tauri::command]
 pub async fn start_submit(
     app: tauri::AppHandle,
@@ -1610,8 +1719,10 @@ pub async fn start_submit(
                 &input.mode,
             );
             let was_cancelled = cancelled.load(Ordering::Acquire);
-            let (kind, message, diagnostics, read_back, submit_outcome) = match result {
+            let (kind, message, diagnostics, read_back, submit_outcome, item_results) = match result
+            {
                 Ok(outcome) => {
+                    let item_results = submit_item_results(&input.change, &input.mode, &outcome);
                     let kind = match outcome.terminal {
                         SubmitTerminalOutcome::Submitted => OperationEventKind::Completed,
                         SubmitTerminalOutcome::Pending if was_cancelled => {
@@ -1644,10 +1755,13 @@ pub async fn start_submit(
                             message,
                         },
                         Some(outcome),
+                        item_results,
                     )
                 }
                 Err(error) => {
                     let readback = p4::submit_readback(&input.connection, &input.change);
+                    let outcome = failed_submit_outcome(&readback, &error);
+                    let item_results = submit_item_results(&input.change, &input.mode, &outcome);
                     let kind = match readback.outcome {
                         SubmitTerminalOutcome::Submitted => OperationEventKind::Partial,
                         SubmitTerminalOutcome::Pending if was_cancelled => {
@@ -1675,7 +1789,8 @@ pub async fn start_submit(
                             ],
                             message: Some(readback.message),
                         },
-                        None,
+                        Some(outcome),
+                        item_results,
                     )
                 }
             };
@@ -1688,6 +1803,7 @@ pub async fn start_submit(
                     message,
                     phase: Some("validate".to_owned()),
                     diagnostics,
+                    item_results,
                     read_back,
                     submit_outcome,
                     ..operation_event(&id_for_wait, "submit", kind, started_at_ms)
@@ -1844,10 +1960,11 @@ pub async fn start_submit(
             recovery_actions: readback.recovery_actions.clone(),
             steps: vec![SubmitStepResult {
                 step: "submit_local".to_owned(),
-                status: if success { "completed" } else { "uncertain" }.to_owned(),
-                detail: None,
+                status: if success { "succeeded" } else { "failed" }.to_owned(),
+                detail: (!success).then(|| readback.message.clone()),
             }],
         };
+        let item_results = submit_item_results(&change, &SubmitMode::Local, &submit_outcome);
         let message = if !success && !was_cancelled {
             let detail = stderr_text.trim();
             Some(if detail.is_empty() {
@@ -1886,6 +2003,7 @@ pub async fn start_submit(
                 reconcile_items: None,
                 submit_outcome: Some(submit_outcome),
                 diagnostics,
+                item_results,
                 read_back: OperationReadBack {
                     status: match readback.outcome {
                         SubmitTerminalOutcome::Submitted | SubmitTerminalOutcome::Pending => {
@@ -1980,6 +2098,17 @@ async fn run_file_operation(
 pub async fn resolve_files(input: ResolveInput) -> Result<ResolveApplyResult, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::resolve_files(&input.connection, &input.depot_paths, &input.mode)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn resolve_specialized(
+    input: SpecializedResolveInput,
+) -> Result<ResolveApplyResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::resolve_specialized(&input.connection, &input.items, &input.mode)
     })
     .await
     .map_err(task_error)?
@@ -2668,6 +2797,20 @@ pub async fn file_history(
 }
 
 #[tauri::command]
+pub async fn file_history_page(
+    input: ConnectionInput,
+    depot_path: String,
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<HistoryPage<FileRevision>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::file_history_page(&input, &depot_path, limit, cursor.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn print_revision(input: DiffInput, revision: String) -> Result<FileDiff, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::print_revision(&input.connection, &input.depot_path, &revision)
@@ -2709,6 +2852,22 @@ pub async fn save_shelved_file(input: SaveShelvedInput) -> Result<(), AppError> 
             &input.source_change,
             &input.depot_path,
             &input.output_path,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_shelved_files(
+    input: SaveShelvedFilesInput,
+) -> Result<ChangeExportResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_shelved_files(
+            &input.connection,
+            &input.source_change,
+            &input.depot_paths,
+            &input.output_directory,
         )
     })
     .await
@@ -2909,6 +3068,41 @@ pub async fn edit_change(input: EditChangeInput) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub async fn preview_change_identity(
+    input: ChangeIdentityPreflightInput,
+) -> Result<ChangeIdentityPreflight, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::preview_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn update_change_identity(
+    input: ChangeIdentityUpdateInput,
+) -> Result<ChangeIdentityState, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::update_change_identity(
+            &input.connection,
+            &input.change,
+            &input.owner,
+            &input.client,
+            input.visibility,
+            &input.preview_token,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 pub async fn delete_change(input: DeleteChangeInput) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         p4::delete_change(&input.connection, &input.change)
@@ -3008,13 +3202,21 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_operation_diagnostics, confirmed_integration_paths, operation_event,
-        parse_sync_output_record, submitted_change_from_record, sync_operation_scope,
-        sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
-        workspace_stream_view_paths,
+        bounded_operation_diagnostics, confirmed_integration_paths, failed_submit_outcome,
+        operation_event, parse_sync_output_record, submit_item_results,
+        submitted_change_from_record, sync_operation_scope, sync_operation_succeeded,
+        unexpected_integration_paths, validate_reveal_path, workspace_stream_view_paths,
     };
-    use crate::models::{OpenedFile, OperationEventKind};
-    use std::{collections::BTreeSet, fs};
+    use crate::models::{
+        AppError, ErrorKind, OpenedFile, OperationCompensationStatus, OperationEventKind,
+        OperationItemStatus, SubmitMode, SubmitOutcome, SubmitReadBack, SubmitStepResult,
+        SubmitTerminalOutcome,
+    };
+    use std::{
+        collections::BTreeSet,
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn sync_progress_uses_totals_from_the_first_real_output_record() {
@@ -3117,6 +3319,71 @@ mod tests {
     }
 
     #[test]
+    fn unknown_submit_failure_keeps_recovery_and_never_exposes_retry() {
+        let readback = SubmitReadBack {
+            outcome: SubmitTerminalOutcome::Unknown,
+            affected_change: None,
+            message: "unknown".to_owned(),
+            recovery_actions: vec!["refresh and rerun preflight".to_owned()],
+        };
+        let outcome = failed_submit_outcome(
+            &readback,
+            &AppError::new(ErrorKind::Offline, "connection lost"),
+        );
+        let items = submit_item_results("42", &SubmitMode::Local, &outcome);
+
+        assert_eq!(outcome.terminal, SubmitTerminalOutcome::Unknown);
+        assert_eq!(outcome.recovery_actions, ["refresh and rerun preflight"]);
+        assert_eq!(outcome.steps[0].status, "failed");
+        assert_eq!(
+            items[0].recovery_action_id.as_deref(),
+            Some("refresh_changes")
+        );
+    }
+
+    #[test]
+    fn shelf_submit_exposes_step_and_compensation_outcomes() {
+        let outcome = SubmitOutcome {
+            preserved_local_change: Some("205".to_owned()),
+            terminal: SubmitTerminalOutcome::Submitted,
+            affected_change: Some("104".to_owned()),
+            recovery_actions: Vec::new(),
+            steps: vec![SubmitStepResult {
+                step: "move_local_files".to_owned(),
+                status: "completed".to_owned(),
+                detail: None,
+            }],
+        };
+
+        let results = submit_item_results("104", &SubmitMode::Shelf, &outcome);
+        assert_eq!(results[0].item_id, "move_local_files");
+        assert_eq!(results[0].status, OperationItemStatus::Succeeded);
+        assert_eq!(
+            results[0].compensation,
+            OperationCompensationStatus::NotRequired
+        );
+
+        let failure_outcome = SubmitOutcome {
+            steps: vec![SubmitStepResult {
+                step: "submit_shelf".to_owned(),
+                status: "failed".to_owned(),
+                detail: Some("submit failed".to_owned()),
+            }],
+            ..outcome
+        };
+        let failure = submit_item_results("104", &SubmitMode::Shelf, &failure_outcome);
+        assert_eq!(failure[0].status, OperationItemStatus::Failed);
+        assert_eq!(
+            failure[0].compensation,
+            OperationCompensationStatus::Unknown
+        );
+        assert_eq!(
+            failure[0].recovery_action_id.as_deref(),
+            Some("refresh_changes")
+        );
+    }
+
+    #[test]
     fn submit_output_uses_only_the_server_returned_change_id() {
         let string_record = serde_json::json!({ "submittedChange": "104" });
         let number_record = serde_json::json!({ "submittedChange": 105 });
@@ -3139,10 +3406,25 @@ mod tests {
     fn reveal_path_rejects_empty_and_multiline_values() {
         assert!(validate_reveal_path("  ").is_err());
         assert!(validate_reveal_path("C:\\work\\file.txt\nexplorer.exe").is_err());
+        assert!(validate_reveal_path("C:\\work\\missing.txt").is_err());
+    }
+
+    #[test]
+    fn reveal_path_requires_an_existing_file_or_directory() {
+        let directory = std::env::temp_dir().join(format!(
+            "p4fnv-reveal-path-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
         assert_eq!(
-            validate_reveal_path(" C:\\work\\file.txt ").unwrap(),
-            "C:\\work\\file.txt"
+            validate_reveal_path(directory.to_str().unwrap()).unwrap(),
+            fs::canonicalize(&directory).unwrap()
         );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -4,9 +4,10 @@ import { fileHistory, listDepotDirectories, listDepotFiles, listDepots, listSubm
 import { DiffViewer } from "../../shared/DiffViewer";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
+import { RevisionGraph } from "../../shared/RevisionGraph";
 import { useLocale } from "../../shared/i18n";
 import { SelectableSurface, TreeItemRow } from "../../shared/ItemList";
-import type { AppError, ConnectionInput, DepotFile, DepotSummary, FileDiff, FileRevision, PendingChange } from "../../shared/models";
+import type { AppError, ConnectionInput, DepotFile, DepotSummary, FileDiff, FileIntegrationRecord, FileRevision, PendingChange } from "../../shared/models";
 import { PathActions } from "../../shared/PathActions";
 import { isContextMenuShortcut } from "../../shared/selection";
 import { contextMenuPoint } from "../../shared/useContextMenu";
@@ -328,9 +329,10 @@ export function DepotOverview({ connection, refreshKey, initialScope, onDownload
             <dl className="file-facts depot-overview-file-facts"><dt>{t("revisionLabel")}</dt><dd>#{selected.file?.revision || "—"}</dd><dt>{t("actionLabel")}</dt><dd>{selected.file?.action || "—"}</dd><dt>{t("changelistLabel")}</dt><dd className={selected.file?.change ? "changelist-number" : undefined}>{selected.file?.change || "—"}</dd><dt>{t("typeLabel")}</dt><dd>{selected.file?.fileType || "—"}</dd></dl>
             <section className="selection-history depot-overview-file-history"><h3>{t("selectedHistory")}</h3>{historyBusy && !fileRevisions.length ? <CompactEmpty text={t("loadingHistory")} /> : fileRevisions.length ? fileRevisions.map((revision) => {
               const target: DepotOverviewMenuTarget = { kind: "file", path: selected.path, revision: revision.revision };
-              return <SelectableSurface data-agent-id={`depot-overview-revision:${selected.path}#${revision.revision}`} className="history-compact-row" tabIndex={historyBusy ? -1 : 0} aria-disabled={historyBusy} key={revision.revision} onClick={() => { if (!historyBusy) void previewRevision(revision.revision); }} onContextMenu={(event) => { if (!historyBusy) showPointerMenu(event, target); }} onKeyDown={(event) => { if (historyBusy) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void previewRevision(revision.revision); } else showKeyboardMenu(event, target); }}><ChangelistDescription value={revision.description} fallback={`${t("revisionLabel")} #${revision.revision}`} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span> · {revision.user}{revision.client ? ` · ${revision.client}` : ""}</span><small>#{revision.revision} · {revision.action || "—"}{revision.fileType ? ` · ${revision.fileType}` : ""}</small></SelectableSurface>;
+              return <div key={revision.revision}><SelectableSurface data-agent-id={`depot-overview-revision:${selected.path}#${revision.revision}`} className="history-compact-row" tabIndex={historyBusy ? -1 : 0} aria-disabled={historyBusy} onClick={() => { if (!historyBusy) void previewRevision(revision.revision); }} onContextMenu={(event) => { if (!historyBusy) showPointerMenu(event, target); }} onKeyDown={(event) => { if (historyBusy) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void previewRevision(revision.revision); } else showKeyboardMenu(event, target); }}><ChangelistDescription value={revision.description} fallback={`${t("revisionLabel")} #${revision.revision}`} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span> · {revision.user}{revision.client ? ` · ${revision.client}` : ""}</span><small>#{revision.revision} · {revision.action || "—"}{revision.fileType ? ` · ${revision.fileType}` : ""}</small></SelectableSurface><FilelogIntegrationRecords records={revision.integrationRecords} onFollow={(path) => void inspectFile({ depotPath: path }, selected.depot)} /></div>;
             }) : <CompactEmpty text={t("depotNoHistory")} />}</section>
-            {revisionPreview && <div className="history-diff"><h2>{t("depotRevisionPreview")}</h2><DiffViewer text={revisionPreview.text || t("filesIdentical")} truncated={revisionPreview.truncated} /></div>}
+            <RevisionGraph revisions={fileRevisions} historyMayBePartial={fileRevisions.length >= 100} />
+            {revisionPreview && <div className="history-diff"><h2>{t("depotRevisionPreview")}</h2><DiffViewer text={revisionPreview.text || t("filesIdentical")} truncated={revisionPreview.truncated} binary={revisionPreview.binary} invalidEncoding={revisionPreview.invalidEncoding} /></div>}
           </> : <>
             <dl className="depot-overview-facts">
               <div><Server aria-hidden="true" /><dt>{t("depotOverviewDepotType")}</dt><dd>{selected.depot.depotType}</dd></div>
@@ -356,6 +358,23 @@ export function DepotOverview({ connection, refreshKey, initialScope, onDownload
       </aside>
     </div>
   </div>;
+}
+
+function FilelogIntegrationRecords({ records, onFollow }: { records: FileIntegrationRecord[]; onFollow: (path: string) => void }) {
+  const { t } = useLocale();
+  if (!records.length) return null;
+  return <div className="filelog-integration-records" aria-label={t("filelogIntegrationRecords")}>
+    {records.map((record, index) => <div className="filelog-integration-record" key={`${record.how || ""}:${record.filePath || ""}:${record.startRevision || ""}:${record.endRevision || ""}:${index}`}>
+      <span>{record.how || t("filelogIntegrationUnknownMethod")} · {record.filePath || t("filelogIntegrationMissingPath")}</span>
+      <small>{formatIntegrationRange(record.startRevision, record.endRevision)}{record.cyclic ? ` · ${t("filelogIntegrationCyclic")}` : ""}{!record.complete ? ` · ${t("filelogIntegrationIncomplete")}` : ""}</small>
+      {record.filePath && record.complete && !record.cyclic && <button className="text-button" type="button" onClick={() => onFollow(record.filePath!)}>{t("filelogIntegrationFollow")}</button>}
+    </div>)}
+  </div>;
+}
+
+function formatIntegrationRange(start?: string, end?: string): string {
+  if (!start && !end) return "—";
+  return `#${start || "?"}–#${end || "?"}`;
 }
 
 function depotItemName(path: string): string {

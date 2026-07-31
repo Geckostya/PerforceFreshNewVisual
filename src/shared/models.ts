@@ -92,19 +92,56 @@ export interface CapabilityFact {
   evidence: CapabilityEvidence;
 }
 
+export type CapabilityCommand = "login2" | "topology" | "trust" | "integrate" | "copy" | "istat" | "streamlog" | "reshelve" | "change" | "protects";
+export type CapabilityFlag =
+  | "login2State"
+  | "topologyFields"
+  | "trustInstall"
+  | "integrateStream"
+  | "integrateParent"
+  | "integrateForceBranch"
+  | "integrateReverse"
+  | "copyStream"
+  | "copyForceBranch"
+  | "istatForceBranch"
+  | "istatReverse"
+  | "streamlogLimit"
+  | "changeUser"
+  | "changeType";
+export type CapabilityName =
+  | "cliVersion"
+  | "serverVersion"
+  | "serverServices"
+  | "topology"
+  | "depots"
+  | "unicodeServer"
+  | "streamWorkspace"
+  | "caseSensitiveMapping"
+  | "taskStreamSubmit"
+  | "promotedShelves"
+  | "globalLocks";
+
+export interface TopologyService {
+  serverId?: string;
+  serverAddress?: string;
+  services?: string;
+  serverType?: string;
+}
+
 export interface CapabilitySnapshot {
   cliVersion?: string;
   serverVersion?: string;
   serverServices?: string;
   serverId?: string;
-  topology?: string;
+  topology: TopologyService[];
   unicode?: string;
   caseHandling?: string;
   security?: string;
   workspaceKind: "stream" | "classic" | "unknown";
   depotModes: string[];
-  commands: Record<string, CapabilityFact>;
-  facts: Record<string, CapabilityFact>;
+  commands: Record<CapabilityCommand, CapabilityFact>;
+  flags: Record<CapabilityFlag, CapabilityFact>;
+  facts: Record<CapabilityName, CapabilityFact>;
 }
 
 export interface LoginStatus {
@@ -147,8 +184,15 @@ export interface StreamSummary {
 }
 
 export type StreamIntegrationDirection = "mergeDown" | "copyUp";
-export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; time?: string; description?: string; }
-export interface StreamIntegrationHint { direction: StreamIntegrationDirection; state: "supported" | "unsupported" | "unknown"; message: string; }
+export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; client?: string; time?: string; description?: string; }
+export interface StreamIntegrationHint {
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  state: "supported" | "unsupported" | "unknown";
+  partial: boolean;
+  message: string;
+}
 export interface StreamDetail {
   stream: StreamSummary;
   parentView: string;
@@ -156,8 +200,12 @@ export interface StreamDetail {
   paths: string[];
   remapped: string[];
   ignored: string[];
+  specTruncated: boolean;
   history: StreamHistoryEntry[];
+  historyTruncated: boolean;
+  historyPartial: boolean;
   hints: StreamIntegrationHint[];
+  partial: boolean;
   warnings: string[];
 }
 export interface StreamIntegrationInput {
@@ -242,6 +290,22 @@ export interface DepotFile {
   action?: string;
   change?: string;
   fileType?: string;
+}
+export interface DepotStateDifference {
+  depotPath: string;
+  beforeRevision?: string;
+  afterRevision?: string;
+  beforeFileType?: string;
+  afterFileType?: string;
+}
+export interface DepotStateComparison {
+  scope: string;
+  baseChange: string;
+  targetChange?: string;
+  added: DepotStateDifference[];
+  changed: DepotStateDifference[];
+  deleted: DepotStateDifference[];
+  typeChanged: DepotStateDifference[];
 }
 
 export interface TrustEntry { server: string; fingerprint: string; }
@@ -349,6 +413,44 @@ export interface PendingChange {
   stream?: string;
 }
 
+export type ChangeVisibility = "public" | "restricted";
+
+export interface ChangeIdentityState {
+  owner: string;
+  client: string;
+  visibility: ChangeVisibility;
+}
+
+export type ChangeIdentityBlocker =
+  | "capability_unknown"
+  | "unsupported"
+  | "permission_unknown"
+  | "permission_denied"
+  | "topology_unknown"
+  | "topology_mismatch"
+  | "target_client_owner_mismatch"
+  | "not_pending";
+
+export interface ChangeIdentityPreflight {
+  change: string;
+  current: ChangeIdentityState;
+  target: ChangeIdentityState;
+  hasOpenedFiles: boolean;
+  hasShelvedFiles: boolean;
+  hasJobs: boolean;
+  requiresAdmin: boolean;
+  permissionLevel: string;
+  topology: string;
+  blockers: ChangeIdentityBlocker[];
+  previewToken: string;
+}
+
+export interface HistoryPage<T> {
+  items: T[];
+  nextCursor?: string;
+  partial: boolean;
+}
+
 export interface Job {
   id: string;
   status?: string;
@@ -389,6 +491,17 @@ export interface OpenedFile {
   fileType?: string;
 }
 
+export type FileLockPresence = "present" | "absent" | "unknown";
+export type FileLockScope = "none" | "local" | "global" | "unknown";
+export type FileLockOwner = "none" | "ours" | "other" | "unknown";
+export interface FileLockTopology {
+  explicit: FileLockPresence;
+  exclusiveFileType: FileLockPresence;
+  scope: FileLockScope;
+  owner: FileLockOwner;
+  ownerDetail?: string;
+}
+
 export interface WorkspaceFile {
   depotPath: string;
   clientPath?: string;
@@ -401,6 +514,7 @@ export interface WorkspaceFile {
   mapped: boolean;
   otherOpen: boolean;
   otherLock: boolean;
+  lockTopology: FileLockTopology;
   unresolved: boolean;
   untracked: boolean;
   ignored: boolean;
@@ -506,6 +620,7 @@ export interface UiAgentResponse {
 
 export type ResolveMode = "yours" | "theirs" | "autoSafe" | "autoMerge" | "editResult";
 export type ResolveConflictKind = "text" | "binary" | "move_name" | "filetype_attribute" | "stream_spec" | "unknown";
+export type ResolveScope = "content" | "move" | "filetype" | "attribute" | "stream_spec" | "unknown";
 export type ResolveReadBackState = "pending" | "resolved" | "unknown";
 
 export interface SyncPreviewItem {
@@ -543,9 +658,11 @@ export interface ResolvePreviewItem {
   action: string;
   detail?: string;
   conflictKind: ResolveConflictKind;
+  scope: ResolveScope;
   baseIdentifier?: string;
   sourceIdentifier?: string;
   workspaceIdentifier: string;
+  previewToken: string;
   allowedActions: ResolveMode[];
   readBack: ResolveReadBackState;
 }
@@ -597,6 +714,8 @@ export interface SubmitPreflightIssue {
   depotPath: string;
   kind: string;
   detail: string;
+  reason: string;
+  action: string;
 }
 
 export interface SubmitPreflightJob { id: string; date?: string; user?: string; status?: string; }
@@ -606,6 +725,7 @@ export interface FileDiff {
   text: string;
   truncated: boolean;
   binary: boolean;
+  invalidEncoding: boolean;
 }
 
 export interface AnnotationLine { change: string; user?: string; date?: string; text: string; }
@@ -622,8 +742,17 @@ export interface FileRevision {
   client?: string;
   size?: string;
   description?: string;
-  integrations: string[];
+  integrationRecords: FileIntegrationRecord[];
   labels: string[];
+}
+
+export interface FileIntegrationRecord {
+  how?: string;
+  filePath?: string;
+  startRevision?: string;
+  endRevision?: string;
+  complete: boolean;
+  cyclic: boolean;
 }
 
 export interface SubmittedFile { depotPath: string; action: string; revision?: string; fileType?: string; }
