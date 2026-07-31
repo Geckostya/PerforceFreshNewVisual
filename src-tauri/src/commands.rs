@@ -5,13 +5,13 @@ use crate::{
         CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
         CreateStreamPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile,
         DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, Job, Label, LocaleCatalog, MoveInput, OpenedFile,
+        FileRevision, Fix, Job, JobForm, JobFormInput, Label, LocaleCatalog, MoveInput, OpenedFile,
         OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
         OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
         P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
         ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput,
-        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveRevisionInput, SaveShelvedInput,
-        ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
+        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveJobInput, SaveRevisionInput,
+        SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile, StreamDetail,
         StreamIntegrationInput, StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode,
         SubmitOutcome, SubmitPreflightSummary, SubmitStepResult, SubmitTerminalOutcome,
         SubmittedChangeDetail, SubmittedFilterOptions, SwitchStreamInput, SyncPreview, ThemeMode,
@@ -543,6 +543,29 @@ pub async fn list_jobs(
     tauri::async_runtime::spawn_blocking(move || p4::list_jobs(&input, search.as_deref()))
         .await
         .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn inspect_job_form(input: JobFormInput) -> Result<JobForm, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::inspect_job_form(&input.connection, input.job.as_deref())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_job(input: SaveJobInput) -> Result<Job, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_job(
+            &input.connection,
+            input.job.as_deref(),
+            &input.fields,
+            &input.form_token,
+        )
+    })
+    .await
+    .map_err(task_error)?
 }
 
 #[tauri::command]

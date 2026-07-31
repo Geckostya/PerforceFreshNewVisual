@@ -41,7 +41,7 @@ mod validation;
 use jobs::parse_fixes;
 #[cfg(test)]
 use jobs::parse_jobs;
-pub use jobs::{fix_job, list_fixes, list_jobs};
+pub use jobs::{fix_job, inspect_job_form, list_fixes, list_jobs, save_job};
 pub use labels::list_labels;
 #[cfg(test)]
 use labels::parse_labels;

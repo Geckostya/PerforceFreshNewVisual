@@ -52,6 +52,8 @@ pub fn run() {
             commands::list_depot_files,
             commands::list_pending_changes,
             commands::list_jobs,
+            commands::inspect_job_form,
+            commands::save_job,
             commands::list_labels,
             commands::list_fixes,
             commands::fix_job,

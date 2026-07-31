@@ -15,6 +15,8 @@ import type {
   LoginStatus,
   PendingChange,
   Job,
+  JobForm,
+  JobFormField,
   Label,
   Fix,
   ShelvedFile,
@@ -219,6 +221,14 @@ export async function listPendingChanges(input: ConnectionInput): Promise<Pendin
 
 export async function listJobs(input: ConnectionInput, search?: string): Promise<Job[]> {
   return invoke<Job[]>("list_jobs", { input, search });
+}
+
+export async function inspectJobForm(input: ConnectionInput, job?: string): Promise<JobForm> {
+  return invoke<JobForm>("inspect_job_form", { input: { connection: input, job } });
+}
+
+export async function saveJob(input: ConnectionInput, job: string | undefined, fields: JobFormField[], formToken: string): Promise<Job> {
+  return invoke<Job>("save_job", { input: { connection: input, job, fields, formToken } });
 }
 
 export async function listLabels(input: ConnectionInput, search?: string): Promise<Label[]> {
