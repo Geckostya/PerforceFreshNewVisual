@@ -8,6 +8,7 @@ const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   mapped: true,
   otherOpen: false,
   otherLock: false,
+  lockTopology: { explicit: "absent", exclusiveFileType: "absent", scope: "none", owner: "none" },
   unresolved: false,
   untracked: false,
   ignored: false,

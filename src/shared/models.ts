@@ -182,8 +182,15 @@ export interface StreamSummary {
 }
 
 export type StreamIntegrationDirection = "mergeDown" | "copyUp";
-export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; time?: string; description?: string; }
-export interface StreamIntegrationHint { direction: StreamIntegrationDirection; state: "supported" | "unsupported" | "unknown"; message: string; }
+export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; client?: string; time?: string; description?: string; }
+export interface StreamIntegrationHint {
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  state: "supported" | "unsupported" | "unknown";
+  partial: boolean;
+  message: string;
+}
 export interface StreamDetail {
   stream: StreamSummary;
   parentView: string;
@@ -191,8 +198,12 @@ export interface StreamDetail {
   paths: string[];
   remapped: string[];
   ignored: string[];
+  specTruncated: boolean;
   history: StreamHistoryEntry[];
+  historyTruncated: boolean;
+  historyPartial: boolean;
   hints: StreamIntegrationHint[];
+  partial: boolean;
   warnings: string[];
 }
 export interface StreamIntegrationInput {
@@ -416,6 +427,17 @@ export interface OpenedFile {
   fileType?: string;
 }
 
+export type FileLockPresence = "present" | "absent" | "unknown";
+export type FileLockScope = "none" | "local" | "global" | "unknown";
+export type FileLockOwner = "none" | "ours" | "other" | "unknown";
+export interface FileLockTopology {
+  explicit: FileLockPresence;
+  exclusiveFileType: FileLockPresence;
+  scope: FileLockScope;
+  owner: FileLockOwner;
+  ownerDetail?: string;
+}
+
 export interface WorkspaceFile {
   depotPath: string;
   clientPath?: string;
@@ -428,6 +450,7 @@ export interface WorkspaceFile {
   mapped: boolean;
   otherOpen: boolean;
   otherLock: boolean;
+  lockTopology: FileLockTopology;
   unresolved: boolean;
   untracked: boolean;
   ignored: boolean;
@@ -624,6 +647,8 @@ export interface SubmitPreflightIssue {
   depotPath: string;
   kind: string;
   detail: string;
+  reason: string;
+  action: string;
 }
 
 export interface SubmitPreflightJob { id: string; date?: string; user?: string; status?: string; }

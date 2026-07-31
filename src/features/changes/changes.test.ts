@@ -138,7 +138,7 @@ describe("shelf cache visibility", () => {
 
 describe("submit resolve gate", () => {
   it("blocks only when preflight reports an unresolved file", () => {
-    expect(hasUnresolvedSubmitIssue([{ depotPath: "//main/a", kind: "out_of_date", detail: "old" }])).toBe(false);
-    expect(hasUnresolvedSubmitIssue([{ depotPath: "//main/a", kind: "unresolved", detail: "needs resolve" }])).toBe(true);
+    expect(hasUnresolvedSubmitIssue([{ depotPath: "//main/a", kind: "out_of_date", detail: "old", reason: "old", action: "sync" }])).toBe(false);
+    expect(hasUnresolvedSubmitIssue([{ depotPath: "//main/a", kind: "unresolved", detail: "needs resolve", reason: "needs resolve", action: "resolve" }])).toBe(true);
   });
 });

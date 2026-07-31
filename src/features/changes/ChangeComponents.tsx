@@ -29,7 +29,7 @@ export function SubmitDialog({ group, shelfCount, description, setDescription, b
       {!group.isDefault && <ChangelistDescription className="dialog-description" value={group.description} fallback={t("noDescription")} />}
       {preflightReady && <dl className="dialog-facts"><dt>{t("submitTotalSize")}</dt><dd>{preflightSummary.totalSize.toLocaleString()} B</dd><dt>{t("submitJobs")}</dt><dd>{preflightSummary.jobs.length ? preflightSummary.jobs.join(", ") : "—"}</dd><dt>{t("submitJobStatus")}</dt><dd>{preflightSummary.jobDetails?.length ? preflightSummary.jobDetails.map(formatSubmitJob).join(", ") : "—"}</dd><dt>{t("submitStream")}</dt><dd>{preflightSummary.stream || "—"}</dd></dl>}
       {preflightReady && preflightSummary.warnings?.length ? <div className="submit-preflight-warning" role="status"><strong>{t("submitServerWarnings")}</strong><p>{t("submitServerWarningsBody")}</p>{preflightSummary.warnings.map((warning) => <small key={warning}>{warning}</small>)}</div> : null}
-      {preflightIssues.length > 0 && <div className="submit-preflight-warning" role="alert"><strong>{t("submitPreflightFound")}</strong><p>{unresolved ? t("submitResolveRequiredBody") : t("submitPreflightContinue")}</p>{preflightIssues.map((issue) => <div className="submit-preflight-issue" key={`${issue.depotPath}-${issue.kind}`}><strong>{preflightIssueLabel(issue.kind, t)}</strong><span>{issue.depotPath}</span><small>{issue.detail}</small></div>)}</div>}
+      {preflightIssues.length > 0 && <div className="submit-preflight-warning" role="alert"><strong>{t("submitPreflightFound")}</strong><p>{unresolved ? t("submitResolveRequiredBody") : t("submitPreflightContinue")}</p>{preflightIssues.map((issue) => <div className="submit-preflight-issue" key={`${issue.depotPath}-${issue.kind}`}><strong>{preflightIssueLabel(issue.kind, t)}</strong><span>{issue.depotPath}</span><small>{issue.reason}</small><small>{issue.action}</small></div>)}</div>}
       {both ? <div className="submit-options">
         <button type="button" disabled={busy} onClick={() => onSubmit("shelf")}><strong>{t("submitShelfOption")}</strong><span>{t("submitShelfOptionBody")}</span></button>
         <button type="button" className="danger-option" disabled={busy || unresolved} onClick={() => onSubmit("local_delete_shelf")}><strong>{t("submitLocalDeleteOption")}</strong><span>{unresolved ? t("submitResolveRequired") : t("submitLocalDeleteOptionBody")}</span></button>
@@ -44,6 +44,11 @@ function preflightIssueLabel(kind: string, t: (key: TranslationKey) => string): 
     missing: "submitIssueMissing",
     unresolved: "submitIssueUnresolved",
     locked_or_open_elsewhere: "submitIssueLocked",
+    local_lock: "submitIssueLocked",
+    global_lock: "submitIssueLocked",
+    lock_state_unknown: "submitIssueLocked",
+    exclusive_filetype: "submitIssueLocked",
+    other_open: "submitIssueLocked",
     out_of_date: "submitIssueOutOfDate",
   };
   const key = labels[kind];
