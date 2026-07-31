@@ -2413,6 +2413,15 @@
 .operations-panel button,
 .command-palette button { min-height: 32px; }
 
+.revision-graph { display: grid; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.revision-graph-source, .revision-graph-partial { margin: 0; color: var(--text-secondary); font: var(--font-caption); }
+.revision-graph-partial { color: var(--warning-text); }
+.revision-graph-edges { display: grid; gap: 4px; max-height: 220px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.revision-graph-edges li { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(44px, auto) minmax(0, 1fr); gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font: var(--font-caption); }
+.revision-graph-node { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.revision-graph-arrow { color: var(--text-secondary); }
+.revision-graph-how { min-width: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+
 @media (max-width: 760px) {
   .view-heading { align-items: stretch; flex-direction: column; }
   .view-actions, .resource-toolbar, .workspace-toolbar, .shelves-toolbar { flex-wrap: wrap; }

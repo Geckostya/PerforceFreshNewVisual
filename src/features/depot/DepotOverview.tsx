@@ -4,6 +4,7 @@ import { fileHistory, listDepotDirectories, listDepotFiles, listDepots, listSubm
 import { DiffViewer } from "../../shared/DiffViewer";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
+import { RevisionGraph } from "../history/RevisionGraphView";
 import { useLocale } from "../../shared/i18n";
 import { SelectableSurface, TreeItemRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, DepotFile, DepotSummary, FileDiff, FileIntegrationRecord, FileRevision, PendingChange } from "../../shared/models";
@@ -330,6 +331,7 @@ export function DepotOverview({ connection, refreshKey, initialScope, onDownload
               const target: DepotOverviewMenuTarget = { kind: "file", path: selected.path, revision: revision.revision };
               return <div key={revision.revision}><SelectableSurface data-agent-id={`depot-overview-revision:${selected.path}#${revision.revision}`} className="history-compact-row" tabIndex={historyBusy ? -1 : 0} aria-disabled={historyBusy} onClick={() => { if (!historyBusy) void previewRevision(revision.revision); }} onContextMenu={(event) => { if (!historyBusy) showPointerMenu(event, target); }} onKeyDown={(event) => { if (historyBusy) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void previewRevision(revision.revision); } else showKeyboardMenu(event, target); }}><ChangelistDescription value={revision.description} fallback={`${t("revisionLabel")} #${revision.revision}`} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span> · {revision.user}{revision.client ? ` · ${revision.client}` : ""}</span><small>#{revision.revision} · {revision.action || "—"}{revision.fileType ? ` · ${revision.fileType}` : ""}</small></SelectableSurface><FilelogIntegrationRecords records={revision.integrationRecords} onFollow={(path) => void inspectFile({ depotPath: path }, selected.depot)} /></div>;
             }) : <CompactEmpty text={t("depotNoHistory")} />}</section>
+            <RevisionGraph revisions={fileRevisions} historyMayBePartial={fileRevisions.length >= 100} />
             {revisionPreview && <div className="history-diff"><h2>{t("depotRevisionPreview")}</h2><DiffViewer text={revisionPreview.text || t("filesIdentical")} truncated={revisionPreview.truncated} binary={revisionPreview.binary} invalidEncoding={revisionPreview.invalidEncoding} /></div>}
           </> : <>
             <dl className="depot-overview-facts">

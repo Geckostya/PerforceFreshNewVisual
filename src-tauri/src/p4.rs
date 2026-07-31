@@ -5987,7 +5987,6 @@ fn integration_record(
         cyclic,
     })
 }
-
 fn parse_opened_files(records: &[Map<String, Value>]) -> Result<Vec<OpenedFile>, AppError> {
     records
         .iter()
