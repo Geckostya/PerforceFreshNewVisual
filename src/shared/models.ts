@@ -356,6 +356,8 @@ export interface Job {
   date?: string;
   description: string;
 }
+export interface JobFormField { name: string; value: string; }
+export interface JobForm { job?: string; fields: JobFormField[]; formToken: string; }
 
 export interface Label {
   name: string;

@@ -652,6 +652,40 @@ pub struct Job {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobFormField {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobForm {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    pub fields: Vec<JobFormField>,
+    pub form_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobFormInput {
+    pub connection: ConnectionInput,
+    #[serde(default)]
+    pub job: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveJobInput {
+    pub connection: ConnectionInput,
+    #[serde(default)]
+    pub job: Option<String>,
+    pub fields: Vec<JobFormField>,
+    pub form_token: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Label {
