@@ -182,8 +182,15 @@ export interface StreamSummary {
 }
 
 export type StreamIntegrationDirection = "mergeDown" | "copyUp";
-export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; time?: string; description?: string; }
-export interface StreamIntegrationHint { direction: StreamIntegrationDirection; state: "supported" | "unsupported" | "unknown"; message: string; }
+export interface StreamHistoryEntry { revision: string; action: string; change?: string; user?: string; client?: string; time?: string; description?: string; }
+export interface StreamIntegrationHint {
+  direction: StreamIntegrationDirection;
+  sourceStream: string;
+  targetStream: string;
+  state: "supported" | "unsupported" | "unknown";
+  partial: boolean;
+  message: string;
+}
 export interface StreamDetail {
   stream: StreamSummary;
   parentView: string;
@@ -191,8 +198,12 @@ export interface StreamDetail {
   paths: string[];
   remapped: string[];
   ignored: string[];
+  specTruncated: boolean;
   history: StreamHistoryEntry[];
+  historyTruncated: boolean;
+  historyPartial: boolean;
   hints: StreamIntegrationHint[];
+  partial: boolean;
   warnings: string[];
 }
 export interface StreamIntegrationInput {

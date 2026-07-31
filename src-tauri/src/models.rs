@@ -390,6 +390,7 @@ pub struct StreamHistoryEntry {
     pub action: String,
     pub change: Option<String>,
     pub user: Option<String>,
+    pub client: Option<String>,
     pub time: Option<String>,
     pub description: Option<String>,
 }
@@ -398,7 +399,10 @@ pub struct StreamHistoryEntry {
 #[serde(rename_all = "camelCase")]
 pub struct StreamIntegrationHint {
     pub direction: StreamIntegrationDirection,
+    pub source_stream: String,
+    pub target_stream: String,
     pub state: CapabilityState,
+    pub partial: bool,
     pub message: String,
 }
 
@@ -411,8 +415,12 @@ pub struct StreamDetail {
     pub paths: Vec<String>,
     pub remapped: Vec<String>,
     pub ignored: Vec<String>,
+    pub spec_truncated: bool,
     pub history: Vec<StreamHistoryEntry>,
+    pub history_truncated: bool,
+    pub history_partial: bool,
     pub hints: Vec<StreamIntegrationHint>,
+    pub partial: bool,
     pub warnings: Vec<String>,
 }
 
