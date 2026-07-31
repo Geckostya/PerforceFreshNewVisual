@@ -18,8 +18,9 @@ use crate::models::{
     ChangeIdentityBlocker, ChangeIdentityPreflight, ChangeIdentityState, ChangeVisibility,
     CherryPickPreviewItem, CliLogLevel, ConnectionInput, CreateStreamInput, CreateStreamPreview,
     CreateStreamType, DepotDirectory, DepotFile, DepotStateComparison, DepotStateDifference,
-    DepotSummary, DiffMode, ErrorKind, FileDiff, FileIntegrationRecord, FileRevision, HistoryPage,
-    LoginStatus, OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem,
+    DepotSummary, DiffMode, ErrorKind, FileDiff, FileIntegrationRecord, FileLockOwner,
+    FileLockPresence, FileLockScope, FileLockTopology, FileRevision, HistoryPage, LoginStatus,
+    OpenedFile, P4Detection, P4Info, PendingChange, ReconcileItem, ResolveApplyItem,
     ResolveApplyResult, ResolveConflictKind, ResolveContent, ResolveContentSide, ResolveMode,
     ResolvePreviewItem, ResolveReadBackState, ResolveScope, RevertPreviewItem, ShelvedFile,
     StreamDetail, StreamHistoryEntry, StreamIntegrationDirection, StreamIntegrationHint,
@@ -1977,6 +1978,7 @@ fn read_local_workspace_directory(
                 mapped: true,
                 other_open: false,
                 other_lock: false,
+                lock_topology: unknown_file_lock_topology(),
                 unresolved: false,
                 untracked: false,
                 ignored: false,
@@ -2163,7 +2165,7 @@ fn workspace_fstat_arguments(scope: &str) -> Vec<String> {
         "-Rc",
         "-Ol",
         "-T",
-        "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,otherLock,resolveStatus",
+        "depotFile,clientFile,path,action,change,haveRev,headRev,type,fileSize,otherOpen,ourLock,otherLock,globalLock,resolveStatus",
         scope,
     ]
     .into_iter()
@@ -2201,6 +2203,7 @@ fn merge_untracked_workspace_files(
                 mapped: true,
                 other_open: false,
                 other_lock: false,
+                lock_topology: unknown_file_lock_topology(),
                 unresolved: false,
                 untracked: true,
                 ignored: !visible.contains(item.depot_path.as_str()),
@@ -4447,7 +4450,7 @@ pub fn submit_preflight(
         "-Ro",
         "-Ol",
         "-T",
-        "depotFile,clientFile,path,action,haveRev,headRev,headAction,isMapped,resolveStatus,otherOpen,otherLock",
+        "depotFile,clientFile,path,action,haveRev,headRev,headAction,type,isMapped,resolveStatus,otherOpen,ourLock,otherLock,globalLock",
     ]);
     command.args(&paths);
     let records = run_json(&path, &mut command)?;
@@ -6273,6 +6276,62 @@ fn parse_opened_files(records: &[Map<String, Value>]) -> Result<Vec<OpenedFile>,
         .collect()
 }
 
+fn unknown_file_lock_topology() -> FileLockTopology {
+    FileLockTopology {
+        explicit: FileLockPresence::Unknown,
+        exclusive_file_type: FileLockPresence::Unknown,
+        scope: FileLockScope::Unknown,
+        owner: FileLockOwner::Unknown,
+        owner_detail: None,
+    }
+}
+
+fn file_type_is_exclusive(file_type: &str) -> bool {
+    file_type
+        .split_once('+')
+        .is_some_and(|(_, modifiers)| modifiers.contains('l'))
+}
+
+fn parse_file_lock_topology(record: &Map<String, Value>) -> FileLockTopology {
+    let our_lock = has_active_field(record, &["ourLock"]);
+    let other_lock = has_active_field(record, &["otherLock"]);
+    let global_lock = has_active_field(record, &["globalLock"]);
+    let explicit = our_lock || other_lock || global_lock;
+    let owner = match (our_lock, other_lock) {
+        (true, true) => FileLockOwner::Unknown,
+        (true, false) => FileLockOwner::Ours,
+        (false, true) => FileLockOwner::Other,
+        (false, false) if global_lock => FileLockOwner::Unknown,
+        (false, false) => FileLockOwner::None,
+    };
+    FileLockTopology {
+        explicit: if explicit {
+            FileLockPresence::Present
+        } else {
+            FileLockPresence::Absent
+        },
+        exclusive_file_type: optional_field(record, &["type", "headType"])
+            .map(|file_type| {
+                if file_type_is_exclusive(&file_type) {
+                    FileLockPresence::Present
+                } else {
+                    FileLockPresence::Absent
+                }
+            })
+            .unwrap_or(FileLockPresence::Unknown),
+        scope: if global_lock {
+            FileLockScope::Global
+        } else if our_lock || other_lock {
+            FileLockScope::Local
+        } else {
+            FileLockScope::None
+        },
+        owner,
+        owner_detail: optional_field(record, &["otherLock", "ourLock", "globalLock"])
+            .map(|value| bounded_stream_text(&value)),
+    }
+}
+
 fn parse_workspace_files(records: &[Map<String, Value>]) -> Result<Vec<WorkspaceFile>, AppError> {
     records
         .iter()
@@ -6290,6 +6349,7 @@ fn parse_workspace_files(records: &[Map<String, Value>]) -> Result<Vec<Workspace
                 mapped: optional_field(record, &["path", "clientFile"]).is_some(),
                 other_open: has_active_field(record, &["otherOpen", "otherLock"]),
                 other_lock: has_active_field(record, &["otherLock"]),
+                lock_topology: parse_file_lock_topology(record),
                 unresolved: has_active_field(record, &["resolveStatus", "unresolved"]),
                 untracked: false,
                 ignored: false,
@@ -6327,6 +6387,22 @@ fn parse_sync_preview(records: &[Map<String, Value>]) -> SyncPreview {
     }
 }
 
+fn submit_preflight_issue(
+    depot_path: String,
+    kind: &str,
+    reason: impl Into<String>,
+    action: impl Into<String>,
+) -> SubmitPreflightIssue {
+    let reason = reason.into();
+    SubmitPreflightIssue {
+        depot_path,
+        kind: kind.to_owned(),
+        detail: reason.clone(),
+        reason,
+        action: action.into(),
+    }
+}
+
 fn parse_submit_preflight(records: &[Map<String, Value>]) -> Vec<SubmitPreflightIssue> {
     records
         .iter()
@@ -6338,19 +6414,61 @@ fn parse_submit_preflight(records: &[Map<String, Value>]) -> Vec<SubmitPreflight
             };
             let mut issues = Vec::new();
             if has_active_field(record, &["resolveStatus", "unresolved"]) {
-                issues.push(SubmitPreflightIssue {
-                    depot_path: depot_path.clone(),
-                    kind: "unresolved".to_owned(),
-                    detail: "File has unresolved content.".to_owned(),
-                });
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    "unresolved",
+                    "File has unresolved content.",
+                    "Resolve the file and run submit preflight again.",
+                ));
             }
-            if has_active_field(record, &["otherOpen"]) || has_active_field(record, &["otherLock"])
+            let lock = parse_file_lock_topology(record);
+            if lock.explicit == FileLockPresence::Present
+                && lock.owner != FileLockOwner::Ours
             {
-                issues.push(SubmitPreflightIssue {
-                    depot_path: depot_path.clone(),
-                    kind: "locked_or_open_elsewhere".to_owned(),
-                    detail: "File is open or locked by another user.".to_owned(),
-                });
+                let (kind, reason, action) = match (lock.scope, lock.owner) {
+                    (FileLockScope::Global, FileLockOwner::Other) => (
+                        "global_lock",
+                        "Another workspace holds an explicit global lock.",
+                        "Ask the lock owner to release the global lock, then rerun preflight.",
+                    ),
+                    (FileLockScope::Local, FileLockOwner::Other) => (
+                        "local_lock",
+                        "Another workspace holds an explicit local lock.",
+                        "Ask the lock owner to unlock on the originating server, then rerun preflight.",
+                    ),
+                    _ => (
+                        "lock_state_unknown",
+                        "The server reported an explicit lock but did not identify its owner or scope.",
+                        "Refresh and rerun preflight; if the state remains unknown, verify the lock on the server before submitting.",
+                    ),
+                };
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    kind,
+                    reason,
+                    action,
+                ));
+            } else if has_active_field(record, &["otherOpen"]) {
+                let (kind, reason, action) =
+                    if lock.exclusive_file_type == FileLockPresence::Present {
+                        (
+                            "exclusive_filetype",
+                            "The +l file type is already open in another workspace.",
+                            "Ask the other user to submit or revert the file, then rerun preflight.",
+                        )
+                    } else {
+                        (
+                            "other_open",
+                            "The file is open in another workspace without a reported lock.",
+                            "Review the other open before submitting, then rerun preflight if it changes.",
+                        )
+                    };
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    kind,
+                    reason,
+                    action,
+                ));
             }
             let have =
                 optional_field(record, &["haveRev"]).and_then(|value| value.parse::<u64>().ok());
@@ -6359,11 +6477,12 @@ fn parse_submit_preflight(records: &[Map<String, Value>]) -> Vec<SubmitPreflight
             if let (Some(have), Some(head)) = (have, head)
                 && have < head
             {
-                issues.push(SubmitPreflightIssue {
-                    depot_path: depot_path.clone(),
-                    kind: "out_of_date".to_owned(),
-                    detail: format!("Workspace has revision {have}, depot head is {head}."),
-                });
+                issues.push(submit_preflight_issue(
+                    depot_path.clone(),
+                    "out_of_date",
+                    format!("Workspace has revision {have}, depot head is {head}."),
+                    "Sync or resolve to the depot head, then run submit preflight again.",
+                ));
             }
             issues
         })
@@ -6413,11 +6532,12 @@ fn append_resolve_issues(issues: &mut Vec<SubmitPreflightIssue>, records: &[Map<
             .iter()
             .any(|issue| issue.depot_path == depot_path && issue.kind == "unresolved")
         {
-            issues.push(SubmitPreflightIssue {
+            issues.push(submit_preflight_issue(
                 depot_path,
-                kind: "unresolved".to_owned(),
-                detail: "File still has a pending resolve.".to_owned(),
-            });
+                "unresolved",
+                "File still has a pending resolve.",
+                "Resolve the file and run submit preflight again.",
+            ));
         }
     }
 }
@@ -6431,11 +6551,12 @@ fn append_missing_file_issues(
         let Some(record) = records.iter().find(|record| {
             field(record, &["depotFile", "clientFile"]).as_deref() == Some(expected_path)
         }) else {
-            issues.push(SubmitPreflightIssue {
-                depot_path: expected_path.clone(),
-                kind: "missing".to_owned(),
-                detail: "Opened file was not returned by fstat.".to_owned(),
-            });
+            issues.push(submit_preflight_issue(
+                expected_path.clone(),
+                "missing",
+                "Opened file was not returned by fstat.",
+                "Refresh the changelist and workspace mapping before submitting.",
+            ));
             continue;
         };
         let action = field(record, &["action"]).unwrap_or_default();
@@ -6451,11 +6572,12 @@ fn append_missing_file_issues(
                 .iter()
                 .any(|issue| issue.depot_path == *expected_path && issue.kind == "missing")
         {
-            issues.push(SubmitPreflightIssue {
-                depot_path: expected_path.clone(),
-                kind: "missing".to_owned(),
-                detail: "Opened file has no mapped local path.".to_owned(),
-            });
+            issues.push(submit_preflight_issue(
+                expected_path.clone(),
+                "missing",
+                "Opened file has no mapped local path.",
+                "Restore the workspace mapping or remove the file from the changelist, then rerun preflight.",
+            ));
         }
     }
 }
@@ -8323,6 +8445,8 @@ mod tests {
             depot_path: "//Acme/main/a.txt".to_owned(),
             kind: "unresolved".to_owned(),
             detail: "existing".to_owned(),
+            reason: "existing".to_owned(),
+            action: "resolve".to_owned(),
         }];
         append_resolve_issues(&mut issues, &records);
         assert_eq!(issues.len(), 2);
@@ -8391,22 +8515,75 @@ mod tests {
     #[test]
     fn submit_preflight_reports_all_server_risks_but_ignores_empty_flags() {
         let issues = parse_submit_preflight(&parse_json_lines(
-            r#"{"depotFile":"//Acme/main/a.txt","resolveStatus":"unresolved","otherOpen":"sam","haveRev":"7","headRev":"9"}
+            r#"{"depotFile":"//Acme/main/a.txt","resolveStatus":"unresolved","otherOpen":"sam","otherLock":"sam@dev","type":"text","haveRev":"7","headRev":"9"}
 {"depotFile":"//Acme/main/b.txt","resolveStatus":"none","otherOpen":"0","otherLock":"false","haveRev":"4","headRev":"4"}"#,
         ).unwrap());
         assert_eq!(issues.len(), 3);
         assert!(issues.iter().any(|issue| issue.kind == "unresolved"));
-        assert!(
-            issues
-                .iter()
-                .any(|issue| issue.kind == "locked_or_open_elsewhere")
-        );
+        assert!(issues.iter().any(|issue| issue.kind == "local_lock"));
         assert!(issues.iter().any(|issue| issue.kind == "out_of_date"));
         assert!(
             issues
                 .iter()
                 .all(|issue| issue.depot_path == "//Acme/main/a.txt")
         );
+        assert!(issues.iter().all(|issue| !issue.reason.is_empty()));
+        assert!(issues.iter().all(|issue| !issue.action.is_empty()));
+    }
+
+    #[test]
+    fn parses_explicit_exclusive_local_global_and_unknown_lock_states() {
+        let records = parse_json_lines(
+            r#"{"depotFile":"//Acme/main/local.txt","type":"text","ourLock":"alex@dev"}
+{"depotFile":"//Acme/main/global.txt","type":"binary","otherLock":"sam@edge","globalLock":"sam@edge"}
+{"depotFile":"//Acme/main/exclusive.bin","type":"binary+l","otherOpen":"sam@edge"}
+{"depotFile":"//Acme/main/unknown.txt"}"#,
+        )
+        .unwrap();
+        let files = parse_workspace_files(&records).unwrap();
+
+        assert_eq!(files[0].lock_topology.explicit, FileLockPresence::Present);
+        assert_eq!(files[0].lock_topology.scope, FileLockScope::Local);
+        assert_eq!(files[0].lock_topology.owner, FileLockOwner::Ours);
+        assert_eq!(files[1].lock_topology.scope, FileLockScope::Global);
+        assert_eq!(files[1].lock_topology.owner, FileLockOwner::Other);
+        assert_eq!(
+            files[2].lock_topology.exclusive_file_type,
+            FileLockPresence::Present
+        );
+        assert_eq!(files[2].lock_topology.explicit, FileLockPresence::Absent);
+        assert_eq!(
+            files[3].lock_topology.exclusive_file_type,
+            FileLockPresence::Unknown
+        );
+    }
+
+    #[test]
+    fn submit_preflight_distinguishes_lock_reasons_and_recovery_actions() {
+        let issues = parse_submit_preflight(
+            &parse_json_lines(
+                r#"{"depotFile":"//Acme/main/local.txt","type":"text","otherLock":"sam@dev"}
+{"depotFile":"//Acme/main/global.txt","type":"text","otherLock":"sam@edge","globalLock":"sam@edge"}
+{"depotFile":"//Acme/main/exclusive.bin","type":"binary+l","otherOpen":"sam@edge"}
+{"depotFile":"//Acme/main/unknown.txt","type":"text","globalLock":"server-reported"}"#,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(
+            issues
+                .iter()
+                .map(|issue| issue.kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "local_lock",
+                "global_lock",
+                "exclusive_filetype",
+                "lock_state_unknown"
+            ]
+        );
+        assert!(issues.iter().all(|issue| !issue.reason.is_empty()));
+        assert!(issues.iter().all(|issue| !issue.action.is_empty()));
     }
 
     #[test]

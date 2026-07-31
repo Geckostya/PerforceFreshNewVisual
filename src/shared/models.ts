@@ -483,6 +483,17 @@ export interface OpenedFile {
   fileType?: string;
 }
 
+export type FileLockPresence = "present" | "absent" | "unknown";
+export type FileLockScope = "none" | "local" | "global" | "unknown";
+export type FileLockOwner = "none" | "ours" | "other" | "unknown";
+export interface FileLockTopology {
+  explicit: FileLockPresence;
+  exclusiveFileType: FileLockPresence;
+  scope: FileLockScope;
+  owner: FileLockOwner;
+  ownerDetail?: string;
+}
+
 export interface WorkspaceFile {
   depotPath: string;
   clientPath?: string;
@@ -495,6 +506,7 @@ export interface WorkspaceFile {
   mapped: boolean;
   otherOpen: boolean;
   otherLock: boolean;
+  lockTopology: FileLockTopology;
   unresolved: boolean;
   untracked: boolean;
   ignored: boolean;
@@ -694,6 +706,8 @@ export interface SubmitPreflightIssue {
   depotPath: string;
   kind: string;
   detail: string;
+  reason: string;
+  action: string;
 }
 
 export interface SubmitPreflightJob { id: string; date?: string; user?: string; status?: string; }

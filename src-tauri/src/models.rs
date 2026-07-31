@@ -848,6 +848,43 @@ pub struct OpenedFile {
     pub file_type: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLockPresence {
+    Present,
+    Absent,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLockScope {
+    None,
+    Local,
+    Global,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLockOwner {
+    None,
+    Ours,
+    Other,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileLockTopology {
+    pub explicit: FileLockPresence,
+    pub exclusive_file_type: FileLockPresence,
+    pub scope: FileLockScope,
+    pub owner: FileLockOwner,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_detail: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFile {
@@ -868,6 +905,7 @@ pub struct WorkspaceFile {
     pub mapped: bool,
     pub other_open: bool,
     pub other_lock: bool,
+    pub lock_topology: FileLockTopology,
     pub unresolved: bool,
     pub untracked: bool,
     pub ignored: bool,
@@ -1304,6 +1342,8 @@ pub struct SubmitPreflightIssue {
     pub depot_path: String,
     pub kind: String,
     pub detail: String,
+    pub reason: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
