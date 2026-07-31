@@ -117,7 +117,7 @@ pub fn save_job(
     if !output.status.success() {
         return Err(super::command_error(&output));
     }
-    let generated_id = field_value(&parse_job_form(&updated)?, "Job");
+    let generated_id = created_job_id(&String::from_utf8_lossy(&output.stdout));
     let id = job
         .or(generated_id)
         .filter(|value| !value.is_empty())
@@ -214,6 +214,15 @@ fn job_form_token(spec: &str) -> String {
     format!("{:x}", hasher.finish())
 }
 
+fn created_job_id(output: &str) -> Option<String> {
+    output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Job "))
+        .and_then(|line| line.split_whitespace().next())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 fn replace_job_fields(spec: &str, changes: &BTreeMap<String, String>) -> Result<String, AppError> {
     let mut lines = spec.lines().map(str::to_owned).collect::<Vec<_>>();
     for (name, value) in changes {
@@ -302,7 +311,7 @@ pub(super) fn parse_fixes(records: &[Map<String, Value>]) -> Result<Vec<Fix>, Ap
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_job_form, replace_job_fields};
+    use super::{created_job_id, parse_job_form, replace_job_fields};
     use std::collections::BTreeMap;
 
     #[test]
@@ -349,5 +358,14 @@ mod tests {
         assert!(updated.contains("Status:\ttriage"));
         assert!(updated.contains("Custom_Field:\tkeep"));
         assert!(updated.contains("Description:\n\tNew\n\tDetails"));
+    }
+
+    #[test]
+    fn create_uses_only_the_server_returned_job_id() {
+        assert_eq!(
+            created_job_id("Job job00042 saved.\n").as_deref(),
+            Some("job00042")
+        );
+        assert_eq!(created_job_id("created job00042").as_deref(), None);
     }
 }
