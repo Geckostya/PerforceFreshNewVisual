@@ -99,6 +99,8 @@ npm run build
 
 `npm run build` includes the TypeScript check, Vite production build, Rust release build, and copying language packs.
 
+Agent command timeout: allow at least 240 seconds for `npm run build`; do not use a 120-second timeout for the release gate.
+
 ## Shipping artifact
 
 On Windows, `build-release.bat` runs the standard shipping build from any working directory, activates the pinned project toolchain, verifies the executable, and prints its SHA-256 hash. The underlying command remains `npm run build` for terminals and automation.

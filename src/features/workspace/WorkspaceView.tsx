@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Activity, Ban, CalendarClock, CheckCircle2, CircleAlert, Download, FileCode2, FileImage, Files, FileText, Filter, Folder, FolderOpen, GitCommitHorizontal, HardDrive, History, List, ListTree, LoaderCircle, LockKeyhole, Minus, Pencil, Plus, ScanSearch, Search, Settings2, SlidersHorizontal, Users, type LucideIcon } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { addFiles, createWorkspace, deleteFiles, deleteLocalFile, deleteWorkspace, editFiles, fileHistory, ignoreLocalFile, inspectWorkspace, listLocalWorkspaceDirectory, listOpenedFiles, listPendingChanges, listSubmittedChanges, listWorkspaceFiles, lockFiles, moveFile, normalizeAppError, previewResolve, previewRevertSelected, reconcileScopeFromLocalDirectory, renameWorkspace, resolveFiles, revealPath, revertFiles, searchWorkspaceFiles, startReconcile, startReconcilePreview, unlockFiles, updateWorkspace } from "../../shared/api";
+import { Activity, Ban, CheckCircle2, CircleAlert, Download, FileCode2, FileImage, Files, FileText, Filter, Folder, GitCommitHorizontal, HardDrive, History, List, ListTree, LoaderCircle, LockKeyhole, Minus, Pencil, Plus, Search, SlidersHorizontal, Users, type LucideIcon } from "lucide-react";
+import { addFiles, deleteFiles, deleteLocalFile, editFiles, fileHistory, ignoreLocalFile, listLocalWorkspaceDirectory, listOpenedFiles, listPendingChanges, listSubmittedChanges, listWorkspaceFiles, lockFiles, moveFile, normalizeAppError, previewResolve, previewRevertSelected, resolveFiles, revealPath, revertFiles, searchWorkspaceFiles, startReconcile, startReconcilePreview, unlockFiles } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
-import type { AppError, ConnectionInput, FileRevision, OperationEvent, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem, WorkspaceFile, WorkspaceSearchResult, WorkspaceSpec } from "../../shared/models";
+import type { AppError, ConnectionInput, FileRevision, OperationEvent, P4Info, PendingChange, ReconcileItem, ResolveMode, ResolvePreviewItem, RevertPreviewItem, WorkspaceFile, WorkspaceSearchResult } from "../../shared/models";
 import { isOperationTerminal, startObservedOperation } from "../../shared/operations";
 import { DateSyncDialog, SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
 import { RefreshButton } from "../../shared/RefreshButton";
@@ -12,20 +11,18 @@ import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { RevisionGraph } from "../../shared/RevisionGraph";
 import { ItemRowCopy, SelectableRow, SelectableSurface, TreeItemRow } from "../../shared/ItemList";
 import { isContextMenuShortcut, retainAvailableSelection, selectionMode, updateSelection } from "../../shared/selection";
-import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, EmptyState, MenuButton, Modal, View } from "../../shared/View";
+import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, EmptyState, MenuButton, View } from "../../shared/View";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { ChangeHistoryDialog } from "./ChangeHistoryDialog";
 import { ResolveDialog } from "./ResolveDialog";
-import { WorkspaceMappingDialog } from "./WorkspaceMappingDialog";
 import { SpecializedResolveDialog } from "./SpecializedResolveDialog";
 import { buildWorkspaceTree, cancelWorkspaceSearchRequest, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, loadWorkspaceDirectoryCache, loadWorkspaceFileCache, loadWorkspaceFileCachePersistent, loadWorkspaceStatusVersion, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, saveWorkspaceFileCache, saveWorkspaceStatusVersion, toggleReconcileSelection, type WorkspaceDirectorySnapshot, type WorkspaceFilter, type WorkspaceHistorySelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileCacheKey, workspaceFileHistoryPath, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSearchCompletionFocus, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion, type WorkspaceTreeFolder } from "./workspace";
 
-type WorkspaceDialog = "details" | "create" | "edit" | "rename" | "delete" | "mappings";
-type WorkspaceDraft = { name: string; root: string; stream: string; description: string };
+type WorkspaceMenuTarget =
+  | { kind: "file"; file: WorkspaceFile; paths: string[]; scope: string; label: string }
+  | { kind: "folder"; folder: WorkspaceTreeFolder; paths: string[]; scope: string; label: string };
 
-const emptyDraft: WorkspaceDraft = { name: "", root: "", stream: "", description: "" };
-
-export function WorkspaceView({ connection, info, initialScope, initialResolveRequest, sourceControl, onNavigateDepot, onDeleted, onRenamed }: { connection: ConnectionInput; info: P4Info; initialScope?: string; initialResolveRequest?: { id: number; change: string; paths: string[] }; sourceControl?: ReactNode; onNavigateDepot?: (scope: string) => void; onDeleted?: () => void; onRenamed?: (name: string) => void }) {
+export function WorkspaceView({ connection, info, initialScope, initialResolveRequest, sourceControl, onNavigateDepot }: { connection: ConnectionInput; info: P4Info; initialScope?: string; initialResolveRequest?: { id: number; change: string; paths: string[] }; sourceControl?: ReactNode; onNavigateDepot?: (scope: string) => void }) {
   const { t, language } = useLocale();
   const initialWorkspaceScope = initialScope?.trim() || "//...";
   const initialLazyRoot = workspaceLazyRoot(connection, initialWorkspaceScope);
@@ -43,16 +40,13 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   const [reconcileStale, setReconcileStale] = useState(false);
   const [reconcileOperation, setReconcileOperation] = useState<OperationEvent>();
   const [reconcilePreviewScope, setReconcilePreviewScope] = useState<{ depot: string; label: string }>();
-  const [reconcileFolderPickerBusy, setReconcileFolderPickerBusy] = useState(false);
   const [pendingResolveMode, setPendingResolveMode] = useState<ResolveMode>();
   const [pendingResolvePaths, setPendingResolvePaths] = useState<string[]>([]);
   const [resolvePreview, setResolvePreview] = useState<ResolvePreviewItem[]>([]);
   const [resolveEditorItem, setResolveEditorItem] = useState<ResolvePreviewItem>();
   const [specializedResolveItems, setSpecializedResolveItems] = useState<ResolvePreviewItem[]>();
-  const [workspaceSpec, setWorkspaceSpec] = useState<WorkspaceSpec>();
-  const [workspaceDialog, setWorkspaceDialog] = useState<WorkspaceDialog>();
-  const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>(emptyDraft);
   const [dateSyncOpen, setDateSyncOpen] = useState(false);
+  const [dateSyncScopes, setDateSyncScopes] = useState<string[]>([]);
   const [renameDestination, setRenameDestination] = useState<string>();
   const [selectedFolders, setSelectedFolders] = useState<string[]>([]);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
@@ -64,7 +58,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   const [historyBusy, setHistoryBusy] = useState(false);
   const [revertPreviewItems, setRevertPreviewItems] = useState<RevertPreviewItem[]>();
   const [deleteLocalPath, setDeleteLocalPath] = useState<string>();
-  const workspaceMenu = useContextMenu<{ file: WorkspaceFile; paths: string[] }>();
+  const workspaceMenu = useContextMenu<WorkspaceMenuTarget>();
   const selectionAnchor = useRef<string | undefined>(undefined);
   const handledResolveRequest = useRef<number | undefined>(undefined);
   const [filter, setFilter] = useState<WorkspaceFilter>("all");
@@ -404,26 +398,6 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     }
   }
 
-  async function chooseReconcileFolder() {
-    setReconcileFolderPickerBusy(true);
-    setError(undefined);
-    try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        defaultPath: info.clientRoot || undefined,
-        title: t("reconcileFolderDialogTitle"),
-      });
-      if (!selected || Array.isArray(selected)) return;
-      const mappedScope = await reconcileScopeFromLocalDirectory(connection, selected);
-      await showReconcilePreview(mappedScope, selected);
-    } catch (reason) {
-      setError(normalizeAppError(reason));
-    } finally {
-      setReconcileFolderPickerBusy(false);
-    }
-  }
-
   async function applyReconcile() {
     if (!reconcilePreviewScope) return;
     const previousCandidates = reconcileCandidates;
@@ -551,50 +525,6 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     catch { setError({ kind: "command_failed", message: t("revealPathFailed"), hints: [] }); }
   }
 
-  async function openWorkspaceSettings() {
-    setBusy(true);
-    setError(undefined);
-    try {
-      const spec = await inspectWorkspace(connection);
-      setWorkspaceSpec(spec);
-      setWorkspaceDraft({ name: spec.name, root: spec.root, stream: spec.stream || "", description: spec.description });
-      setWorkspaceDialog("details");
-    } catch (reason) { setError(normalizeAppError(reason)); }
-    finally { setBusy(false); }
-  }
-
-  function openWorkspaceEditor(dialog: Exclude<WorkspaceDialog, "details" | "delete">) {
-    setWorkspaceDraft(dialog === "create" || !workspaceSpec ? emptyDraft : { name: workspaceSpec.name, root: workspaceSpec.root, stream: workspaceSpec.stream || "", description: workspaceSpec.description });
-    setWorkspaceDialog(dialog);
-  }
-
-  async function applyWorkspaceDialog() {
-    if (!workspaceDialog) return;
-    setBusy(true);
-    setError(undefined);
-    try {
-      if (workspaceDialog === "create") {
-        await createWorkspace(connection, { name: workspaceDraft.name.trim(), root: workspaceDraft.root.trim(), stream: workspaceDraft.stream.trim() || undefined, description: workspaceDraft.description });
-        setNotice(t("workspaceCreated"));
-      } else if (workspaceDialog === "edit" && workspaceSpec) {
-        const updated = await updateWorkspace(connection, { name: workspaceSpec.name, root: workspaceDraft.root.trim(), stream: workspaceDraft.stream.trim() || undefined, description: workspaceDraft.description });
-        setWorkspaceSpec(updated);
-        setNotice(t("workspaceUpdated"));
-      } else if (workspaceDialog === "rename" && workspaceSpec) {
-        const name = workspaceDraft.name.trim();
-        await renameWorkspace(connection, workspaceSpec.name, name);
-        setNotice(t("workspaceRenamed"));
-        onRenamed?.(name);
-      } else if (workspaceDialog === "delete" && workspaceSpec) {
-        await deleteWorkspace(connection, workspaceSpec.name);
-        setNotice(t("workspaceDeleted"));
-        onDeleted?.();
-      }
-      setWorkspaceDialog(undefined);
-    } catch (reason) { setError(normalizeAppError(reason)); }
-    finally { setBusy(false); }
-  }
-
   async function applyRename() {
     if (selected.length !== 1 || !renameDestination?.trim()) return;
     const source = selected[0];
@@ -626,7 +556,20 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     const paths = selected.includes(file.depotPath) ? selected : [file.depotPath];
     if (!selected.includes(file.depotPath)) setSelected(paths);
     setSelectedFolders([]);
-    workspaceMenu.open(event, { file, paths });
+    workspaceMenu.open(event, { kind: "file", file, paths, scope: file.depotPath, label: file.depotPath });
+  }
+
+  function openFolderMenu(event: React.MouseEvent | React.KeyboardEvent, folder: WorkspaceTreeFolder) {
+    const scope = `${folder.path.replace(/\/+$/, "")}/...`;
+    setSelected([]);
+    setSelectedFolders([folder.path]);
+    selectionAnchor.current = `folder:${folder.path}`;
+    workspaceMenu.open(event, { kind: "folder", folder, paths: [scope], scope, label: folder.path });
+  }
+
+  function openDateSync(scopes: string[]) {
+    setDateSyncScopes(scopes);
+    setDateSyncOpen(true);
   }
 
   const activeFiles = searchResult?.result.files ?? files;
@@ -731,7 +674,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
         primary={folder.name}
         secondary={folder.path}
         trailing={<span className="folder-summary-meta"><small>{folder.loaded ? folderFileCount(folder) : "…"}</small></span>}
-        selectProps={{ "aria-label": ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name, onClick: (event) => selectFolder(folder, event), onDoubleClick: () => setFolderOpen(folder, !open) }}
+        selectProps={{ "aria-label": ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name, onClick: (event) => selectFolder(folder, event), onDoubleClick: () => setFolderOpen(folder, !open), onContextMenu: (event) => openFolderMenu(event, folder), onKeyDown: (event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openFolderMenu(event, folder); } }}
       />
       {open && <div role="group">{renderTree(folder.folders, depth + 1)}{folder.files.map((file) => renderFile(file, depth + 1))}</div>}
     </div>;
@@ -762,7 +705,9 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
   }, [connection, selectedFile, selectedFolder, selectedHistoryPath]);
 
   const menu = workspaceMenu.menu?.target;
-  const menuFiles = menu ? activeFiles.filter((file) => menu.paths.includes(file.depotPath)) : [];
+  const menuFile = menu?.kind === "file" ? menu.file : undefined;
+  const menuPaths = menu?.paths ?? [];
+  const menuFiles = menuFile ? activeFiles.filter((file) => menuPaths.includes(file.depotPath)) : [];
   const menuChange = menuFiles[0]?.change || "default";
   const menuCanRevert = menuFiles.length > 0 && menuFiles.every((file) => Boolean(file.action) && (file.change || "default") === menuChange);
   const menuCanResolve = menuFiles.length > 0 && menuFiles.every((file) => file.unresolved);
@@ -798,14 +743,14 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     id="workspace-files-title"
     title={t("filesTitle")}
     subtitle={`${info.clientRoot || connection.client} · ${t("workspaceFilesBody")}`}
-    busy={busy || reconcileFolderPickerBusy}
+    busy={busy}
     error={error}
     notice={notice}
     operationLabel={reconcileOperation ? reconcilePhase : safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
     operationDetail={reconcileDetail}
     operationRatio={reconcileRatio}
     onDismissNotice={() => setNotice("")}
-    actions={<><button data-agent-id="workspace-spec" className="secondary-button button-with-icon" type="button" onClick={() => void openWorkspaceSettings()} disabled={busy || reconcileFolderPickerBusy}><Settings2 className="ui-icon" aria-hidden="true" />{t("workspaceSpec")}</button><button className="secondary-button button-with-icon" type="button" onClick={() => void showReconcilePreview()} disabled={busy || reconcileFolderPickerBusy}><ScanSearch className="ui-icon" aria-hidden="true" />{t("reconcile")}</button><button data-agent-id="reconcile-folder" className="secondary-button button-with-icon" type="button" onClick={() => void chooseReconcileFolder()} disabled={busy || reconcileFolderPickerBusy}><FolderOpen className="ui-icon" aria-hidden="true" />{t(reconcileFolderPickerBusy ? "reconcileFolderChoosing" : "reconcileFolder")}</button><button data-agent-id="date-sync-open" className="secondary-button button-with-icon" type="button" onClick={() => setDateSyncOpen(true)} disabled={busy || reconcileFolderPickerBusy || safeSync.phase !== "idle"}><CalendarClock className="ui-icon" aria-hidden="true" />{t("dateSyncAction")}</button><RefreshButton busy={busy || reconcileFolderPickerBusy} onClick={() => void refreshLoadedDirectories()} /><button className="primary-button button-with-icon update-project-button" type="button" onClick={() => void safeSync.start([scope])} disabled={busy || reconcileFolderPickerBusy || safeSync.phase !== "idle"}><Download className="ui-icon" aria-hidden="true" />{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button></>}
+    actions={<><RefreshButton busy={busy} onClick={() => void refreshLoadedDirectories()} /><button className="primary-button button-with-icon update-project-button" type="button" onClick={() => void safeSync.start([scope])} disabled={busy || safeSync.phase !== "idle"}><Download className="ui-icon" aria-hidden="true" />{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button></>}
     statusBarActions={sourceControl}
   >
     <details className="files-options workspace-options">
@@ -861,31 +806,35 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
     </div>
 
     {menu && workspaceMenu.menu && <ContextMenu x={workspaceMenu.menu.x} y={workspaceMenu.menu.y} onSelect={workspaceMenu.close}>
-      <MenuButton onClick={() => void safeSync.start(menu.paths)}>{t("updateSelected")}</MenuButton>
-      {menu.paths.length === 1 && <MenuButton onClick={() => void copyPath(menu.file.depotPath)}>{t("copyDepotPath")}</MenuButton>}
-      {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void copyPath(menu.file.localPath!)}>{t("copyLocalPath")}</MenuButton>}
-      {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void revealLocalPath(menu.file.localPath!)}>{t("revealInExplorer")}</MenuButton>}
-      {menu.paths.length === 1 && menu.file.mapped && onNavigateDepot && <MenuButton onClick={() => onNavigateDepot(menu.file.depotPath)}>{t("showInDepotFiles")}</MenuButton>}
-      {menuFiles.every((file) => !file.action && !file.untracked) && <MenuButton onClick={() => void run(() => editFiles(connection, change, menu.paths))}>{t("openForEdit")}</MenuButton>}
-      {menuFiles.every((file) => file.untracked && !file.ignored) && <MenuButton onClick={() => void run(() => addFiles(connection, change, menu.paths))}>{t("markForAdd")}</MenuButton>}
-      {menu.paths.length === 1 && menu.file.untracked && menu.file.localPath && <MenuButton onClick={() => void run(() => ignoreLocalFile(connection, menu.file.localPath!), t("fileIgnored"))}>{t("addToIgnore")}</MenuButton>}
-      {menuFiles.every((file) => !file.untracked && !file.action) && <MenuButton onClick={() => void run(() => deleteFiles(connection, change, menu.paths))}>{t("markForDelete")}</MenuButton>}
-      {menu.paths.length === 1 && <MenuButton onClick={() => setRenameDestination(menu.file.depotPath)}>{t("renameFile")}</MenuButton>}
-      {menuCanRevert && <MenuButton onClick={() => void run(() => lockFiles(connection, menuChange, menu.paths))}>{t("lockFiles")}</MenuButton>}
-      {menuCanRevert && <MenuButton onClick={() => void run(() => unlockFiles(connection, menuChange, menu.paths))}>{t("unlockFiles")}</MenuButton>}
-      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("yours", menu.paths)}>{t("resolveKeepWorkspace")}</MenuButton>}
-      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("theirs", menu.paths)}>{t("resolveAcceptServer")}</MenuButton>}
-      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoSafe", menu.paths)}>{t("resolveAutoSafe")}</MenuButton>}
-      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoMerge", menu.paths)}>{t("resolveAutoMerge")}</MenuButton>}
-      {menuCanResolve && menu.paths.length === 1 && <MenuButton onClick={() => void showResolveEditor(menu.paths[0])}>{t("resolveEditor")}</MenuButton>}
-      {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("yours", menu.paths)}>{t("resolveSpecializedReview")}</MenuButton>}
-      {menuCanRevert && <MenuButton danger onClick={() => void openRevert(menu.paths)}>{t("revertSelected")}</MenuButton>}
-      {menu.paths.length === 1 && menu.file.localPath && <MenuButton danger onClick={() => setDeleteLocalPath(menu.file.localPath)}>{t("deleteLocally")}</MenuButton>}
+      <MenuButton disabled={busy || safeSync.phase !== "idle"} onClick={() => void showReconcilePreview(menu.scope, menu.label)}>{t("reconcile")}</MenuButton>
+      <MenuButton disabled={busy || safeSync.phase !== "idle"} onClick={() => openDateSync(menu.paths)}>{t("dateSyncAction")}</MenuButton>
+      <MenuButton disabled={busy || safeSync.phase !== "idle"} onClick={() => void safeSync.start(menu.paths)}>{t("updateSelected")}</MenuButton>
+      {menu.kind === "file" && <>
+        {menu.paths.length === 1 && <MenuButton onClick={() => void copyPath(menu.file.depotPath)}>{t("copyDepotPath")}</MenuButton>}
+        {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void copyPath(menu.file.localPath!)}>{t("copyLocalPath")}</MenuButton>}
+        {menu.paths.length === 1 && menu.file.localPath && <MenuButton onClick={() => void revealLocalPath(menu.file.localPath!)}>{t("revealInExplorer")}</MenuButton>}
+        {menu.paths.length === 1 && menu.file.mapped && onNavigateDepot && <MenuButton onClick={() => onNavigateDepot(menu.file.depotPath)}>{t("showInDepotFiles")}</MenuButton>}
+        {menuFiles.every((file) => !file.action && !file.untracked) && <MenuButton onClick={() => void run(() => editFiles(connection, change, menu.paths))}>{t("openForEdit")}</MenuButton>}
+        {menuFiles.every((file) => file.untracked && !file.ignored) && <MenuButton onClick={() => void run(() => addFiles(connection, change, menu.paths))}>{t("markForAdd")}</MenuButton>}
+        {menu.paths.length === 1 && menu.file.untracked && menu.file.localPath && <MenuButton onClick={() => void run(() => ignoreLocalFile(connection, menu.file.localPath!), t("fileIgnored"))}>{t("addToIgnore")}</MenuButton>}
+        {menuFiles.every((file) => !file.untracked && !file.action) && <MenuButton onClick={() => void run(() => deleteFiles(connection, change, menu.paths))}>{t("markForDelete")}</MenuButton>}
+        {menu.paths.length === 1 && <MenuButton onClick={() => setRenameDestination(menu.file.depotPath)}>{t("renameFile")}</MenuButton>}
+        {menuCanRevert && <MenuButton onClick={() => void run(() => lockFiles(connection, menuChange, menu.paths))}>{t("lockFiles")}</MenuButton>}
+        {menuCanRevert && <MenuButton onClick={() => void run(() => unlockFiles(connection, menuChange, menu.paths))}>{t("unlockFiles")}</MenuButton>}
+        {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("yours", menu.paths)}>{t("resolveKeepWorkspace")}</MenuButton>}
+        {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("theirs", menu.paths)}>{t("resolveAcceptServer")}</MenuButton>}
+        {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoSafe", menu.paths)}>{t("resolveAutoSafe")}</MenuButton>}
+        {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("autoMerge", menu.paths)}>{t("resolveAutoMerge")}</MenuButton>}
+        {menuCanResolve && menu.paths.length === 1 && <MenuButton onClick={() => void showResolveEditor(menu.paths[0])}>{t("resolveEditor")}</MenuButton>}
+        {menuCanResolve && <MenuButton onClick={() => void showResolvePreview("yours", menu.paths)}>{t("resolveSpecializedReview")}</MenuButton>}
+        {menuCanRevert && <MenuButton danger onClick={() => void openRevert(menu.paths)}>{t("revertSelected")}</MenuButton>}
+        {menu.paths.length === 1 && menu.file.localPath && <MenuButton danger onClick={() => setDeleteLocalPath(menu.file.localPath)}>{t("deleteLocally")}</MenuButton>}
+      </>}
     </ContextMenu>}
 
     <SafeSyncConflictDialog sync={safeSync} />
 
-    {dateSyncOpen && <DateSyncDialog connection={connection} scopes={[scope]} serverDate={info.serverDate} onClose={() => setDateSyncOpen(false)} onConfirm={(datedScopes) => { setDateSyncOpen(false); void safeSync.start(datedScopes); }} />}
+    {dateSyncOpen && <DateSyncDialog connection={connection} scopes={dateSyncScopes} serverDate={info.serverDate} onClose={() => setDateSyncOpen(false)} onConfirm={(datedScopes) => { setDateSyncOpen(false); void safeSync.start(datedScopes); }} />}
 
     {reconcileCandidates && reconcilePreviewScope && <ActionDialog title={t("reconcilePreviewTitle")} confirmLabel={t("applyReconcile")} busy={busy} confirmDisabled={!reconcileSelected.length || reconcileStale} onClose={() => { setReconcileCandidates(undefined); setReconcilePreviewScope(undefined); }} onConfirm={() => void applyReconcile()}><p>{reconcileStale ? t("reconcileStaleBody") : t("reconcilePreviewBody")}</p><p title={`${reconcilePreviewScope.label} → ${reconcilePreviewScope.depot}`}><strong>{t("reconcileScope")}:</strong> {reconcilePreviewScope.label}{reconcilePreviewScope.label !== reconcilePreviewScope.depot ? ` → ${reconcilePreviewScope.depot}` : ""}</p>{reconcileStale && <button className="secondary-button" type="button" onClick={() => void showReconcilePreview(reconcilePreviewScope.depot, reconcilePreviewScope.label)}>{t("refreshReconcilePreview")}</button>}<div className="resource-detail-list">{reconcileCandidates.length ? reconcileGroups.map((group) => <section key={group.action} className="reconcile-group"><h3>{t(`reconcileGroup_${group.action}` as never)} · {group.items.length}</h3>{group.items.map((item) => { const disabled = item.ignored || item.unsafeItem || item.action === "unsafe"; const reasons = item.reasons.map((reason) => t(`reconcileReason_${reason}` as never)).join(" · "); return <SelectableRow aria-disabled={disabled} selected={reconcileSelected.some((selectedItem) => selectedItem.stableId === item.stableId)} className="resource-entry preview-select" key={item.stableId} onClick={() => setReconcileSelected((current) => toggleReconcileSelection(current, item))}><ItemRowCopy primary={item.depotPath} secondary={<>{t(`reconcileGroup_${item.action}` as never)}{item.localPath ? ` · ${item.localPath}` : ""}{reasons ? ` · ${reasons}` : ""}</>} /></SelectableRow>; })}</section>) : <CompactEmpty text={t("noReconcileChanges")} />}</div></ActionDialog>}
 
@@ -903,13 +852,6 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
 
     {historyChange && <ChangeHistoryDialog connection={connection} change={historyChange} onClose={() => setHistoryChange(undefined)} />}
 
-    {workspaceDialog === "details" && workspaceSpec && <Modal title={t("workspaceSpecTitle")} busy={busy} onClose={() => setWorkspaceDialog(undefined)}><div className="dialog-body"><p>{workspaceSpec.description || t("workspaceSpecNoValue")}</p><dl className="dialog-facts"><dt>{t("workspaceSpecName")}</dt><dd>{workspaceSpec.name}</dd><dt>{t("workspaceSpecOwner")}</dt><dd>{workspaceSpec.owner}</dd><dt>{t("workspaceSpecRoot")}</dt><dd>{workspaceSpec.root}</dd><dt>{t("workspaceSpecAltRoots")}</dt><dd>{workspaceSpec.altRoots.join(" · ") || "—"}</dd><dt>{t("workspaceSpecHost")}</dt><dd>{workspaceSpec.host || "—"}</dd><dt>{t("workspaceSpecStream")}</dt><dd>{workspaceSpec.stream || "—"}</dd><dt>{t("workspaceSpecType")}</dt><dd>{workspaceSpec.workspaceType}</dd><dt>{t("workspaceSpecServerBinding")}</dt><dd>{workspaceSpec.serverId || "—"}</dd><dt>{t("workspaceSpecOptions")}</dt><dd>{workspaceSpec.options.join(" · ") || "—"}</dd><dt>{t("workspaceSpecSubmitOptions")}</dt><dd>{workspaceSpec.submitOptions || "—"}</dd><dt>{t("workspaceSpecLineEnd")}</dt><dd>{workspaceSpec.lineEnd || "—"}</dd><dt>{t("workspaceSpecChangeView")}</dt><dd>{workspaceSpec.changeView.join(" · ") || "—"}</dd></dl><section><h3>{t("workspaceSpecMappings")}</h3><div className="resource-detail-list">{workspaceSpec.mappings.length ? workspaceSpec.mappings.map((mapping) => <div className="resource-detail-row" key={mapping}><span><strong>{mapping}</strong></span></div>) : <CompactEmpty text={t("workspaceSpecNoMappings")} />}</div>{workspaceSpec.stream && <p className="workspace-mapping-stream-note">{t("workspaceMappingStreamUnsupported")}</p>}</section></div><div className="dialog-actions workspace-spec-actions"><button className="secondary-button" data-agent-id="edit-workspace-mappings" type="button" disabled={Boolean(workspaceSpec.stream)} onClick={() => setWorkspaceDialog("mappings")}>{t("workspaceMappingEditorTitle")}</button><button className="secondary-button" type="button" onClick={() => openWorkspaceEditor("create")}>{t("createWorkspace")}</button><button className="secondary-button" type="button" onClick={() => openWorkspaceEditor("edit")}>{t("editWorkspace")}</button><button className="secondary-button" type="button" onClick={() => openWorkspaceEditor("rename")}>{t("renameWorkspace")}</button><button className="danger-button" type="button" onClick={() => setWorkspaceDialog("delete")}>{t("deleteWorkspace")}</button></div></Modal>}
-
-    {workspaceDialog === "mappings" && workspaceSpec && <WorkspaceMappingDialog connection={connection} workspace={workspaceSpec.name} onClose={() => setWorkspaceDialog("details")} onSaved={(spec) => { setWorkspaceSpec(spec); setNotice(t("workspaceMappingSaved")); setWorkspaceDialog("details"); }} />}
-
-    {(workspaceDialog === "create" || workspaceDialog === "edit" || workspaceDialog === "rename") && <ActionDialog title={workspaceDialog === "create" ? t("createWorkspace") : workspaceDialog === "edit" ? t("editWorkspace") : t("renameWorkspace")} confirmLabel={workspaceDialog === "create" ? t("createWorkspace") : workspaceDialog === "edit" ? t("save") : t("renameWorkspace")} busy={busy} confirmDisabled={!workspaceDraft.name.trim() || (workspaceDialog !== "rename" && !workspaceDraft.root.trim())} onClose={() => setWorkspaceDialog(workspaceSpec ? "details" : undefined)} onConfirm={() => void applyWorkspaceDialog()}><p>{workspaceDialog === "create" ? t("workspaceCreateConfirm") : workspaceDialog === "edit" ? t("workspaceEditConfirm") : t("workspaceRenameConfirm")}</p><label className="field"><span className="field-label">{t("workspaceSpecName")}</span><input value={workspaceDraft.name} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, name: event.target.value })} disabled={workspaceDialog === "edit"} /></label>{workspaceDialog !== "rename" && <><label className="field"><span className="field-label">{t("workspaceSpecRoot")}</span><input value={workspaceDraft.root} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, root: event.target.value })} /></label><label className="field"><span className="field-label">{t("workspaceSpecStream")}</span><input value={workspaceDraft.stream} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, stream: event.target.value })} /></label><label className="field"><span className="field-label">{t("workspaceDescriptionPrompt")}</span><textarea value={workspaceDraft.description} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, description: event.target.value })} /></label></>}</ActionDialog>}
-
-    {workspaceDialog === "delete" && workspaceSpec && <ActionDialog danger title={t("deleteWorkspace")} confirmLabel={t("deleteWorkspace")} busy={busy} onClose={() => setWorkspaceDialog("details")} onConfirm={() => void applyWorkspaceDialog()}><p>{t("workspaceDeleteConfirm")}</p><strong>{workspaceSpec.name}</strong></ActionDialog>}
   </View>;
 }
 
