@@ -764,10 +764,10 @@ fn run_workspace_scan(
 fn prepare_workspace_scan(request: &mut WorkspaceScanRequest, cache: &WorkspaceScanCacheStore) {
     let cache_file = cache.load();
     let cached_entry = workspace_scan_cache::cache_entry(&cache_file, &request.scope_id);
-    if request.cached_candidates.is_empty() {
-        if let Some(entry) = cached_entry.as_ref() {
-            request.cached_candidates = entry.candidates.clone();
-        }
+    if request.cached_candidates.is_empty()
+        && let Some(entry) = cached_entry.as_ref()
+    {
+        request.cached_candidates = entry.candidates.clone();
     }
     let now = operation_started_at_ms();
     request.force_full = request.force_full
@@ -1193,40 +1193,40 @@ pub async fn open_workspace(
     scans.reset(&registry_input, &info)?;
     let saved_configuration =
         settings::workspace_scan_configuration(&settings_path(&app)?, &registry_input)?;
-    if let Some(saved_configuration) = saved_configuration {
-        if let Ok(workspace_root) = roots.root(&registry_input) {
-            let request_workspace_root = workspace_root.clone();
-            let scan_input = registry_input.clone();
-            let requested_roots = saved_configuration.roots;
-            let requested_exclusions = saved_configuration.exclusions;
-            let configuration = tauri::async_runtime::spawn_blocking(move || {
-                p4::configure_workspace_scan(
-                    &scan_input,
-                    &workspace_root,
-                    &requested_roots,
-                    &requested_exclusions,
-                )
-            })
-            .await
-            .map_err(task_error)?;
-            if let Ok(configuration) = configuration {
-                let identity = scans.identity(&registry_input)?;
-                let snapshot = scans.configure(
-                    &identity,
-                    configuration.roots,
-                    configuration.exclusions,
-                    configuration.partial_reasons,
-                )?;
-                scheduler.schedule(
-                    WorkspaceScanRequest::new(
-                        registry_input.clone(),
-                        request_workspace_root,
-                        &snapshot,
-                        false,
-                    ),
-                    WORKSPACE_SCAN_DEBOUNCE,
-                )?;
-            }
+    if let Some(saved_configuration) = saved_configuration
+        && let Ok(workspace_root) = roots.root(&registry_input)
+    {
+        let request_workspace_root = workspace_root.clone();
+        let scan_input = registry_input.clone();
+        let requested_roots = saved_configuration.roots;
+        let requested_exclusions = saved_configuration.exclusions;
+        let configuration = tauri::async_runtime::spawn_blocking(move || {
+            p4::configure_workspace_scan(
+                &scan_input,
+                &workspace_root,
+                &requested_roots,
+                &requested_exclusions,
+            )
+        })
+        .await
+        .map_err(task_error)?;
+        if let Ok(configuration) = configuration {
+            let identity = scans.identity(&registry_input)?;
+            let snapshot = scans.configure(
+                &identity,
+                configuration.roots,
+                configuration.exclusions,
+                configuration.partial_reasons,
+            )?;
+            scheduler.schedule(
+                WorkspaceScanRequest::new(
+                    registry_input.clone(),
+                    request_workspace_root,
+                    &snapshot,
+                    false,
+                ),
+                WORKSPACE_SCAN_DEBOUNCE,
+            )?;
         }
     }
     Ok(info)

@@ -139,7 +139,7 @@ pub(crate) fn snapshot_root(
     while let Some(directory) = pending.pop() {
         let directory_key = display_path(&directory);
         let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        entries.sort_by_key(|entry| entry.file_name());
         let mut entry_count = 0_u64;
         let mut file_count = 0_u64;
         let mut latest_file_modified_ns = 0_u128;
