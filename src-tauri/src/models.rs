@@ -1172,10 +1172,13 @@ pub struct WorkspaceScanCoverage {
     pub state: WorkspaceScanCoverageState,
     pub completed_roots: usize,
     pub total_roots: usize,
+    pub completed_directories: usize,
+    pub total_directories: usize,
     pub candidate_count: usize,
     pub candidate_limit: usize,
     pub partial_reasons: Vec<WorkspaceScanPartialReason>,
     pub current_root: Option<String>,
+    pub current_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

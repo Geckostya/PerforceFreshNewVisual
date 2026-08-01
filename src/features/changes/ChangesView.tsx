@@ -20,6 +20,7 @@ import {
   previewUnshelve,
   previewRevertUnchanged,
   reopenFiles,
+  refreshWorkspaceScan,
   revertFiles,
   revertUnchanged,
   saveRevertPreference,
@@ -162,6 +163,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   const [description, setDescription] = useState("");
   const [unshelveTarget, setUnshelveTarget] = useState("default");
   const [actionRunning, setActionRunning] = useState(false);
+  const [scanRefreshRunning, setScanRefreshRunning] = useState(false);
   const [deleteAddedFiles, setDeleteAddedFiles] = useState(false);
   const [revertAfterShelf, setRevertAfterShelf] = useState(false);
   const [unshelvePaths, setUnshelvePaths] = useState<string[]>([]);
@@ -244,6 +246,21 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     setSelectedUnopenedCandidate(candidate.stableId);
     fileSelection.clear();
     setDiff(undefined);
+  }
+
+  async function refreshView() {
+    setScanRefreshRunning(true);
+    setError(undefined);
+    try {
+      if (workspaceScan?.roots.length) {
+        await refreshWorkspaceScan(connection);
+      }
+    } catch (reason) {
+      setError(normalizeAppError(reason));
+    } finally {
+      refreshData();
+      setScanRefreshRunning(false);
+    }
   }
 
   function selectOpened(file: OpenedFile, event?: React.MouseEvent) {
@@ -609,9 +626,15 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
   const unopenedCoverageReasons = unopenedGroup?.coverage.partialReasons
     .map((reason) => t(workspaceScanReasonKey(reason))) ?? [];
   const unopenedScanActive = unopenedGroup?.coverage.state === "scanning";
+  const unopenedFolderProgress = unopenedGroup && unopenedGroup.coverage.totalDirectories > 0
+    ? Math.round((unopenedGroup.coverage.completedDirectories / unopenedGroup.coverage.totalDirectories) * 100)
+    : undefined;
   const unopenedScanDetail = unopenedGroup ? [
-    unopenedGroup.coverage.currentRoot
-      ? `${t("unopenedScanningPath")}: ${unopenedGroup.coverage.currentRoot}`
+    unopenedGroup.coverage.currentDirectory ?? unopenedGroup.coverage.currentRoot
+      ? `${t("unopenedScanningPath")}: ${unopenedGroup.coverage.currentDirectory ?? unopenedGroup.coverage.currentRoot}`
+      : undefined,
+    unopenedGroup.coverage.totalDirectories > 0
+      ? `${unopenedGroup.coverage.completedDirectories} / ${unopenedGroup.coverage.totalDirectories} ${t("unopenedFoldersChecked")}`
       : undefined,
     `${unopenedGroup.coverage.completedRoots} / ${unopenedGroup.coverage.totalRoots} ${t("unopenedRootsChecked")}`,
     `${unopenedGroup.coverage.candidateCount} ${t("unopenedFilesCount")}`,
@@ -639,7 +662,11 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       onDismissNotice={() => setNotice("")}
       actions={<>
           <span className="auto-refresh"><span aria-hidden="true" />{t("refreshOnFocus")}</span>
-          <RefreshButton busy={state === "loading"} onClick={() => void refreshData()} />
+          <RefreshButton
+            agentId="changes-refresh"
+            busy={state === "loading" || scanRefreshRunning || unopenedScanActive}
+            onClick={() => void refreshView()}
+          />
           <button className="primary-button update-project-button" type="button" onClick={() => void safeSync.start(["//..."])} disabled={mutationsBlocked || safeSync.phase !== "idle"} aria-describedby={isUnopenedSelected ? "unopened-read-only-reason" : resourceMutationsBlocked ? "changes-stale-reason" : undefined}>{safeSync.phase === "idle" ? t("updateProject") : t("updatingProject")}</button>
       </>}
     >
@@ -709,6 +736,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
               <div>
                 <strong>{unopenedScanActive ? t("unopenedScanning") : t("unopenedCoverageSummary").replace("{completed}", String(unopenedGroup.coverage.completedRoots)).replace("{total}", String(unopenedGroup.coverage.totalRoots)).replace("{state}", unopenedCoverageLabel)}</strong>
                 {unopenedScanActive && unopenedScanDetail && <span>{unopenedScanDetail}</span>}
+                {unopenedScanActive && unopenedFolderProgress !== undefined && <div className="unopened-scan-progress" role="progressbar" aria-label={t("unopenedFolderProgress")} aria-valuemin={0} aria-valuemax={unopenedGroup.coverage.totalDirectories} aria-valuenow={unopenedGroup.coverage.completedDirectories}><span style={{ width: `${unopenedFolderProgress}%` }} /></div>}
                 {!unopenedScanActive && unopenedCoverageReasons.length > 0 && <span>{unopenedCoverageReasons.join(" · ")}</span>}
               </div>
             </div>

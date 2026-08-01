@@ -43,7 +43,13 @@ export function useChangesData(
     setWorkspaceScan(undefined);
     const refreshScan = () => {
       void getWorkspaceScanSnapshot(connection)
-        .then((snapshot) => { if (active) setWorkspaceScan(snapshot); })
+        .then((snapshot) => {
+          if (!active) return;
+          setWorkspaceScan((current) => current?.scopeId === snapshot.scopeId
+            && current.generatedAtMs === snapshot.generatedAtMs
+            ? current
+            : snapshot);
+        })
         .catch(() => undefined);
     };
     refreshScan();

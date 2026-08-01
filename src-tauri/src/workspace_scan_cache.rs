@@ -1,7 +1,7 @@
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -24,6 +24,8 @@ pub(crate) struct WorkspaceScanCacheEntry {
     pub scope_id: String,
     pub roots: Vec<WorkspaceScanRootCache>,
     pub candidates: Vec<WorkspaceScanCandidate>,
+    #[serde(default)]
+    pub validated_at_ms: u64,
     pub last_full_scan_ms: u64,
 }
 
@@ -47,6 +49,105 @@ pub(crate) struct WorkspaceRootFingerprint {
     pub directories: BTreeMap<String, WorkspaceDirectoryFingerprint>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspaceRootSnapshotter {
+    local_path: String,
+    exclusions: Vec<String>,
+    pending: Vec<PathBuf>,
+    directories: BTreeMap<String, WorkspaceDirectoryFingerprint>,
+}
+
+impl WorkspaceRootSnapshotter {
+    pub(crate) fn new(root: &Path, exclusions: &[String]) -> io::Result<Self> {
+        let root = fs::canonicalize(root)?;
+        if !root.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "scan root is not a directory",
+            ));
+        }
+        Ok(Self {
+            local_path: display_path(&root),
+            exclusions: exclusions.to_vec(),
+            pending: vec![root],
+            directories: BTreeMap::new(),
+        })
+    }
+
+    pub(crate) fn scan_next(&mut self) -> io::Result<Option<String>> {
+        let Some(directory) = self.pending.pop() else {
+            return Ok(None);
+        };
+        let directory_key = display_path(&directory);
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        let mut entry_count = 0_u64;
+        let mut file_count = 0_u64;
+        let mut latest_file_modified_ns = 0_u128;
+        let mut digest = 0xcbf29ce484222325_u64;
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if is_excluded(&path, &self.exclusions) || file_type.is_symlink() {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            let modified_ns = modified_ns(&metadata);
+            let kind = if file_type.is_dir() {
+                2_u8
+            } else if file_type.is_file() {
+                1_u8
+            } else {
+                0_u8
+            };
+            if kind == 0 {
+                continue;
+            }
+            entry_count += 1;
+            if kind == 1 {
+                file_count += 1;
+                latest_file_modified_ns = latest_file_modified_ns.max(modified_ns);
+            } else {
+                self.pending.push(path);
+            }
+            digest = fnv_update(digest, entry.file_name().to_string_lossy().as_bytes());
+            digest = fnv_update(digest, &[0]);
+            digest = fnv_update(digest, &[kind]);
+            if kind == 1 {
+                digest = fnv_update(digest, &metadata.len().to_le_bytes());
+                // Keep the v1 fingerprint encoding stable for existing caches.
+                digest = fnv_update(digest, &metadata.len().to_le_bytes());
+                digest = fnv_update(digest, &modified_ns.to_le_bytes());
+            }
+        }
+        self.directories.insert(
+            directory_key.clone(),
+            WorkspaceDirectoryFingerprint {
+                entry_count,
+                file_count,
+                latest_file_modified_ns,
+                digest,
+            },
+        );
+        Ok(Some(directory_key))
+    }
+
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub(crate) fn scanned_count(&self) -> usize {
+        self.directories.len()
+    }
+
+    pub(crate) fn finish(self) -> WorkspaceRootFingerprint {
+        WorkspaceRootFingerprint {
+            local_path: self.local_path,
+            directories: self.directories,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct WorkspaceScanCacheStore {
     path: PathBuf,
@@ -66,10 +167,11 @@ impl WorkspaceScanCacheStore {
         if decoder.read_to_end(&mut decoded).is_err() {
             return WorkspaceScanCacheFile::default();
         }
-        let Ok(cache) = serde_json::from_slice::<WorkspaceScanCacheFile>(&decoded) else {
+        let Ok(mut cache) = serde_json::from_slice::<WorkspaceScanCacheFile>(&decoded) else {
             return WorkspaceScanCacheFile::default();
         };
         if cache.version == CACHE_VERSION {
+            normalize_cache_paths(&mut cache);
             cache
         } else {
             WorkspaceScanCacheFile::default()
@@ -79,6 +181,7 @@ impl WorkspaceScanCacheStore {
     pub(crate) fn save(&self, mut cache: WorkspaceScanCacheFile) -> io::Result<()> {
         cache.version = CACHE_VERSION;
         cache.entries.truncate(MAX_CACHE_ENTRIES);
+        normalize_cache_paths(&mut cache);
         let json = serde_json::to_vec(&cache).map_err(io::Error::other)?;
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         encoder.write_all(&json)?;
@@ -122,78 +225,14 @@ pub(crate) fn upsert_cache_entry(
     cache.entries.truncate(MAX_CACHE_ENTRIES);
 }
 
+#[cfg(test)]
 pub(crate) fn snapshot_root(
     root: &Path,
     exclusions: &[String],
 ) -> io::Result<WorkspaceRootFingerprint> {
-    let root = fs::canonicalize(root)?;
-    if !root.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "scan root is not a directory",
-        ));
-    }
-    let root_key = display_path(&root);
-    let mut directories = BTreeMap::new();
-    let mut pending = vec![root];
-    while let Some(directory) = pending.pop() {
-        let directory_key = display_path(&directory);
-        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        let mut entry_count = 0_u64;
-        let mut file_count = 0_u64;
-        let mut latest_file_modified_ns = 0_u128;
-        let mut digest = 0xcbf29ce484222325_u64;
-        for entry in entries {
-            let path = entry.path();
-            if is_excluded(&path, exclusions) || entry.file_type()?.is_symlink() {
-                continue;
-            }
-            let file_type = entry.file_type()?;
-            let metadata = entry.metadata()?;
-            let modified_ns = modified_ns(&metadata);
-            let kind = if file_type.is_dir() {
-                2_u8
-            } else if file_type.is_file() {
-                1_u8
-            } else {
-                0_u8
-            };
-            if kind == 0 {
-                continue;
-            }
-            entry_count += 1;
-            if kind == 1 {
-                file_count += 1;
-                latest_file_modified_ns = latest_file_modified_ns.max(modified_ns);
-            } else {
-                pending.push(path.clone());
-            }
-            digest = fnv_update(digest, entry.file_name().to_string_lossy().as_bytes());
-            digest = fnv_update(digest, &[0]);
-            digest = fnv_update(digest, &[kind]);
-            if kind == 1 {
-                digest = fnv_update(digest, &metadata.len().to_le_bytes());
-            }
-            if kind == 1 {
-                digest = fnv_update(digest, &metadata.len().to_le_bytes());
-                digest = fnv_update(digest, &modified_ns.to_le_bytes());
-            }
-        }
-        directories.insert(
-            directory_key,
-            WorkspaceDirectoryFingerprint {
-                entry_count,
-                file_count,
-                latest_file_modified_ns,
-                digest,
-            },
-        );
-    }
-    Ok(WorkspaceRootFingerprint {
-        local_path: root_key,
-        directories,
-    })
+    let mut snapshotter = WorkspaceRootSnapshotter::new(root, exclusions)?;
+    while snapshotter.scan_next()?.is_some() {}
+    Ok(snapshotter.finish())
 }
 
 pub(crate) fn changed_directories(
@@ -206,22 +245,34 @@ pub(crate) fn changed_directories(
     if !same_path(&previous.local_path, &current.local_path) {
         return vec![current.local_path.clone()];
     }
-    let previous_keys = previous.directories.keys().collect::<BTreeSet<_>>();
-    let current_keys = current.directories.keys().collect::<BTreeSet<_>>();
+    let previous_directories = previous
+        .directories
+        .iter()
+        .map(|(path, fingerprint)| (comparison_path(path), fingerprint))
+        .collect::<BTreeMap<_, _>>();
+    let current_directories = current
+        .directories
+        .iter()
+        .map(|(path, fingerprint)| (comparison_path(path), (path, fingerprint)))
+        .collect::<BTreeMap<_, _>>();
     let mut changed = current
         .directories
         .iter()
         .filter_map(|(path, fingerprint)| {
-            (previous.directories.get(path) != Some(fingerprint)).then_some(path.clone())
+            (previous_directories.get(&comparison_path(path)).copied() != Some(fingerprint))
+                .then_some(path.clone())
         })
         .collect::<Vec<_>>();
-    for removed in previous_keys.difference(&current_keys) {
-        let mut ancestor = (*removed).clone();
+    for removed in previous_directories
+        .keys()
+        .filter(|path| !current_directories.contains_key(*path))
+    {
+        let mut ancestor = removed.clone();
         let mut found = false;
         while let Some(separator) = ancestor.rfind('/') {
             ancestor.truncate(separator);
-            if current.directories.contains_key(&ancestor) {
-                changed.push(ancestor.clone());
+            if let Some((current_path, _)) = current_directories.get(&ancestor) {
+                changed.push((*current_path).clone());
                 found = true;
                 break;
             }
@@ -231,6 +282,18 @@ pub(crate) fn changed_directories(
         }
     }
     collapse_directories(changed)
+}
+
+fn normalize_cache_paths(cache: &mut WorkspaceScanCacheFile) {
+    for entry in &mut cache.entries {
+        for root in &mut entry.roots {
+            root.local_path = normalize_path(&root.local_path);
+            root.directories = std::mem::take(&mut root.directories)
+                .into_iter()
+                .map(|(path, fingerprint)| (normalize_path(&path), fingerprint))
+                .collect();
+        }
+    }
 }
 
 pub(crate) fn collapse_directories(mut paths: Vec<String>) -> Vec<String> {
@@ -253,7 +316,7 @@ fn temporary_path(path: &Path) -> PathBuf {
 }
 
 fn display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    normalize_path(&path.to_string_lossy())
 }
 
 pub(crate) fn same_path(left: &str, right: &str) -> bool {
@@ -269,6 +332,12 @@ pub(crate) fn normalize_path(path: &str) -> String {
     } else {
         path.strip_prefix("//?/").unwrap_or(&path).to_owned()
     }
+}
+
+fn comparison_path(path: &str) -> String {
+    normalize_path(path)
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 fn is_path_inside(path: &str, parent: &str) -> bool {
@@ -327,6 +396,7 @@ mod tests {
                 scope_id: "scope".to_owned(),
                 roots: Vec::new(),
                 candidates: Vec::new(),
+                validated_at_ms: 42,
                 last_full_scan_ms: 42,
             },
         );
@@ -336,6 +406,18 @@ mod tests {
         let bytes = fs::read(directory.join("workspace-scan-cache.gz")).unwrap();
         assert!(!bytes.starts_with(b"{"));
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn normalizes_extended_windows_paths_for_cache_and_display() {
+        assert_eq!(
+            normalize_path("//?/C:/Projects/DG/Content"),
+            "C:/Projects/DG/Content"
+        );
+        assert_eq!(
+            normalize_path("//?/UNC/server/share/Content"),
+            "//server/share/Content"
+        );
     }
 
     #[test]
@@ -355,6 +437,27 @@ mod tests {
         let changed = changed_directories(Some(&previous), &second);
         assert_eq!(changed.len(), 1);
         assert!(changed[0].ends_with("/src/nested"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn legacy_extended_and_mixed_case_cache_paths_still_hit() {
+        let directory =
+            std::env::temp_dir().join(format!("p4fnv-scan-legacy-paths-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(directory.join("Source/Nested")).unwrap();
+        fs::write(directory.join("Source/Nested/file.txt"), b"one").unwrap();
+        let current = snapshot_root(&directory, &[]).unwrap();
+        let legacy_path = |path: &str| format!("//?/{}", path.to_ascii_uppercase());
+        let previous = WorkspaceScanRootCache {
+            local_path: legacy_path(&current.local_path),
+            directories: current
+                .directories
+                .iter()
+                .map(|(path, fingerprint)| (legacy_path(path), fingerprint.clone()))
+                .collect(),
+        };
+        assert!(changed_directories(Some(&previous), &current).is_empty());
         let _ = fs::remove_dir_all(directory);
     }
 }

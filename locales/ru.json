@@ -217,6 +217,8 @@
     "unopenedScanning": "Сканируем workspace",
     "unopenedScanningPath": "Текущая папка",
     "unopenedRootsChecked": "корней проверено",
+    "unopenedFoldersChecked": "папок из кэша проверено",
+    "unopenedFolderProgress": "Ход проверки папок из кэша",
     "unopenedEmpty": "В просканированной области не найдено неоткрытых изменений.",
     "unopenedPresentationOnly": "Поиск работает только для чтения. Файлы останутся неоткрытыми, пока вы явно не запустите Reconcile.",
     "unopenedConfigure": "Настроить поиск",

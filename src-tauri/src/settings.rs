@@ -95,9 +95,9 @@ pub fn save_workspace_scan_configuration(
         roots: normalize_paths(configuration.roots),
         exclusions: normalize_paths(configuration.exclusions),
     };
-    settings
-        .workspace_scan_configurations
-        .retain(|existing| !same_connection(&existing.connection, &configuration.connection));
+    settings.workspace_scan_configurations.retain(|existing| {
+        !same_workspace_scan_connection(&existing.connection, &configuration.connection)
+    });
     settings
         .workspace_scan_configurations
         .insert(0, configuration);
@@ -117,7 +117,7 @@ pub fn workspace_scan_configuration(
     Ok(settings
         .workspace_scan_configurations
         .iter()
-        .find(|configuration| same_connection(&configuration.connection, &input))
+        .find(|configuration| same_workspace_scan_connection(&configuration.connection, &input))
         .cloned())
 }
 
@@ -169,6 +169,15 @@ fn same_connection(left: &ConnectionInput, right: &ConnectionInput) -> bool {
         && left.client == right.client
         && left.p4_path == right.p4_path
         && left.charset == right.charset
+        && left.p4_config == right.p4_config
+        && left.p4_enviro == right.p4_enviro
+}
+
+fn same_workspace_scan_connection(left: &ConnectionInput, right: &ConnectionInput) -> bool {
+    left.port == right.port
+        && left.user == right.user
+        && left.client == right.client
+        && left.p4_path == right.p4_path
         && left.p4_config == right.p4_config
         && left.p4_enviro == right.p4_enviro
 }
@@ -363,10 +372,14 @@ mod tests {
         ));
         let path = directory.join("settings.json");
         let input = connection("ssl:p4:1666", "alex", "main");
+        let automatic_charset = ConnectionInput {
+            charset: Some("utf8".to_owned()),
+            ..input.clone()
+        };
         save_workspace_scan_configuration(
             &path,
             WorkspaceScanConfiguration {
-                connection: input.clone(),
+                connection: automatic_charset.clone(),
                 roots: vec![r" C:\\Content ".to_owned(), r"c:\\content".to_owned()],
                 exclusions: vec![r" C:\\Content\\Build ".to_owned()],
             },
@@ -380,6 +393,13 @@ mod tests {
         assert_eq!(
             configuration.exclusions,
             vec![r"C:\\Content\\Build".to_owned()]
+        );
+
+        assert_eq!(
+            workspace_scan_configuration(&path, &input)
+                .unwrap()
+                .unwrap(),
+            configuration
         );
 
         fs::remove_dir_all(directory).unwrap();

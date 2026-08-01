@@ -611,10 +611,13 @@ export interface WorkspaceScanCoverage {
   state: WorkspaceScanCoverageState;
   completedRoots: number;
   totalRoots: number;
+  completedDirectories: number;
+  totalDirectories: number;
   candidateCount: number;
   candidateLimit: number;
   partialReasons: WorkspaceScanPartialReason[];
   currentRoot?: string;
+  currentDirectory?: string;
 }
 
 export interface WorkspaceScanCandidate {

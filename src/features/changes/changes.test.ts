@@ -97,6 +97,8 @@ describe("virtual unopened changes presentation", () => {
       state: "partial" as const,
       completedRoots: 1,
       totalRoots: 2,
+      completedDirectories: 3,
+      totalDirectories: 5,
       candidateCount: 1,
       candidateLimit: 500,
       partialReasons: ["budget_exceeded" as const],
