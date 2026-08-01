@@ -2429,8 +2429,11 @@
 .stream-selection-summary span { color: var(--text-tertiary); }
 .stream-selection-summary .secondary-button { min-height: 28px; padding: 0 9px; flex: 0 0 auto; align-self: center; }
 .stream-selection-summary .button-row { display: flex; grid-auto-flow: column; gap: 7px; align-items: center; }
-.stream-detail-panel { padding: 10px 12px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: var(--font-caption); }
-.stream-detail-panel details > summary { cursor: pointer; color: var(--text-secondary); }
+.stream-details-dialog { gap: 12px; }
+.stream-details-dialog details { border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.stream-details-dialog details > summary { padding: 10px 12px; cursor: pointer; color: var(--text-secondary); font-size: var(--font-caption); font-weight: 650; }
+.stream-details-dialog details[open] > summary { border-bottom: 1px solid var(--border); }
+.stream-details-dialog details .file-selection-summary { max-height: 240px; overflow: auto; }
 .stream-integration-dialog { display: grid; gap: 12px; }
 .stream-integration-dialog .inline-form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 8px; }
 .integration-preview { display: grid; gap: 8px; min-height: 0; }
