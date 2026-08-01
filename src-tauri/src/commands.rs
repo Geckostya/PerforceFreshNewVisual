@@ -370,7 +370,6 @@ const WORKSPACE_SCAN_FOREGROUND_RETRY: Duration = Duration::from_millis(500);
 const WORKSPACE_SCAN_FRESH_MS: u64 = 5 * 60 * 1_000;
 const WORKSPACE_SCAN_INTERVAL: Duration = Duration::from_millis(WORKSPACE_SCAN_FRESH_MS);
 const WORKSPACE_SCAN_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-const WORKSPACE_SCAN_FULL_INTERVAL_MS: u64 = 15 * 60 * 1_000;
 const WORKSPACE_SCAN_SCOPE_BATCH: usize = 64;
 
 #[derive(Clone)]
@@ -865,19 +864,12 @@ fn run_workspace_scan(
         }
         let target = request.targets[request.next_target].clone();
         let root = request.roots[target.root_index].clone();
-        let command = if target.add {
-            p4::workspace_scan_add_command(&request.input, &request.workspace_root, &root)
-        } else if target.scopes.len() == 1 {
-            p4::workspace_scan_command(&request.input, &request.workspace_root, &root)
-        } else {
-            p4::workspace_scan_scopes_command(
-                &request.input,
-                &request.workspace_root,
-                &root,
-                &target.scopes,
-            )
-        };
-        let command = match command {
+        let command = match workspace_scan_target_command(
+            &request.input,
+            &request.workspace_root,
+            &root,
+            &target,
+        ) {
             Ok((_, command)) => command,
             Err(_) => {
                 request.cached_candidates.clone_from(&candidates);
@@ -949,6 +941,24 @@ fn run_workspace_scan(
     }
 }
 
+fn workspace_scan_target_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+    target: &WorkspaceScanTarget,
+) -> Result<(PathBuf, Command), AppError> {
+    if target.add {
+        p4::workspace_scan_add_scopes_command(
+            input,
+            workspace_root,
+            root,
+            &target.local_directories,
+        )
+    } else {
+        p4::workspace_scan_scopes_command(input, workspace_root, root, &target.scopes)
+    }
+}
+
 fn initialize_workspace_scan(request: &mut WorkspaceScanRequest, cache: &WorkspaceScanCacheStore) {
     if request.preparation_started {
         return;
@@ -966,11 +976,7 @@ fn initialize_workspace_scan(request: &mut WorkspaceScanRequest, cache: &Workspa
         let validated_at = entry.validated_at_ms.max(entry.last_full_scan_ms);
         validated_at > 0 && now.saturating_sub(validated_at) < WORKSPACE_SCAN_FRESH_MS
     });
-    request.force_full = request.force_full
-        || cached_entry.is_none()
-        || cached_entry.as_ref().is_some_and(|entry| {
-            now.saturating_sub(entry.last_full_scan_ms) >= WORKSPACE_SCAN_FULL_INTERVAL_MS
-        });
+    request.force_full = request.force_full || cached_entry.is_none();
     request.cache_file = cache_file;
     request.cache_entry = Some(cached_entry.unwrap_or_else(|| WorkspaceScanCacheEntry {
         scope_id: request.scope_id.clone(),
@@ -1119,8 +1125,9 @@ fn plan_workspace_scan_root(
         commit_workspace_scan_root(request, root_index);
         return;
     }
-    let mut scopes = Vec::with_capacity(changed.len());
-    for directory in &changed {
+    let edit_directories = workspace_scan_cache::collapse_directories(changed.clone());
+    let mut scopes = Vec::with_capacity(edit_directories.len());
+    for directory in &edit_directories {
         let Some(scope) = workspace_scan_depot_scope_for_directory(&root, directory) else {
             scopes.clear();
             break;
@@ -1143,13 +1150,19 @@ fn plan_workspace_scan_root(
         });
         targets += 1;
     }
-    request.targets.push(WorkspaceScanTarget {
-        root_index,
-        scopes: Vec::new(),
-        local_directories: vec![root.local_path.clone()],
-        add: true,
-    });
-    targets += 1;
+    let add_directories = changed
+        .into_iter()
+        .filter(|directory| Path::new(directory).is_dir())
+        .collect::<Vec<_>>();
+    for chunk in add_directories.chunks(WORKSPACE_SCAN_SCOPE_BATCH) {
+        request.targets.push(WorkspaceScanTarget {
+            root_index,
+            scopes: Vec::new(),
+            local_directories: chunk.to_vec(),
+            add: true,
+        });
+        targets += 1;
+    }
     request.root_targets_remaining[root_index] = targets;
     for target in request
         .targets
@@ -1159,7 +1172,9 @@ fn plan_workspace_scan_root(
         if target.add {
             request.cached_candidates.retain(|candidate| {
                 candidate.action != "add"
-                    || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
+                    || !target.local_directories.iter().any(|directory| {
+                        workspace_scan_path_is_direct_child(&candidate.local_path, directory)
+                    })
             });
         } else {
             request.cached_candidates.retain(|candidate| {
@@ -1376,6 +1391,15 @@ fn workspace_scan_path_is_inside(path: &str, directory: &str) -> bool {
         .replace('/', "\\")
         .to_lowercase();
     path == directory || path.starts_with(&format!("{directory}\\"))
+}
+
+fn workspace_scan_path_is_direct_child(path: &str, directory: &str) -> bool {
+    let path = workspace_scan_cache::normalize_path(path);
+    let directory = workspace_scan_cache::normalize_path(directory);
+    let Some(parent) = path.rsplit_once('/').map(|(parent, _)| parent) else {
+        return false;
+    };
+    workspace_scan_cache::same_path(parent, &directory)
 }
 
 impl WorkspaceRootRegistry {
@@ -2374,7 +2398,7 @@ pub fn refresh_workspace_scan(
         input,
         workspace_root,
         &snapshot,
-        true,
+        false,
         false,
     ))
 }
@@ -4754,7 +4778,8 @@ mod tests {
         sync_operation_scope, sync_operation_succeeded, unexpected_integration_paths,
         validate_reveal_path, workspace_scan_budget_exhausted,
         workspace_scan_depot_scope_for_directory, workspace_scan_path_is_excluded,
-        workspace_scan_should_reset_after_run, workspace_stream_view_paths,
+        workspace_scan_should_reset_after_run, workspace_scan_target_command,
+        workspace_stream_view_paths,
     };
     use crate::models::{
         AppError, ConnectionInput, ErrorKind, OpenedFile, OperationCompensationStatus,
@@ -5515,7 +5540,7 @@ mod tests {
                 }],
                 candidates: Vec::new(),
                 validated_at_ms: stale_validation_ms,
-                last_full_scan_ms: stale_validation_ms,
+                last_full_scan_ms: 0,
             },
         );
         cache.save(cache_file).unwrap();
@@ -5579,7 +5604,7 @@ mod tests {
                 }],
                 candidates: Vec::new(),
                 validated_at_ms: stale_validation_ms,
-                last_full_scan_ms: stale_validation_ms,
+                last_full_scan_ms: 0,
             },
         );
         cache.save(stale_cache_file).unwrap();
@@ -5605,7 +5630,7 @@ mod tests {
 
         fs::write(root_path.join("src/nested/file.txt"), b"two").unwrap();
         let mut changed_request =
-            WorkspaceScanRequest::new(input, root_path, &snapshot, false, false);
+            WorkspaceScanRequest::new(input, root_path.clone(), &snapshot, false, false);
         prepare_workspace_scan(&mut changed_request, &cache);
         assert_eq!(changed_request.targets.len(), 2);
         assert_eq!(
@@ -5618,6 +5643,27 @@ mod tests {
         );
         assert!(!changed_request.targets[0].add);
         assert!(changed_request.targets[1].add);
+        assert_eq!(
+            changed_request.targets[1].local_directories,
+            vec![crate::workspace_scan_cache::normalize_path(
+                &root_path.join("src/nested").to_string_lossy()
+            )]
+        );
+        let (_, command) = workspace_scan_target_command(
+            &changed_request.input,
+            &changed_request.workspace_root,
+            &changed_request.roots[0],
+            &changed_request.targets[0],
+        )
+        .unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments.last().map(String::as_str),
+            Some("//Acme/main/Source/src/nested/...")
+        );
         let _ = fs::remove_file(cache_path);
         let _ = fs::remove_dir_all(directory);
     }

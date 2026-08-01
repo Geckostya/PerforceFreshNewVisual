@@ -5813,6 +5813,7 @@ fn parse_workspace_scan_ignore_sources(output: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 pub fn workspace_scan_command(
     input: &ConnectionInput,
     workspace_root: &Path,
@@ -5847,14 +5848,52 @@ pub fn workspace_scan_scopes_command(
     Ok((path, command))
 }
 
+#[cfg(test)]
 pub fn workspace_scan_add_command(
     input: &ConnectionInput,
     workspace_root: &Path,
     root: &WorkspaceScanRoot,
 ) -> Result<(PathBuf, Command), AppError> {
-    let local_scope = workspace_cli_path(&Path::new(&root.local_path).join("*").to_string_lossy());
+    workspace_scan_add_scopes_command(
+        input,
+        workspace_root,
+        root,
+        std::slice::from_ref(&root.local_path),
+    )
+}
+
+pub fn workspace_scan_add_scopes_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+    directories: &[String],
+) -> Result<(PathBuf, Command), AppError> {
+    if directories.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Не указаны локальные области фонового сканирования.",
+        ));
+    }
+    let root_key = workspace_path_key(&root.local_path);
+    let mut scopes = Vec::with_capacity(directories.len());
+    for directory in directories {
+        let directory = Path::new(directory);
+        let directory_key = workspace_path_key(&directory.to_string_lossy());
+        let inside_root = directory_key == root_key
+            || directory_key
+                .strip_prefix(&root_key)
+                .is_some_and(|relative| relative.starts_with('/'));
+        if !directory.is_absolute() || !inside_root || !directory.is_dir() {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Локальная область фонового сканирования больше недоступна.",
+            ));
+        }
+        scopes.push(workspace_cli_path(&directory.join("*").to_string_lossy()));
+    }
     let (path, mut command) = workspace_scan_base_command(input, workspace_root, root)?;
-    command.args(workspace_scan_add_arguments(&local_scope));
+    command.args(["-ztag", "-Mj", "status", "-a"]);
+    command.args(scopes);
     Ok((path, command))
 }
 
@@ -5877,10 +5916,6 @@ fn workspace_scan_base_command(
     }
     set_low_process_priority(&mut command);
     Ok((path, command))
-}
-
-fn workspace_scan_add_arguments(scope: &str) -> [&str; 5] {
-    ["-ztag", "-Mj", "status", "-a", scope]
 }
 
 pub struct WorkspaceScanCommandOutput {
@@ -8943,6 +8978,22 @@ mod tests {
         assert_eq!(&add_arguments[..4], ["-ztag", "-Mj", "status", "-a"]);
         assert!(add_arguments[4].ends_with(r"Source\*"));
         assert!(!add_arguments.iter().any(|argument| argument == "..."));
+
+        let nested = scan_root.join("Nested");
+        fs::create_dir_all(&nested).unwrap();
+        let add_directories = vec![
+            scan_root.to_string_lossy().into_owned(),
+            nested.to_string_lossy().into_owned(),
+        ];
+        let (_, scoped_add_command) =
+            workspace_scan_add_scopes_command(&input, &fixture, &root, &add_directories).unwrap();
+        let scoped_add_arguments = scoped_add_command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(&scoped_add_arguments[..4], ["-ztag", "-Mj", "status", "-a"]);
+        assert!(scoped_add_arguments[4].ends_with(r"Source\*"));
+        assert!(scoped_add_arguments[5].ends_with(r"Source\Nested\*"));
 
         fs::remove_dir_all(fixture).unwrap();
     }

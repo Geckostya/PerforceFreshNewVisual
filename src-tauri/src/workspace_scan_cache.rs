@@ -253,7 +253,7 @@ pub(crate) fn changed_directories(
     let current_directories = current
         .directories
         .iter()
-        .map(|(path, fingerprint)| (comparison_path(path), (path, fingerprint)))
+        .map(|(path, fingerprint)| (comparison_path(path), fingerprint))
         .collect::<BTreeMap<_, _>>();
     let mut changed = current
         .directories
@@ -263,25 +263,15 @@ pub(crate) fn changed_directories(
                 .then_some(path.clone())
         })
         .collect::<Vec<_>>();
-    for removed in previous_directories
-        .keys()
-        .filter(|path| !current_directories.contains_key(*path))
-    {
-        let mut ancestor = removed.clone();
-        let mut found = false;
-        while let Some(separator) = ancestor.rfind('/') {
-            ancestor.truncate(separator);
-            if let Some((current_path, _)) = current_directories.get(&ancestor) {
-                changed.push((*current_path).clone());
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            changed.push(current.local_path.clone());
-        }
-    }
-    collapse_directories(changed)
+    changed.extend(
+        previous_directories
+            .keys()
+            .filter(|path| !current_directories.contains_key(*path))
+            .map(|path| normalize_path(path)),
+    );
+    changed.sort_by_key(|path| comparison_path(path));
+    changed.dedup_by(|left, right| same_path(left, right));
+    changed
 }
 
 fn normalize_cache_paths(cache: &mut WorkspaceScanCacheFile) {
@@ -421,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn root_fingerprint_detects_file_changes_and_collapses_nested_directories() {
+    fn root_fingerprint_detects_file_changes() {
         let directory =
             std::env::temp_dir().join(format!("p4fnv-scan-fingerprint-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
@@ -437,6 +427,27 @@ mod tests {
         let changed = changed_directories(Some(&previous), &second);
         assert_eq!(changed.len(), 1);
         assert!(changed[0].ends_with("/src/nested"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn changed_directory_list_keeps_each_new_folder_for_direct_add_checks() {
+        let directory =
+            std::env::temp_dir().join(format!("p4fnv-scan-new-directories-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(directory.join("src")).unwrap();
+        let first = snapshot_root(&directory, &[]).unwrap();
+        fs::create_dir_all(directory.join("src/new/deep")).unwrap();
+        fs::write(directory.join("src/new/deep/file.txt"), b"one").unwrap();
+        let second = snapshot_root(&directory, &[]).unwrap();
+        let previous = WorkspaceScanRootCache {
+            local_path: first.local_path,
+            directories: first.directories,
+        };
+        let changed = changed_directories(Some(&previous), &second);
+        assert!(changed.iter().any(|path| path.ends_with("/src")));
+        assert!(changed.iter().any(|path| path.ends_with("/src/new")));
+        assert!(changed.iter().any(|path| path.ends_with("/src/new/deep")));
         let _ = fs::remove_dir_all(directory);
     }
 
