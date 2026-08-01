@@ -19,6 +19,10 @@ export interface ChangeGroup extends PendingChange {
 
 export const UNOPENED_CHANGES_GROUP_ID = "virtual:unopened-changes";
 
+export function changesForUser(changes: PendingChange[], user: string): PendingChange[] {
+  return changes.filter((change) => change.user === user);
+}
+
 export interface UnopenedChangesGroup {
   id: typeof UNOPENED_CHANGES_GROUP_ID;
   candidates: WorkspaceScanSnapshot["candidates"];

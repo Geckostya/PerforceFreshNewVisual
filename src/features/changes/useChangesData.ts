@@ -10,7 +10,7 @@ import {
 } from "../../shared/api";
 import type { AppError, ConnectionInput, OpenedFile, PendingChange, ShelvedFile, WorkspaceScanSnapshot } from "../../shared/models";
 import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
-import { groupChanges, shouldRefreshOnFocus, visibleShelfFiles } from "./changes";
+import { changesForUser, groupChanges, shouldRefreshOnFocus, visibleShelfFiles } from "./changes";
 
 export type ChangesLoadState = "loading" | "fresh" | "stale" | "offline" | "permission" | "partial" | "error";
 export type ShelfLoadState = "idle" | "loading" | "fresh" | "error";
@@ -66,7 +66,7 @@ export function useChangesData(
       .then(([nextChanges, nextShelves, nextFiles]) => {
         if (!active) return;
         setChanges(nextChanges);
-        setShelvedChanges(nextShelves);
+        setShelvedChanges(changesForUser(nextShelves, connection.user));
         setFiles(nextFiles);
         onFileCountChange(nextFiles.length);
         hasSuccessfulSnapshot.current = true;

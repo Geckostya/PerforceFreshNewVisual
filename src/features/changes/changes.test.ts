@@ -6,6 +6,7 @@ import {
   dropEffect,
   encodeChangeDrag,
   changeOptionLabel,
+  changesForUser,
   filterChangeGroups,
   formatSubmitJob,
   groupChanges,
@@ -53,6 +54,17 @@ describe("groupChanges", () => {
     expect(groups.map(({ id, isShelved }) => [id, isShelved])).toEqual([
       ["default", false], ["42", true], ["77", true],
     ]);
+  });
+});
+
+describe("My changes shelf scope", () => {
+  it("keeps only shelves owned by the connected user", () => {
+    const shelves: PendingChange[] = [
+      { id: "42", description: "Mine", user: "alex", client: "alex-main" },
+      { id: "77", description: "Foreign", user: "sam", client: "sam-main" },
+    ];
+
+    expect(changesForUser(shelves, "alex").map(({ id }) => id)).toEqual(["42"]);
   });
 });
 
