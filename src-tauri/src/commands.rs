@@ -32,11 +32,14 @@ use crate::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
     },
     p4, settings,
+    workspace_scan_cache::{
+        self, WorkspaceRootFingerprint, WorkspaceScanCacheEntry, WorkspaceScanCacheStore,
+        WorkspaceScanRootCache,
+    },
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -284,18 +287,28 @@ fn workspace_scan_scope_id(
     roots: &[WorkspaceScanRoot],
     exclusions: &[String],
 ) -> String {
-    let mut hasher = DefaultHasher::new();
-    identity.server.hash(&mut hasher);
-    identity.user.hash(&mut hasher);
-    identity.workspace.hash(&mut hasher);
-    identity.stream.hash(&mut hasher);
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut feed = |value: &str| {
+        for byte in value.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    };
+    feed(&identity.server);
+    feed(&identity.user);
+    feed(&identity.workspace);
+    feed(identity.stream.as_deref().unwrap_or("<none>"));
     for root in roots {
-        root.local_scope.hash(&mut hasher);
-        root.client_scope.hash(&mut hasher);
-        root.depot_scope.hash(&mut hasher);
+        feed(&root.local_scope);
+        feed(&root.client_scope);
+        feed(&root.depot_scope);
     }
-    exclusions.hash(&mut hasher);
-    format!("workspace-scan-{:016x}", hasher.finish())
+    for exclusion in exclusions {
+        feed(exclusion);
+    }
+    format!("workspace-scan-{hash:016x}")
 }
 
 fn workspace_scan_connection_matches(
@@ -331,6 +344,16 @@ const WORKSPACE_SCAN_BUDGET: Duration = Duration::from_millis(1_500);
 const WORKSPACE_SCAN_FOREGROUND_RETRY: Duration = Duration::from_millis(500);
 const WORKSPACE_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 const WORKSPACE_SCAN_MAX_BACKOFF: Duration = Duration::from_secs(60);
+const WORKSPACE_SCAN_FULL_INTERVAL_MS: u64 = 15 * 60 * 1_000;
+const WORKSPACE_SCAN_SCOPE_BATCH: usize = 64;
+
+#[derive(Clone)]
+struct WorkspaceScanTarget {
+    root_index: usize,
+    scopes: Vec<String>,
+    local_directories: Vec<String>,
+    add: bool,
+}
 
 #[derive(Clone)]
 struct WorkspaceScanRequest {
@@ -340,8 +363,16 @@ struct WorkspaceScanRequest {
     roots: Vec<WorkspaceScanRoot>,
     exclusions: Vec<String>,
     workspace: String,
-    next_add_root: usize,
     cached_candidates: Vec<WorkspaceScanCandidate>,
+    force_full: bool,
+    prepared: bool,
+    targets: Vec<WorkspaceScanTarget>,
+    next_target: usize,
+    root_targets_remaining: Vec<usize>,
+    completed_roots: usize,
+    cache_file: workspace_scan_cache::WorkspaceScanCacheFile,
+    cache_entry: Option<WorkspaceScanCacheEntry>,
+    current_fingerprints: Vec<Option<WorkspaceRootFingerprint>>,
 }
 
 impl WorkspaceScanRequest {
@@ -349,6 +380,7 @@ impl WorkspaceScanRequest {
         input: ConnectionInput,
         workspace_root: PathBuf,
         snapshot: &WorkspaceScanSnapshot,
+        force_full: bool,
     ) -> Self {
         Self {
             workspace: operation_workspace(&input),
@@ -357,9 +389,29 @@ impl WorkspaceScanRequest {
             scope_id: snapshot.scope_id.clone(),
             roots: snapshot.roots.clone(),
             exclusions: snapshot.exclusions.clone(),
-            next_add_root: 0,
             cached_candidates: snapshot.candidates.clone(),
+            force_full,
+            prepared: false,
+            targets: Vec::new(),
+            next_target: 0,
+            root_targets_remaining: Vec::new(),
+            completed_roots: 0,
+            cache_file: workspace_scan_cache::WorkspaceScanCacheFile::default(),
+            cache_entry: None,
+            current_fingerprints: Vec::new(),
         }
+    }
+
+    fn reset_for_next_cycle(&mut self) {
+        self.force_full = false;
+        self.prepared = false;
+        self.targets.clear();
+        self.next_target = 0;
+        self.root_targets_remaining.clear();
+        self.completed_roots = 0;
+        self.cache_file = workspace_scan_cache::WorkspaceScanCacheFile::default();
+        self.cache_entry = None;
+        self.current_fingerprints.clear();
     }
 }
 
@@ -379,9 +431,13 @@ pub struct WorkspaceScanScheduler {
 }
 
 impl WorkspaceScanScheduler {
-    pub fn new(scans: WorkspaceScanRegistry, operations: OperationRegistry) -> Self {
+    pub fn new(
+        scans: WorkspaceScanRegistry,
+        operations: OperationRegistry,
+        cache: WorkspaceScanCacheStore,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || workspace_scan_scheduler_loop(receiver, scans, operations));
+        thread::spawn(move || workspace_scan_scheduler_loop(receiver, scans, operations, cache));
         Self { sender }
     }
 
@@ -454,6 +510,7 @@ fn workspace_scan_scheduler_loop(
     receiver: mpsc::Receiver<WorkspaceScanSchedulerMessage>,
     scans: WorkspaceScanRegistry,
     operations: OperationRegistry,
+    cache: WorkspaceScanCacheStore,
 ) {
     let mut pending: Option<ScheduledWorkspaceScan> = None;
     let mut failures = 0_u32;
@@ -517,7 +574,7 @@ fn workspace_scan_scheduler_loop(
                 .map(|target| request.roots[target.root_index].local_path.clone())
                 .or_else(|| request.roots.first().map(|root| root.local_path.clone())),
         );
-        match run_workspace_scan(&receiver, &operations, &mut request) {
+        match run_workspace_scan(&receiver, &operations, &cache, &mut request) {
             WorkspaceScanRunOutcome::Finished {
                 candidates,
                 completed_roots,
@@ -554,6 +611,9 @@ fn workspace_scan_scheduler_loop(
                 } else {
                     WORKSPACE_SCAN_INTERVAL
                 };
+                if !failed && !reasons.contains(&WorkspaceScanPartialReason::BudgetExceeded) {
+                    request.reset_for_next_cycle();
+                }
                 pending = Some(ScheduledWorkspaceScan {
                     request,
                     due: Instant::now() + delay,
@@ -598,129 +658,284 @@ fn workspace_scan_budget_exhausted(elapsed: Duration) -> bool {
 fn run_workspace_scan(
     receiver: &mpsc::Receiver<WorkspaceScanSchedulerMessage>,
     operations: &OperationRegistry,
+    cache: &WorkspaceScanCacheStore,
     request: &mut WorkspaceScanRequest,
 ) -> WorkspaceScanRunOutcome {
+    if !request.prepared {
+        prepare_workspace_scan(request, cache);
+    }
     let started = Instant::now();
     let mut candidates = request.cached_candidates.clone();
-    let mut completed_roots = 0;
-    for root in &request.roots {
+    while request.next_target < request.targets.len() {
         if workspace_scan_budget_exhausted(started.elapsed()) {
+            request.cached_candidates.clone_from(&candidates);
             return WorkspaceScanRunOutcome::partial(
                 candidates,
-                completed_roots,
+                request.completed_roots,
                 WorkspaceScanPartialReason::BudgetExceeded,
             );
         }
-        let command =
-            match p4::workspace_scan_command(&request.input, &request.workspace_root, root) {
-                Ok((_, command)) => command,
-                Err(_) => {
-                    return WorkspaceScanRunOutcome::partial(
-                        candidates,
-                        completed_roots,
-                        WorkspaceScanPartialReason::CommandFailed,
-                    );
-                }
-            };
+        let target = request.targets[request.next_target].clone();
+        let root = request.roots[target.root_index].clone();
+        let command = if target.add {
+            p4::workspace_scan_add_command(&request.input, &request.workspace_root, &root)
+        } else if target.scopes.len() == 1 {
+            p4::workspace_scan_command(&request.input, &request.workspace_root, &root)
+        } else {
+            p4::workspace_scan_scopes_command(
+                &request.input,
+                &request.workspace_root,
+                &root,
+                &target.scopes,
+            )
+        };
+        let command = match command {
+            Ok((_, command)) => command,
+            Err(_) => {
+                request.cached_candidates.clone_from(&candidates);
+                return WorkspaceScanRunOutcome::partial(
+                    candidates,
+                    request.completed_roots,
+                    WorkspaceScanPartialReason::CommandFailed,
+                );
+            }
+        };
         let (parsed, retained_candidates) = match workspace_scan_child_result(
             run_workspace_scan_child(
                 command,
-                p4::parse_workspace_scan_output,
+                if target.add {
+                    p4::parse_workspace_scan_add_output
+                } else {
+                    p4::parse_workspace_scan_output
+                },
                 receiver,
                 operations,
                 &request.workspace,
-                started,
             ),
             candidates,
-            completed_roots,
+            request.completed_roots,
         ) {
             Ok(result) => result,
             Err(outcome) => return outcome,
         };
         candidates = retained_candidates;
         if parsed.failed || !parsed.diagnostics.is_empty() {
+            request.cached_candidates.clone_from(&candidates);
             return WorkspaceScanRunOutcome::partial(
                 candidates,
-                completed_roots,
+                request.completed_roots,
                 WorkspaceScanPartialReason::CommandFailed,
             );
         }
-        candidates.retain(|candidate| {
-            candidate.action == "add"
-                || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
-        });
-        candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
-            !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
-        }));
-        completed_roots += 1;
-    }
-    if !request.roots.is_empty() {
-        let add_root_index = request.next_add_root % request.roots.len();
-        let add_root = &request.roots[add_root_index];
-        if workspace_scan_budget_exhausted(started.elapsed()) {
-            return WorkspaceScanRunOutcome::partial(
-                candidates,
-                completed_roots,
-                WorkspaceScanPartialReason::BudgetExceeded,
-            );
+        if target.add {
+            candidates.retain(|candidate| {
+                candidate.action != "add"
+                    || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
+            });
+        } else {
+            candidates.retain(|candidate| {
+                candidate.action == "add"
+                    || !target.local_directories.iter().any(|directory| {
+                        workspace_scan_path_is_inside(&candidate.local_path, directory)
+                    })
+            });
         }
-        let command =
-            match p4::workspace_scan_add_command(&request.input, &request.workspace_root, add_root)
-            {
-                Ok((_, command)) => command,
-                Err(_) => {
-                    return WorkspaceScanRunOutcome::partial(
-                        candidates,
-                        completed_roots,
-                        WorkspaceScanPartialReason::CommandFailed,
-                    );
-                }
-            };
-        let (parsed, retained_candidates) = match workspace_scan_child_result(
-            run_workspace_scan_child(
-                command,
-                p4::parse_workspace_scan_add_output,
-                receiver,
-                operations,
-                &request.workspace,
-                started,
-            ),
-            candidates,
-            completed_roots,
-        ) {
-            Ok(result) => result,
-            Err(outcome) => return outcome,
-        };
-        candidates = retained_candidates;
-        if parsed.failed || !parsed.diagnostics.is_empty() {
-            return WorkspaceScanRunOutcome::partial(
-                candidates,
-                completed_roots,
-                WorkspaceScanPartialReason::CommandFailed,
-            );
-        }
-        candidates.retain(|candidate| {
-            candidate.action != "add"
-                || !workspace_scan_path_is_inside(&candidate.local_path, &add_root.local_path)
-        });
         candidates.extend(parsed.candidates.into_iter().filter(|candidate| {
             !workspace_scan_path_is_excluded(&candidate.local_path, &request.exclusions)
         }));
         request.cached_candidates.clone_from(&candidates);
-        request.next_add_root = (add_root_index + 1) % request.roots.len();
+        request.next_target += 1;
+        let remaining = &mut request.root_targets_remaining[target.root_index];
+        *remaining = remaining.saturating_sub(1);
+        if *remaining == 0 {
+            request.completed_roots += 1;
+            commit_workspace_scan_root(request, target.root_index, cache);
+        }
     }
     request.cached_candidates.clone_from(&candidates);
     WorkspaceScanRunOutcome::Finished {
         candidates,
-        completed_roots,
+        completed_roots: request.completed_roots,
         failed_roots: 0,
         reason: None,
     }
 }
 
+fn prepare_workspace_scan(request: &mut WorkspaceScanRequest, cache: &WorkspaceScanCacheStore) {
+    let cache_file = cache.load();
+    let cached_entry = workspace_scan_cache::cache_entry(&cache_file, &request.scope_id);
+    if request.cached_candidates.is_empty() {
+        if let Some(entry) = cached_entry.as_ref() {
+            request.cached_candidates = entry.candidates.clone();
+        }
+    }
+    let now = operation_started_at_ms();
+    request.force_full = request.force_full
+        || cached_entry.is_none()
+        || cached_entry.as_ref().is_some_and(|entry| {
+            now.saturating_sub(entry.last_full_scan_ms) >= WORKSPACE_SCAN_FULL_INTERVAL_MS
+        });
+    request.cache_file = cache_file;
+    request.cache_entry = Some(cached_entry.unwrap_or_else(|| WorkspaceScanCacheEntry {
+        scope_id: request.scope_id.clone(),
+        roots: Vec::new(),
+        candidates: request.cached_candidates.clone(),
+        last_full_scan_ms: 0,
+    }));
+    request.targets.clear();
+    request.next_target = 0;
+    request.completed_roots = 0;
+    request.root_targets_remaining = vec![0; request.roots.len()];
+    request.current_fingerprints = vec![None; request.roots.len()];
+
+    for root_index in 0..request.roots.len() {
+        let root = request.roots[root_index].clone();
+        let current =
+            workspace_scan_cache::snapshot_root(Path::new(&root.local_path), &request.exclusions)
+                .ok();
+        request.current_fingerprints[root_index] = current.clone();
+        let previous = request
+            .cache_entry
+            .as_ref()
+            .and_then(|entry| cache_root(entry, &root.local_path));
+        let changed = if request.force_full {
+            vec![root.local_path.clone()]
+        } else if let Some(current) = current.as_ref() {
+            workspace_scan_cache::changed_directories(previous, current)
+        } else {
+            vec![root.local_path.clone()]
+        };
+        if changed.is_empty() {
+            request.completed_roots += 1;
+            commit_workspace_scan_root(request, root_index, cache);
+            continue;
+        }
+        let mut scopes = Vec::with_capacity(changed.len());
+        for directory in &changed {
+            let Some(scope) = workspace_scan_depot_scope_for_directory(&root, directory) else {
+                scopes.clear();
+                break;
+            };
+            scopes.push((scope, directory.clone()));
+        }
+        if scopes.is_empty() {
+            scopes.push((root.depot_scope.clone(), root.local_path.clone()));
+        }
+        let mut targets = 0;
+        for chunk in scopes.chunks(WORKSPACE_SCAN_SCOPE_BATCH) {
+            request.targets.push(WorkspaceScanTarget {
+                root_index,
+                scopes: chunk.iter().map(|(scope, _)| scope.clone()).collect(),
+                local_directories: chunk
+                    .iter()
+                    .map(|(_, directory)| directory.clone())
+                    .collect(),
+                add: false,
+            });
+            targets += 1;
+        }
+        request.targets.push(WorkspaceScanTarget {
+            root_index,
+            scopes: Vec::new(),
+            local_directories: vec![root.local_path.clone()],
+            add: true,
+        });
+        targets += 1;
+        request.root_targets_remaining[root_index] = targets;
+        for target in request
+            .targets
+            .iter()
+            .filter(|target| target.root_index == root_index)
+        {
+            if target.add {
+                request.cached_candidates.retain(|candidate| {
+                    candidate.action != "add"
+                        || !workspace_scan_path_is_inside(&candidate.local_path, &root.local_path)
+                });
+            } else {
+                request.cached_candidates.retain(|candidate| {
+                    candidate.action == "add"
+                        || !target.local_directories.iter().any(|directory| {
+                            workspace_scan_path_is_inside(&candidate.local_path, directory)
+                        })
+                });
+            }
+        }
+    }
+    request.prepared = true;
+}
+
+fn cache_root<'a>(
+    entry: &'a WorkspaceScanCacheEntry,
+    local_path: &str,
+) -> Option<&'a WorkspaceScanRootCache> {
+    entry
+        .roots
+        .iter()
+        .find(|root| workspace_scan_cache::same_path(&root.local_path, local_path))
+}
+
+fn workspace_scan_depot_scope_for_directory(
+    root: &WorkspaceScanRoot,
+    directory: &str,
+) -> Option<String> {
+    let root_path = workspace_scan_cache::normalize_path(&root.local_path);
+    let root_path = root_path.trim_end_matches('/');
+    let directory_path = workspace_scan_cache::normalize_path(directory);
+    let relative = if workspace_scan_cache::same_path(root_path, &directory_path) {
+        ""
+    } else {
+        let prefix = directory_path.get(..root_path.len())?;
+        if !prefix.eq_ignore_ascii_case(root_path) {
+            return None;
+        }
+        directory_path.get(root_path.len()..)?.strip_prefix('/')?
+    };
+    let relative = relative
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if relative.is_empty() {
+        return Some(root.depot_scope.clone());
+    }
+    let base = root.depot_scope.strip_suffix("...")?.trim_end_matches('/');
+    Some(format!("{base}/{}/...", relative.join("/")))
+}
+
+fn commit_workspace_scan_root(
+    request: &mut WorkspaceScanRequest,
+    root_index: usize,
+    cache: &WorkspaceScanCacheStore,
+) {
+    let Some(fingerprint) = request.current_fingerprints[root_index].as_ref() else {
+        return;
+    };
+    let Some(entry) = request.cache_entry.as_mut() else {
+        return;
+    };
+    entry.roots.retain(|root| {
+        !workspace_scan_cache::same_path(&root.local_path, &request.roots[root_index].local_path)
+    });
+    entry.roots.push(WorkspaceScanRootCache {
+        local_path: fingerprint.local_path.clone(),
+        directories: fingerprint.directories.clone(),
+    });
+    entry.candidates = request.cached_candidates.clone();
+    if request.force_full
+        && request
+            .root_targets_remaining
+            .iter()
+            .all(|count| *count == 0)
+    {
+        entry.last_full_scan_ms = operation_started_at_ms();
+    }
+    workspace_scan_cache::upsert_cache_entry(&mut request.cache_file, entry.clone());
+    let _ = cache.save(request.cache_file.clone());
+}
+
 enum WorkspaceScanChildOutcome {
     Completed(p4::WorkspaceScanCommandOutput),
-    Budget,
     Foreground,
     Message(WorkspaceScanSchedulerMessage),
     Failed,
@@ -734,11 +949,6 @@ fn workspace_scan_child_result(
 {
     match outcome {
         WorkspaceScanChildOutcome::Completed(output) => Ok((output, candidates)),
-        WorkspaceScanChildOutcome::Budget => Err(WorkspaceScanRunOutcome::partial(
-            candidates,
-            completed_roots,
-            WorkspaceScanPartialReason::BudgetExceeded,
-        )),
         WorkspaceScanChildOutcome::Foreground => Err(WorkspaceScanRunOutcome::Foreground),
         WorkspaceScanChildOutcome::Message(message) => {
             Err(WorkspaceScanRunOutcome::Message(message))
@@ -757,7 +967,6 @@ fn run_workspace_scan_child(
     receiver: &mpsc::Receiver<WorkspaceScanSchedulerMessage>,
     operations: &OperationRegistry,
     workspace: &str,
-    scan_started: Instant,
 ) -> WorkspaceScanChildOutcome {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let Ok(mut child) = command.spawn() else {
@@ -778,9 +987,7 @@ fn run_workspace_scan_child(
         })
     });
     loop {
-        let interruption = if workspace_scan_budget_exhausted(scan_started.elapsed()) {
-            Some(WorkspaceScanChildOutcome::Budget)
-        } else if operations.has_active_workspace_operation(workspace) {
+        let interruption = if operations.has_active_workspace_operation(workspace) {
             Some(WorkspaceScanChildOutcome::Foreground)
         } else {
             match receiver.try_recv() {
@@ -1015,6 +1222,7 @@ pub async fn open_workspace(
                         registry_input.clone(),
                         request_workspace_root,
                         &snapshot,
+                        false,
                     ),
                     WORKSPACE_SCAN_DEBOUNCE,
                 )?;
@@ -1802,7 +2010,7 @@ pub async fn configure_workspace_scan(
         configuration.partial_reasons,
     )?;
     scheduler.schedule(
-        WorkspaceScanRequest::new(input, request_workspace_root, &snapshot),
+        WorkspaceScanRequest::new(input, request_workspace_root, &snapshot, true),
         WORKSPACE_SCAN_DEBOUNCE,
     )?;
     Ok(snapshot)
@@ -1832,7 +2040,7 @@ pub fn refresh_workspace_scan(
         ));
     }
     scheduler.schedule(
-        WorkspaceScanRequest::new(input, workspace_root, &snapshot),
+        WorkspaceScanRequest::new(input, workspace_root, &snapshot, true),
         Duration::ZERO,
     )
 }
@@ -4202,21 +4410,28 @@ fn task_error(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        WORKSPACE_SCAN_BUDGET, WorkspaceScanRegistry, WorkspaceScanRequest, WorkspaceScanScheduler,
+        WorkspaceScanRegistry, WorkspaceScanRequest, WorkspaceScanScheduler,
         bounded_operation_diagnostics, confirmed_integration_paths, failed_submit_outcome,
-        operation_event, operation_workspace, parse_sync_output_record, submit_item_results,
-        submit_mode_cancellable, submitted_change_from_record, sync_operation_scope,
-        sync_operation_succeeded, unexpected_integration_paths, validate_reveal_path,
-        workspace_scan_backoff, workspace_scan_budget_exhausted, workspace_scan_path_is_excluded,
-        workspace_stream_view_paths,
+        operation_event, operation_started_at_ms, operation_workspace, parse_sync_output_record,
+        prepare_workspace_scan, submit_item_results, submit_mode_cancellable,
+        submitted_change_from_record, sync_operation_scope, sync_operation_succeeded,
+        unexpected_integration_paths, validate_reveal_path, workspace_scan_backoff,
+        workspace_scan_budget_exhausted, workspace_scan_depot_scope_for_directory,
+        workspace_scan_path_is_excluded, workspace_stream_view_paths,
     };
     use crate::models::{
         AppError, ConnectionInput, ErrorKind, OpenedFile, OperationCompensationStatus,
         OperationEventKind, OperationItemStatus, P4Info, SubmitMode, SubmitOutcome, SubmitReadBack,
-        SubmitStepResult, SubmitTerminalOutcome, WorkspaceScanCandidate,
-        WorkspaceScanCoverageState, WorkspaceScanPartialReason, WorkspaceScanRoot,
+        SubmitStepResult, SubmitTerminalOutcome, WorkspaceScanCandidate, WorkspaceScanCoverage,
+        WorkspaceScanCoverageState, WorkspaceScanIdentity, WorkspaceScanPartialReason,
+        WorkspaceScanRoot, WorkspaceScanSnapshot,
     };
     use crate::operations::{OperationHandle, OperationRegistry};
+    use crate::p4;
+    use crate::workspace_scan_cache::{
+        WorkspaceScanCacheEntry, WorkspaceScanCacheStore, WorkspaceScanRootCache, snapshot_root,
+        upsert_cache_entry,
+    };
     use std::{
         collections::BTreeSet,
         fs,
@@ -4224,7 +4439,7 @@ mod tests {
         process::Command,
         sync::{Arc, atomic::AtomicBool, mpsc},
         thread,
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -4671,10 +4886,21 @@ mod tests {
                 cancelled: Arc::new(AtomicBool::new(false)),
             }
         ));
-        let scheduler = WorkspaceScanScheduler::new(scans.clone(), operations.clone());
+        let scheduler = WorkspaceScanScheduler::new(
+            scans.clone(),
+            operations.clone(),
+            WorkspaceScanCacheStore::new(
+                std::env::temp_dir().join(format!("p4fnv-test-cache-{}", std::process::id())),
+            ),
+        );
         scheduler
             .schedule(
-                WorkspaceScanRequest::new(input.clone(), PathBuf::from(r"C:\work"), &configured),
+                WorkspaceScanRequest::new(
+                    input.clone(),
+                    PathBuf::from(r"C:\work"),
+                    &configured,
+                    false,
+                ),
                 Duration::ZERO,
             )
             .unwrap();
@@ -4708,7 +4934,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_scan_budget_and_cancel_kill_the_active_child() {
+    fn workspace_scan_cancel_kills_the_active_child() {
         let sleeping_command = || {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command.args([
@@ -4719,19 +4945,6 @@ mod tests {
             command
         };
         let operations = OperationRegistry::default();
-        let (_sender, receiver) = mpsc::channel();
-        assert!(matches!(
-            super::run_workspace_scan_child(
-                sleeping_command(),
-                crate::p4::parse_workspace_scan_output,
-                &receiver,
-                &operations,
-                "server/alex/main",
-                Instant::now() - WORKSPACE_SCAN_BUDGET,
-            ),
-            super::WorkspaceScanChildOutcome::Budget
-        ));
-
         let (sender, receiver) = mpsc::channel();
         let (acknowledge, _acknowledged) = mpsc::channel();
         sender
@@ -4744,7 +4957,6 @@ mod tests {
                 &receiver,
                 &operations,
                 "server/alex/main",
-                Instant::now(),
             ),
             super::WorkspaceScanChildOutcome::Message(
                 super::WorkspaceScanSchedulerMessage::Cancel(_)
@@ -4785,12 +4997,112 @@ mod tests {
                 &receiver,
                 &operations,
                 "server/alex/main",
-                Instant::now(),
             ),
             super::WorkspaceScanChildOutcome::Foreground
         ));
         foreground.join().unwrap();
         operations.remove("op-foreground");
+    }
+
+    #[test]
+    fn workspace_scan_cache_rechecks_only_changed_directory_scopes() {
+        let directory =
+            std::env::temp_dir().join(format!("p4fnv-scan-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(directory.join("src/nested")).unwrap();
+        fs::write(directory.join("src/nested/file.txt"), b"one").unwrap();
+        let root_path = fs::canonicalize(&directory).unwrap();
+        let root = WorkspaceScanRoot {
+            local_path: root_path.to_string_lossy().to_string(),
+            local_scope: format!("{}\\...", root_path.to_string_lossy()),
+            client_scope: "//alex-main/Source/...".to_owned(),
+            depot_scope: "//Acme/main/Source/...".to_owned(),
+            ignore_sources: Vec::new(),
+        };
+        let input = ConnectionInput {
+            p4_path: None,
+            port: "perforce:1666".to_owned(),
+            user: "alex".to_owned(),
+            client: Some("alex-main".to_owned()),
+            charset: None,
+            p4_config: None,
+            p4_enviro: None,
+        };
+        let cache_path =
+            std::env::temp_dir().join(format!("p4fnv-scan-plan-cache-{}.gz", std::process::id()));
+        let _ = fs::remove_file(&cache_path);
+        let cache = WorkspaceScanCacheStore::new(cache_path.clone());
+        let fingerprint = snapshot_root(&root_path, &[]).unwrap();
+        let mut cache_file = crate::workspace_scan_cache::WorkspaceScanCacheFile::default();
+        upsert_cache_entry(
+            &mut cache_file,
+            WorkspaceScanCacheEntry {
+                scope_id: "scope".to_owned(),
+                roots: vec![WorkspaceScanRootCache {
+                    local_path: fingerprint.local_path.clone(),
+                    directories: fingerprint.directories.clone(),
+                }],
+                candidates: Vec::new(),
+                last_full_scan_ms: operation_started_at_ms(),
+            },
+        );
+        cache.save(cache_file).unwrap();
+
+        let snapshot = WorkspaceScanSnapshot {
+            scope_id: "scope".to_owned(),
+            identity: WorkspaceScanIdentity {
+                server: input.port.clone(),
+                user: input.user.clone(),
+                workspace: input.client.clone().unwrap(),
+                stream: None,
+            },
+            roots: vec![root.clone()],
+            exclusions: Vec::new(),
+            candidates: Vec::new(),
+            coverage: WorkspaceScanCoverage {
+                state: WorkspaceScanCoverageState::NotStarted,
+                completed_roots: 0,
+                total_roots: 1,
+                candidate_count: 0,
+                candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
+                partial_reasons: Vec::new(),
+                current_root: None,
+            },
+            generated_at_ms: operation_started_at_ms(),
+        };
+        let mut request =
+            WorkspaceScanRequest::new(input.clone(), root_path.clone(), &snapshot, false);
+        prepare_workspace_scan(&mut request, &cache);
+        assert!(request.targets.is_empty());
+        assert_eq!(request.completed_roots, 1);
+
+        fs::write(root_path.join("src/nested/file.txt"), b"two").unwrap();
+        let mut changed_request = WorkspaceScanRequest::new(input, root_path, &snapshot, false);
+        prepare_workspace_scan(&mut changed_request, &cache);
+        assert_eq!(changed_request.targets.len(), 2);
+        assert_eq!(
+            changed_request.targets[0].scopes,
+            vec!["//Acme/main/Source/src/nested/..."]
+        );
+        assert!(!changed_request.targets[0].add);
+        assert!(changed_request.targets[1].add);
+        let _ = fs::remove_file(cache_path);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn workspace_scan_directory_scope_mapping_stays_at_root_for_root_changes() {
+        let root = WorkspaceScanRoot {
+            local_path: r"C:\work\Source".to_owned(),
+            local_scope: r"C:\work\Source\...".to_owned(),
+            client_scope: "//alex-main/Source/...".to_owned(),
+            depot_scope: "//Acme/main/Source/...".to_owned(),
+            ignore_sources: Vec::new(),
+        };
+        assert_eq!(
+            workspace_scan_depot_scope_for_directory(&root, r"C:\work\Source"),
+            Some("//Acme/main/Source/...".to_owned())
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ React feature
   -> Helix Core Server
 ```
 
-Helix Core Server remains the source of truth. The application does not reproduce permissions, client mapping, integration history, or changelist state in its own local index.
+Helix Core Server remains the source of truth. The application does not reproduce permissions, client mapping, integration history, or changelist state in its own local index. The bounded workspace-discovery metadata cache is only a local revalidation optimization; its contract is in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
 
 ## Layer responsibilities
 
@@ -163,7 +163,7 @@ The full local gate and release commands are in [`TOOLCHAIN.md`](TOOLCHAIN.md).
 
 - a universal Perforce SDK/transport, C++ P4API FFI, or REST layer;
 - a shell console from the frontend;
-- a local database and background indexing;
+- a local database or general-purpose background indexing;
 - a plugin SDK, DI container, event bus, or multiple crates;
 - a custom client-view parser;
 - a dependency or abstraction with a single consumer.

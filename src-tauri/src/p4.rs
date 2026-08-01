@@ -5818,9 +5818,32 @@ pub fn workspace_scan_command(
     workspace_root: &Path,
     root: &WorkspaceScanRoot,
 ) -> Result<(PathBuf, Command), AppError> {
-    validate_depot_path(&root.depot_scope)?;
+    workspace_scan_scopes_command(
+        input,
+        workspace_root,
+        root,
+        std::slice::from_ref(&root.depot_scope),
+    )
+}
+
+pub fn workspace_scan_scopes_command(
+    input: &ConnectionInput,
+    workspace_root: &Path,
+    root: &WorkspaceScanRoot,
+    scopes: &[String],
+) -> Result<(PathBuf, Command), AppError> {
+    if scopes.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "Не указаны области фонового сканирования.",
+        ));
+    }
+    for scope in scopes {
+        validate_depot_path(scope)?;
+    }
     let (path, mut command) = workspace_scan_base_command(input, workspace_root, root)?;
-    command.args(workspace_scan_arguments(&root.depot_scope));
+    command.args(["-ztag", "-Mj", "status", "-e", "-d", "-m"]);
+    command.args(scopes);
     Ok((path, command))
 }
 
@@ -5854,10 +5877,6 @@ fn workspace_scan_base_command(
     }
     set_low_process_priority(&mut command);
     Ok((path, command))
-}
-
-fn workspace_scan_arguments(scope: &str) -> [&str; 7] {
-    ["-ztag", "-Mj", "status", "-e", "-d", "-m", scope]
 }
 
 fn workspace_scan_add_arguments(scope: &str) -> [&str; 5] {
@@ -8901,6 +8920,21 @@ mod tests {
             name == "P4IGNORE"
                 && value.is_some_and(|value| Path::new(value) == ignore_file.as_path())
         }));
+        let scopes = vec![
+            "//Acme/main/Source/src/...".to_owned(),
+            "//Acme/main/Source/tests/...".to_owned(),
+        ];
+        let (_, batched_command) =
+            workspace_scan_scopes_command(&input, &fixture, &root, &scopes).unwrap();
+        let batched_arguments = batched_command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &batched_arguments[..6],
+            ["-ztag", "-Mj", "status", "-e", "-d", "-m"]
+        );
+        assert_eq!(&batched_arguments[6..], scopes);
         let (_, add_command) = workspace_scan_add_command(&input, &fixture, &root).unwrap();
         let add_arguments = add_command
             .get_args()

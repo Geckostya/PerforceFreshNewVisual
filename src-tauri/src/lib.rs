@@ -5,19 +5,35 @@ mod models;
 mod operations;
 mod p4;
 mod settings;
+mod workspace_scan_cache;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let operations = operations::OperationRegistry::default();
     let scans = commands::WorkspaceScanRegistry::default();
-    let scan_scheduler = commands::WorkspaceScanScheduler::new(scans.clone(), operations.clone());
+    let scheduler_operations = operations.clone();
+    let scheduler_scans = scans.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(move |app| {
+            let cache_path = app
+                .path()
+                .app_config_dir()
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .join("workspace-scan-cache-v1.gz");
+            app.manage(commands::WorkspaceScanScheduler::new(
+                scheduler_scans.clone(),
+                scheduler_operations.clone(),
+                workspace_scan_cache::WorkspaceScanCacheStore::new(cache_path),
+            ));
+            Ok(())
+        })
         .manage(operations)
         .manage(commands::WorkspaceRootRegistry::default())
         .manage(scans)
-        .manage(scan_scheduler)
         .invoke_handler(tauri::generate_handler![
             commands::detect_p4,
             commands::test_connection,
