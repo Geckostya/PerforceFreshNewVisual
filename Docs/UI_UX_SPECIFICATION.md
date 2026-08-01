@@ -111,8 +111,9 @@ Use the tokens in `src/index.css` and shared selectors in `src/app/app.css`; do 
 - Readable text is at least 12 px; 10 px is limited to optional short badges.
 - Use the 4 px spacing grid: 4, 8, 12, 16, 24, and 32 px. Adjacent targets are at least 32 px; the absolute accessibility floor is 24×24 CSS px.
 - Files and folders in one tree share geometry and typography. Use shared selectable row/tree primitives rather than rebuilding ARIA, disclosure, indentation, and selection styles.
-- Hierarchy comes from spacing, type, and borders. Semantic color supplements a label/icon and uses existing tokens.
-- Truncate long paths only when the full value remains available in inspector, tooltip, or Copy.
+- Base surfaces stay neutral and mostly flat. Most buttons are borderless and transparent at rest; hover uses the shared raised surface, brief lift, and shadow, while keyboard focus keeps the shared visible focus ring. Selected rows and active navigation use the shared rounded selected surface, accent inset, and persistent elevation; selected hover raises them one level further. Inputs, semantic boundaries, and grouped controls may retain borders.
+- Semantic color supplements a label/icon and uses existing tokens; do not introduce feature-local color, radius, shadow, or interactive-state variants.
+- Grid and flex text children must be shrinkable. Wrap prose and unbroken identifiers inside their container; truncate single-line paths, names, and metadata only when the full value remains available in an inspector, tooltip, accessible name, or Copy action.
 - Motion is brief and disabled under `prefers-reduced-motion`; English and Russian use the same layout.
 - Reuse the shared submitted-changelist history and safe Markdown description components instead of feature-local variants. Only HTTP(S) description links are actionable and open outside the WebView.
 
