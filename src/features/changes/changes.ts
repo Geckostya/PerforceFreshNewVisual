@@ -53,6 +53,7 @@ export function unopenedChangesMatch(
 export function workspaceScanCoverageStateKey(state: WorkspaceScanCoverageState): TranslationKey {
   const keys = {
     not_started: "unopenedCoverageNotStarted",
+    scanning: "unopenedCoverageScanning",
     complete: "unopenedCoverageComplete",
     partial: "unopenedCoveragePartial",
     paused: "unopenedCoveragePaused",

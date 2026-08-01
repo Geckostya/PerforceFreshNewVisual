@@ -4,10 +4,13 @@ use std::{
     sync::Mutex,
 };
 
-use crate::models::{AppError, AppSettings, ConnectionInput, ErrorKind, ThemeMode};
+use crate::models::{
+    AppError, AppSettings, ConnectionInput, ErrorKind, ThemeMode, WorkspaceScanConfiguration,
+};
 
 const MAX_RECENT_CONNECTIONS: usize = 10;
 const MAX_FAVORITE_CONNECTIONS: usize = 20;
+const MAX_WORKSPACE_SCAN_CONFIGURATIONS: usize = 20;
 static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn load(path: &Path) -> Result<AppSettings, AppError> {
@@ -81,6 +84,43 @@ pub fn toggle_favorite_connection(
     Ok(settings)
 }
 
+pub fn save_workspace_scan_configuration(
+    path: &Path,
+    configuration: WorkspaceScanConfiguration,
+) -> Result<(), AppError> {
+    let _guard = SETTINGS_LOCK.lock().map_err(lock_error)?;
+    let mut settings = load_unlocked(path)?;
+    let configuration = WorkspaceScanConfiguration {
+        connection: normalize(configuration.connection),
+        roots: normalize_paths(configuration.roots),
+        exclusions: normalize_paths(configuration.exclusions),
+    };
+    settings
+        .workspace_scan_configurations
+        .retain(|existing| !same_connection(&existing.connection, &configuration.connection));
+    settings
+        .workspace_scan_configurations
+        .insert(0, configuration);
+    settings
+        .workspace_scan_configurations
+        .truncate(MAX_WORKSPACE_SCAN_CONFIGURATIONS);
+    save_unlocked(path, &settings)
+}
+
+pub fn workspace_scan_configuration(
+    path: &Path,
+    input: &ConnectionInput,
+) -> Result<Option<WorkspaceScanConfiguration>, AppError> {
+    let _guard = SETTINGS_LOCK.lock().map_err(lock_error)?;
+    let settings = load_unlocked(path)?;
+    let input = normalize(input.clone());
+    Ok(settings
+        .workspace_scan_configurations
+        .iter()
+        .find(|configuration| same_connection(&configuration.connection, &input))
+        .cloned())
+}
+
 fn load_unlocked(path: &Path) -> Result<AppSettings, AppError> {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
@@ -148,6 +188,23 @@ fn trimmed(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn normalize_paths(paths: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(paths.len());
+    for path in paths {
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if !normalized
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(path))
+        {
+            normalized.push(path.to_owned());
+        }
+    }
+    normalized
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -291,6 +348,40 @@ mod tests {
         save_theme(&path, ThemeMode::Light).unwrap();
         expected.theme = ThemeMode::Light;
         assert_eq!(load_unlocked(&path).unwrap(), expected);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn workspace_scan_configuration_is_saved_per_connection_and_bounded() {
+        let directory = std::env::temp_dir().join(format!(
+            "p4fnv-scan-settings-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("settings.json");
+        let input = connection("ssl:p4:1666", "alex", "main");
+        save_workspace_scan_configuration(
+            &path,
+            WorkspaceScanConfiguration {
+                connection: input.clone(),
+                roots: vec![r" C:\\Content ".to_owned(), r"c:\\content".to_owned()],
+                exclusions: vec![r" C:\\Content\\Build ".to_owned()],
+            },
+        )
+        .unwrap();
+
+        let configuration = workspace_scan_configuration(&path, &input)
+            .unwrap()
+            .unwrap();
+        assert_eq!(configuration.roots, vec![r"C:\\Content".to_owned()]);
+        assert_eq!(
+            configuration.exclusions,
+            vec![r"C:\\Content\\Build".to_owned()]
+        );
+
         fs::remove_dir_all(directory).unwrap();
     }
 }

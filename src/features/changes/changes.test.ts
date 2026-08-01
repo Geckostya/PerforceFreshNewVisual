@@ -112,9 +112,10 @@ describe("virtual unopened changes presentation", () => {
   });
 
   it("maps every coverage and reason state to localized copy", () => {
-    const states: WorkspaceScanCoverageState[] = ["not_started", "complete", "partial", "paused", "stale"];
+    const states: WorkspaceScanCoverageState[] = ["not_started", "scanning", "complete", "partial", "paused", "stale"];
     expect(states.map(workspaceScanCoverageStateKey)).toEqual([
       "unopenedCoverageNotStarted",
+      "unopenedCoverageScanning",
       "unopenedCoverageComplete",
       "unopenedCoveragePartial",
       "unopenedCoveragePaused",

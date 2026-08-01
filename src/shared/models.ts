@@ -53,6 +53,13 @@ export interface AppSettings {
   recentConnections: ConnectionInput[];
   favoriteConnections: ConnectionInput[];
   deleteAddedFilesOnRevert: boolean;
+  workspaceScanConfigurations: WorkspaceScanConfiguration[];
+}
+
+export interface WorkspaceScanConfiguration {
+  connection: ConnectionInput;
+  roots: string[];
+  exclusions: string[];
 }
 
 export interface LocaleBundle {
@@ -590,7 +597,7 @@ export interface WorkspaceScanRoot {
   ignoreSources: string[];
 }
 
-export type WorkspaceScanCoverageState = "not_started" | "complete" | "partial" | "paused" | "stale";
+export type WorkspaceScanCoverageState = "not_started" | "scanning" | "complete" | "partial" | "paused" | "stale";
 export type WorkspaceScanPartialReason =
   | "candidate_limit"
   | "budget_exceeded"
@@ -607,6 +614,7 @@ export interface WorkspaceScanCoverage {
   candidateCount: number;
   candidateLimit: number;
   partialReasons: WorkspaceScanPartialReason[];
+  currentRoot?: string;
 }
 
 export interface WorkspaceScanCandidate {

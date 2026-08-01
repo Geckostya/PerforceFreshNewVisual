@@ -23,9 +23,10 @@ use crate::{
         UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
         WorkspaceMappingApplyInput, WorkspaceMappingBatch, WorkspaceMappingEditor,
         WorkspaceMappingPreview, WorkspaceMappingPreviewInput, WorkspaceScanCandidate,
-        WorkspaceScanCoverage, WorkspaceScanCoverageState, WorkspaceScanIdentity,
-        WorkspaceScanPartialReason, WorkspaceScanRoot, WorkspaceScanSnapshot,
-        WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary, WorkspaceUpdateInput,
+        WorkspaceScanConfiguration, WorkspaceScanCoverage, WorkspaceScanCoverageState,
+        WorkspaceScanIdentity, WorkspaceScanPartialReason, WorkspaceScanRoot,
+        WorkspaceScanSnapshot, WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
+        WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -119,11 +120,7 @@ impl WorkspaceScanRegistry {
                 "Workspace изменился во время настройки сканера.",
             ));
         }
-        let state = if partial_reasons.is_empty() {
-            WorkspaceScanCoverageState::NotStarted
-        } else {
-            WorkspaceScanCoverageState::Partial
-        };
+        let state = WorkspaceScanCoverageState::Scanning;
         let configured = WorkspaceScanSnapshot {
             scope_id: workspace_scan_scope_id(expected_identity, &roots, &exclusions),
             identity: expected_identity.clone(),
@@ -134,6 +131,7 @@ impl WorkspaceScanRegistry {
                 candidate_count: 0,
                 candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
                 partial_reasons,
+                current_root: roots.first().map(|root| root.local_path.clone()),
             },
             roots,
             exclusions,
@@ -163,6 +161,7 @@ impl WorkspaceScanRegistry {
         completed_roots: usize,
         failed_roots: usize,
         reasons: &[WorkspaceScanPartialReason],
+        current_root: Option<String>,
     ) -> Result<WorkspaceScanSnapshot, AppError> {
         let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
         let current = snapshot.as_ref().ok_or_else(workspace_scan_not_open)?;
@@ -198,7 +197,9 @@ impl WorkspaceScanRegistry {
         }
         let mut published = current.clone();
         published.coverage = WorkspaceScanCoverage {
-            state: if partial_reasons.is_empty() && completed_roots >= total_roots {
+            state: if reasons.contains(&WorkspaceScanPartialReason::BudgetExceeded) {
+                WorkspaceScanCoverageState::Scanning
+            } else if partial_reasons.is_empty() && completed_roots >= total_roots {
                 WorkspaceScanCoverageState::Complete
             } else {
                 WorkspaceScanCoverageState::Partial
@@ -208,11 +209,27 @@ impl WorkspaceScanRegistry {
             candidate_count: candidates.len(),
             candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
             partial_reasons,
+            current_root,
         };
         published.candidates = candidates;
         published.generated_at_ms = operation_started_at_ms();
         *snapshot = Some(published.clone());
         Ok(published)
+    }
+
+    fn begin(&self, expected_scope_id: &str, current_root: Option<String>) -> Result<(), AppError> {
+        let mut snapshot = self.snapshot.lock().map_err(workspace_scan_lock_error)?;
+        let current = snapshot.as_mut().ok_or_else(workspace_scan_not_open)?;
+        if current.scope_id != expected_scope_id {
+            return Err(AppError::new(
+                ErrorKind::Stale,
+                "Состояние сканера относится к устаревшему scope.",
+            ));
+        }
+        current.coverage.state = WorkspaceScanCoverageState::Scanning;
+        current.coverage.current_root = current_root;
+        current.generated_at_ms = operation_started_at_ms();
+        Ok(())
     }
 
     fn pause(
@@ -256,6 +273,7 @@ fn empty_workspace_scan_snapshot(identity: WorkspaceScanIdentity) -> WorkspaceSc
             candidate_count: 0,
             candidate_limit: p4::MAX_WORKSPACE_SCAN_CANDIDATES,
             partial_reasons: Vec::new(),
+            current_root: None,
         },
         generated_at_ms: operation_started_at_ms(),
     }
@@ -491,6 +509,14 @@ fn workspace_scan_scheduler_loop(
             });
             continue;
         }
+        let _ = scans.begin(
+            &request.scope_id,
+            request
+                .targets
+                .get(request.next_target)
+                .map(|target| request.roots[target.root_index].local_path.clone())
+                .or_else(|| request.roots.first().map(|root| root.local_path.clone())),
+        );
         match run_workspace_scan(&receiver, &operations, &mut request) {
             WorkspaceScanRunOutcome::Finished {
                 candidates,
@@ -499,12 +525,17 @@ fn workspace_scan_scheduler_loop(
                 reason,
             } => {
                 let reasons = reason.into_iter().collect::<Vec<_>>();
+                let current_root = request
+                    .targets
+                    .get(request.next_target)
+                    .map(|target| request.roots[target.root_index].local_path.clone());
                 let published = scans.publish_results(
                     &request.scope_id,
                     candidates,
                     completed_roots,
                     failed_roots,
                     &reasons,
+                    current_root,
                 );
                 if published.is_err() {
                     continue;
@@ -940,6 +971,7 @@ pub async fn test_connection(input: ConnectionInput) -> Result<P4Info, AppError>
 
 #[tauri::command]
 pub async fn open_workspace(
+    app: tauri::AppHandle,
     input: ConnectionInput,
     roots: State<'_, WorkspaceRootRegistry>,
     scans: State<'_, WorkspaceScanRegistry>,
@@ -952,6 +984,43 @@ pub async fn open_workspace(
         .map_err(task_error)??;
     roots.remember(&registry_input, &info)?;
     scans.reset(&registry_input, &info)?;
+    let saved_configuration =
+        settings::workspace_scan_configuration(&settings_path(&app)?, &registry_input)?;
+    if let Some(saved_configuration) = saved_configuration {
+        if let Ok(workspace_root) = roots.root(&registry_input) {
+            let request_workspace_root = workspace_root.clone();
+            let scan_input = registry_input.clone();
+            let requested_roots = saved_configuration.roots;
+            let requested_exclusions = saved_configuration.exclusions;
+            let configuration = tauri::async_runtime::spawn_blocking(move || {
+                p4::configure_workspace_scan(
+                    &scan_input,
+                    &workspace_root,
+                    &requested_roots,
+                    &requested_exclusions,
+                )
+            })
+            .await
+            .map_err(task_error)?;
+            if let Ok(configuration) = configuration {
+                let identity = scans.identity(&registry_input)?;
+                let snapshot = scans.configure(
+                    &identity,
+                    configuration.roots,
+                    configuration.exclusions,
+                    configuration.partial_reasons,
+                )?;
+                scheduler.schedule(
+                    WorkspaceScanRequest::new(
+                        registry_input.clone(),
+                        request_workspace_root,
+                        &snapshot,
+                    ),
+                    WORKSPACE_SCAN_DEBOUNCE,
+                )?;
+            }
+        }
+    }
     Ok(info)
 }
 
@@ -1693,6 +1762,7 @@ pub async fn map_workspace_paths(
 
 #[tauri::command]
 pub async fn configure_workspace_scan(
+    app: tauri::AppHandle,
     input: ConnectionInput,
     roots: Vec<String>,
     exclusions: Vec<String>,
@@ -1707,6 +1777,21 @@ pub async fn configure_workspace_scan(
     let scan_input = input.clone();
     let configuration = tauri::async_runtime::spawn_blocking(move || {
         p4::configure_workspace_scan(&scan_input, &workspace_root, &roots, &exclusions)
+    })
+    .await
+    .map_err(task_error)??;
+    let saved_configuration = WorkspaceScanConfiguration {
+        connection: input.clone(),
+        roots: configuration
+            .roots
+            .iter()
+            .map(|root| root.local_path.clone())
+            .collect(),
+        exclusions: configuration.exclusions.clone(),
+    };
+    let settings_file = settings_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        settings::save_workspace_scan_configuration(&settings_file, saved_configuration)
     })
     .await
     .map_err(task_error)??;
@@ -4438,7 +4523,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             configured.coverage.state,
-            WorkspaceScanCoverageState::Partial
+            WorkspaceScanCoverageState::Scanning
         );
         assert_eq!(configured.coverage.total_roots, 1);
         assert!(configured.candidates.is_empty());
@@ -4458,6 +4543,7 @@ mod tests {
                 0,
                 1,
                 &[],
+                None,
             )
             .unwrap();
         assert_eq!(
@@ -4486,7 +4572,7 @@ mod tests {
         assert_ne!(reset.scope_id, configured.scope_id);
         assert_eq!(
             registry
-                .publish_results(&configured.scope_id, Vec::new(), 0, 0, &[])
+                .publish_results(&configured.scope_id, Vec::new(), 0, 0, &[], None)
                 .unwrap_err()
                 .kind,
             ErrorKind::Stale

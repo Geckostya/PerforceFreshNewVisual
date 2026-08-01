@@ -81,8 +81,8 @@ export function UnopenedChangesConfigDialog({ connection, info, snapshot, onClos
       <p>{t("unopenedConfigureHelp")}</p>
       <section className="unopened-config-section">
         <div className="unopened-config-section-heading">
-          <div><strong>{t("unopenedScanRoots")}</strong><small>{t("unopenedScanRootsHint")}</small></div>
-          <div className="button-row">
+          <div className="unopened-config-heading-copy"><strong>{t("unopenedScanRoots")}</strong><small>{t("unopenedScanRootsHint")}</small></div>
+          <div className="button-row unopened-config-heading-actions">
             <button className="secondary-button" type="button" disabled={dialogBusy || roots.length >= MAX_SCAN_PATHS} onClick={() => setRoots((current) => [...current, ""]) }><Plus className="ui-icon" aria-hidden="true" />{t("unopenedAddRoot")}</button>
             <button className="secondary-button" type="button" disabled={dialogBusy || roots.length >= MAX_SCAN_PATHS} onClick={() => void chooseFolders("root")}><FolderOpen className="ui-icon" aria-hidden="true" />{pickerBusy ? t("unopenedChoosingFolder") : t("unopenedChooseRoots")}</button>
           </div>
@@ -94,8 +94,8 @@ export function UnopenedChangesConfigDialog({ connection, info, snapshot, onClos
       </section>
       <section className="unopened-config-section">
         <div className="unopened-config-section-heading">
-          <div><strong>{t("unopenedScanExclusions")}</strong><small>{t("unopenedScanExclusionsHint")}</small></div>
-          <div className="button-row">
+          <div className="unopened-config-heading-copy"><strong>{t("unopenedScanExclusions")}</strong><small>{t("unopenedScanExclusionsHint")}</small></div>
+          <div className="button-row unopened-config-heading-actions">
             <button className="secondary-button" type="button" disabled={dialogBusy || exclusions.length >= MAX_SCAN_PATHS} onClick={() => setExclusions((current) => [...current, ""]) }><Plus className="ui-icon" aria-hidden="true" />{t("unopenedAddExclusion")}</button>
             <button className="secondary-button" type="button" disabled={dialogBusy || exclusions.length >= MAX_SCAN_PATHS} onClick={() => void chooseFolders("exclusion")}><FolderOpen className="ui-icon" aria-hidden="true" />{pickerBusy ? t("unopenedChoosingFolder") : t("unopenedChooseExclusions")}</button>
           </div>

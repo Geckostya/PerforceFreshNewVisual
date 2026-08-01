@@ -9,6 +9,7 @@ describe("connectionToAutoOpen", () => {
       theme: "system",
     deleteAddedFilesOnRevert: false,
     favoriteConnections: [],
+    workspaceScanConfigurations: [],
       recentConnections: [
         { port: "p4:1666", user: "alex" },
         { port: "p4:1666", user: "alex", client: "alex-main" },
@@ -24,6 +25,7 @@ describe("connectionToAutoOpen", () => {
       theme: "system",
     deleteAddedFilesOnRevert: false,
     favoriteConnections: [],
+    workspaceScanConfigurations: [],
       recentConnections: [{ port: "p4:1666", user: "alex", client: "  " }],
     };
 

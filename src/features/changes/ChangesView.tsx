@@ -608,6 +608,14 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     : "";
   const unopenedCoverageReasons = unopenedGroup?.coverage.partialReasons
     .map((reason) => t(workspaceScanReasonKey(reason))) ?? [];
+  const unopenedScanActive = unopenedGroup?.coverage.state === "scanning";
+  const unopenedScanDetail = unopenedGroup ? [
+    unopenedGroup.coverage.currentRoot
+      ? `${t("unopenedScanningPath")}: ${unopenedGroup.coverage.currentRoot}`
+      : undefined,
+    `${unopenedGroup.coverage.completedRoots} / ${unopenedGroup.coverage.totalRoots} ${t("unopenedRootsChecked")}`,
+    `${unopenedGroup.coverage.candidateCount} ${t("unopenedFilesCount")}`,
+  ].filter(Boolean).join(" · ") : undefined;
   const unopenedActionLabel = (action: string) => action === "add"
     ? t("reconcileGroup_add")
     : action === "edit"
@@ -624,7 +632,10 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       busy={state === "loading" || actionRunning}
       error={error}
       notice={notice}
-      operationLabel={safeSync.phase === "checking" ? t("checkingWritableConflicts") : undefined}
+      operationLabel={safeSync.phase === "checking"
+        ? t("checkingWritableConflicts")
+        : unopenedScanActive ? t("unopenedScanning") : undefined}
+      operationDetail={safeSync.phase === "checking" ? undefined : unopenedScanDetail}
       onDismissNotice={() => setNotice("")}
       actions={<>
           <span className="auto-refresh"><span aria-hidden="true" />{t("refreshOnFocus")}</span>
@@ -635,9 +646,14 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       {resourceMutationsBlocked && state !== "loading" && <p className="notice-banner" id="changes-stale-reason" role="status">{t("staleMutationBlocked")}</p>}
       <div className="change-toolbar">
         {isUnopenedSelected ? <>
-          <div><strong>{t("unopenedChanges")}</strong><span id="unopened-read-only-reason">{t("unopenedPresentationOnly")}</span></div>
-          <button data-agent-id="changes-unopened-configure-selected" className="icon-button unopened-configure-button" type="button" aria-label={t("unopenedConfigure")} title={t("unopenedConfigure")} onClick={() => setUnopenedConfigOpen(true)}><Settings2 className="ui-icon" aria-hidden="true" /></button>
-          <span className="source-badge local" role="status">{unopenedCoverageLabel}</span>
+          <div className="unopened-toolbar-copy"><strong>{t("unopenedChanges")}</strong><span id="unopened-read-only-reason">{t("unopenedPresentationOnly")}</span></div>
+          <div className="change-toolbar-actions unopened-toolbar-actions">
+            <span className={`source-badge local${unopenedScanActive ? " scanning" : ""}`} role="status">
+              {unopenedScanActive && <span className="folder-loading-indicator" aria-hidden="true" />}
+              {unopenedCoverageLabel}
+            </span>
+            <button data-agent-id="changes-unopened-configure-selected" className="icon-button unopened-configure-button" type="button" aria-label={t("unopenedConfigure")} title={t("unopenedConfigure")} onClick={() => setUnopenedConfigOpen(true)}><Settings2 className="ui-icon" aria-hidden="true" /></button>
+          </div>
         </> : <>
           <div>
             <strong className={currentGroup.isDefault ? undefined : "changelist-number"}>{currentGroup.isDefault ? t("defaultChangelist") : `CL ${currentGroup.id}`}</strong>
@@ -670,7 +686,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
               className="change-item"
               onClick={selectUnopenedChanges}
             >
-              <span className="change-title-row"><span className="change-title">{t("unopenedChanges")}</span><span className="source-badge local">{unopenedCoverageLabel}</span><button data-agent-id="changes-unopened-configure" className="icon-button unopened-configure-button" type="button" aria-label={t("unopenedConfigure")} title={t("unopenedConfigure")} onClick={(event) => { event.stopPropagation(); setUnopenedConfigOpen(true); }}><Settings2 className="ui-icon" aria-hidden="true" /></button></span>
+              <span className="change-title-row"><span className="change-title">{t("unopenedChanges")}</span><span className={`source-badge local${unopenedScanActive ? " scanning" : ""}`}>{unopenedScanActive && <span className="folder-loading-indicator" aria-hidden="true" />}{unopenedCoverageLabel}</span><button data-agent-id="changes-unopened-configure" className="icon-button unopened-configure-button" type="button" aria-label={t("unopenedConfigure")} title={t("unopenedConfigure")} onClick={(event) => { event.stopPropagation(); setUnopenedConfigOpen(true); }}><Settings2 className="ui-icon" aria-hidden="true" /></button></span>
               <span className="change-meta">{unopenedGroup.candidates.length} {t("unopenedFilesCount")} · {unopenedGroup.coverage.completedRoots} / {unopenedGroup.coverage.totalRoots} {t("unopenedRootsCount")}</span>
             </SelectableSurface>}
             {partitionedGroups.current.map(renderChange)}
@@ -688,10 +704,14 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
         <section className="file-column" aria-label={isUnopenedSelected ? t("unopenedChanges") : t("changeContentsLabel")}>
           {isUnopenedSelected ? <div className="file-section">
             <div className="column-heading"><strong>{t("unopenedDetectedFiles")}</strong><span>{unopenedGroup.candidates.length}</span></div>
-            <p className="notice-banner" role="status">
-              {t("unopenedCoverageSummary").replace("{completed}", String(unopenedGroup.coverage.completedRoots)).replace("{total}", String(unopenedGroup.coverage.totalRoots)).replace("{state}", unopenedCoverageLabel)}
-              {unopenedCoverageReasons.length > 0 ? ` ${unopenedCoverageReasons.join(" · ")}` : ""}
-            </p>
+            <div className={`notice-banner unopened-coverage-banner${unopenedScanActive ? " scanning" : ""}`} role="status">
+              {unopenedScanActive && <span className="folder-loading-indicator" aria-hidden="true" />}
+              <div>
+                <strong>{unopenedScanActive ? t("unopenedScanning") : t("unopenedCoverageSummary").replace("{completed}", String(unopenedGroup.coverage.completedRoots)).replace("{total}", String(unopenedGroup.coverage.totalRoots)).replace("{state}", unopenedCoverageLabel)}</strong>
+                {unopenedScanActive && unopenedScanDetail && <span>{unopenedScanDetail}</span>}
+                {!unopenedScanActive && unopenedCoverageReasons.length > 0 && <span>{unopenedCoverageReasons.join(" · ")}</span>}
+              </div>
+            </div>
             {unopenedGroup.candidates.length === 0
               ? <CompactEmpty text={t(unopenedGroup.coverage.state === "not_started" ? "unopenedNotConfigured" : "unopenedEmpty")} />
               : <div className="file-list" role="listbox" aria-label={t("unopenedDetectedFiles")}>{unopenedGroup.candidates.map((candidate) => (

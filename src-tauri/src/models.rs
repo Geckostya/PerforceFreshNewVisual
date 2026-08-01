@@ -275,6 +275,7 @@ pub struct AppSettings {
     pub recent_connections: Vec<ConnectionInput>,
     pub favorite_connections: Vec<ConnectionInput>,
     pub delete_added_files_on_revert: bool,
+    pub workspace_scan_configurations: Vec<WorkspaceScanConfiguration>,
 }
 
 impl Default for AppSettings {
@@ -285,8 +286,17 @@ impl Default for AppSettings {
             recent_connections: Vec::new(),
             favorite_connections: Vec::new(),
             delete_added_files_on_revert: false,
+            workspace_scan_configurations: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceScanConfiguration {
+    pub connection: ConnectionInput,
+    pub roots: Vec<String>,
+    pub exclusions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1137,6 +1147,7 @@ pub struct WorkspaceScanRoot {
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceScanCoverageState {
     NotStarted,
+    Scanning,
     Complete,
     Partial,
     Paused,
@@ -1164,6 +1175,7 @@ pub struct WorkspaceScanCoverage {
     pub candidate_count: usize,
     pub candidate_limit: usize,
     pub partial_reasons: Vec<WorkspaceScanPartialReason>,
+    pub current_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
