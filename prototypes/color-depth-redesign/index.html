@@ -61,6 +61,23 @@
       .color-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; } .color-control { min-width: 0; padding: 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-dark); } .color-control label { display: block; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; } .color-control input { width: 100%; height: 26px; margin-top: 5px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
       .range-control { margin-bottom: 11px; } .range-control label { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; } .range-control output { color: var(--text); font-variant-numeric: tabular-nums; } .range-control input { width: 100%; margin: 5px 0 0; accent-color: var(--primary); }
       .tuning-actions { display: flex; gap: 8px; margin-top: 12px; } .tuning-actions button { height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); color: var(--text); font-size: 11px; } .tuning-actions button:first-child { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); font-weight: 700; }
+      /* Flat by default; interaction and selection move a control toward the light. */
+      button { border: 0 !important; box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent); transition: transform 140ms ease, background-color 140ms ease, color 140ms ease, box-shadow 140ms ease; }
+      button:hover { transform: translateY(-1px); background-color: var(--raised); color: var(--text); box-shadow: 0 4px 7px color-mix(in srgb, #000 22%, transparent), 0 11px 20px color-mix(in srgb, #000 13%, transparent); }
+      button:active { transform: translateY(0); box-shadow: 0 1px 3px color-mix(in srgb, #000 18%, transparent); }
+      .tool.primary:hover, .actions button:first-child:hover, .tuning-actions button:first-child:hover { background-color: color-mix(in oklch, var(--primary) 86%, var(--bg-light)); color: var(--primary-ink); box-shadow: 0 4px 8px color-mix(in oklch, var(--primary) 26%, transparent), 0 12px 22px color-mix(in srgb, #000 16%, transparent); }
+      .controls button[aria-pressed="true"], .nav button.active { transform: translateY(-1px); box-shadow: 0 4px 7px color-mix(in srgb, #000 22%, transparent), 0 10px 18px color-mix(in srgb, #000 12%, transparent); }
+      .nav button:hover { background-color: var(--raised); color: var(--text); } .nav button.active:hover { background-color: color-mix(in oklch, var(--primary) 22%, var(--raised)); }
+      .row { cursor: pointer; transition: transform 140ms ease, background-color 140ms ease, box-shadow 140ms ease; }
+      .row:hover, .row:focus-visible { position: relative; z-index: 1; transform: translateY(-1px); background: var(--raised); box-shadow: 0 4px 7px color-mix(in srgb, #000 19%, transparent), 0 10px 18px color-mix(in srgb, #000 10%, transparent); outline: none; }
+      .row:focus-visible { box-shadow: 0 0 0 2px var(--primary), 0 4px 7px color-mix(in srgb, #000 19%, transparent), 0 10px 18px color-mix(in srgb, #000 10%, transparent); }
+      .row.selected { position: relative; z-index: 1; transform: translateY(-1px); background: color-mix(in oklch, var(--primary) 18%, var(--raised)); box-shadow: inset 3px 0 var(--primary), 0 4px 7px color-mix(in srgb, #000 18%, transparent), 0 10px 18px color-mix(in srgb, #000 9%, transparent); }
+      .row.selected:hover { transform: translateY(-2px); background: color-mix(in oklch, var(--primary) 24%, var(--raised)); box-shadow: inset 3px 0 var(--primary), 0 6px 10px color-mix(in srgb, #000 22%, transparent), 0 14px 24px color-mix(in srgb, #000 12%, transparent); }
+      .tuning-panel summary, .color-control { transition: transform 140ms ease, background-color 140ms ease, box-shadow 140ms ease; }
+      .tuning-panel summary:hover { background: color-mix(in oklch, var(--primary) 8%, var(--raised)); }
+      .color-control:hover, .color-control:focus-within { position: relative; z-index: 1; transform: translateY(-1px); border-color: transparent; background: var(--raised); box-shadow: 0 4px 7px color-mix(in srgb, #000 18%, transparent), 0 10px 18px color-mix(in srgb, #000 9%, transparent); }
+      input[type="color"], input[type="range"] { cursor: pointer; transition: filter 140ms ease, transform 140ms ease; } input[type="color"]:hover, input[type="range"]:hover { filter: brightness(1.16); } input[type="color"]:hover { transform: translateY(-1px); }
+      @media (prefers-reduced-motion: reduce) { button, .row, .tuning-panel summary, .color-control, input { transition: none !important; } button:hover, .row:hover, .row:focus-visible, .row.selected, .row.selected:hover, .color-control:hover, .color-control:focus-within, input[type="color"]:hover { transform: none; } }
       @media (max-width: 760px) { .tuning-body { grid-template-columns: 1fr; } .color-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     </style>
     <script>
@@ -96,6 +113,9 @@
       document.querySelectorAll('[data-theme]').forEach(button => button.addEventListener('click', () => { document.documentElement.dataset.theme = button.dataset.theme; document.querySelectorAll('[data-theme]').forEach(item => item.setAttribute('aria-pressed', String(item === button))); }));
       document.querySelectorAll('[data-depth]').forEach(button => button.addEventListener('click', () => { document.documentElement.dataset.depth = button.dataset.depth; document.querySelectorAll('[data-depth]').forEach(item => item.setAttribute('aria-pressed', String(item === button))); }));
       document.querySelectorAll('[data-theme]').forEach(button => button.addEventListener('click', () => { rootStyle.cssText = ""; syncColors(); setDepth(); }));
+      const selectRow = (row) => { document.querySelectorAll(".row").forEach((item) => { item.classList.toggle("selected", item === row); item.setAttribute("aria-selected", String(item === row)); }); };
+      fileList.setAttribute("role", "listbox"); fileList.setAttribute("aria-label", "Workspace files");
+      document.querySelectorAll(".row").forEach((row) => { row.tabIndex = 0; row.setAttribute("role", "option"); row.setAttribute("aria-selected", String(row.classList.contains("selected"))); row.addEventListener("click", () => selectRow(row)); row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectRow(row); } }); });
     </script>
   </body>
 </html>
