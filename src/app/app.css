@@ -88,6 +88,47 @@
 .settings-menu-item.danger { color: var(--danger-text); }
 .settings-menu-divider { height: 1px; margin: 4px 0; background: var(--border); }
 
+.update-notice {
+  position: fixed;
+  z-index: 45;
+  right: 18px;
+  bottom: 18px;
+  width: min(520px, calc(100vw - 36px));
+  padding: 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 9px;
+  background: var(--surface-raised);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 30%);
+}
+.update-notice > .ui-icon { color: var(--accent); }
+.update-notice > div { min-width: 0; display: grid; gap: 2px; }
+.update-notice > div span { color: var(--text-secondary); font-size: var(--font-caption); }
+.update-notice .icon-button { width: var(--control-compact); height: var(--control-compact); }
+.update-dialog { min-width: min(520px, 76vw); display: grid; gap: 14px; }
+.update-state, .update-download { display: grid; gap: 8px; color: var(--text-secondary); }
+.update-state { grid-template-columns: auto minmax(0, 1fr); align-items: center; }
+.update-state strong { grid-column: 1 / -1; color: var(--text); }
+.update-version { display: flex; justify-content: space-between; gap: 16px; color: var(--text-secondary); }
+.update-version strong { color: var(--accent); }
+.update-notes { display: grid; gap: 7px; }
+.update-notes p { max-height: 230px; margin: 0; padding: 10px; overflow: auto; white-space: pre-wrap; color: var(--text-secondary); background: var(--surface-muted); border-radius: 6px; }
+.update-progress { height: 6px; overflow: hidden; border-radius: 99px; background: var(--surface-muted); }
+.update-progress > span { display: block; height: 100%; background: var(--accent); transition: width 120ms ease-out; }
+.update-progress.indeterminate > span { width: 35%; animation: update-progress-indeterminate 1s ease-in-out infinite; }
+.update-download > span, .update-download > small { color: var(--text-tertiary); font-size: var(--font-caption); }
+@keyframes update-progress-indeterminate { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@media (max-width: 720px) {
+  .update-notice { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .update-notice .primary-button, .update-notice .secondary-button { grid-column: span 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-progress.indeterminate > span { animation: none; width: 100%; opacity: .55; }
+}
+
 .language-picker,
 .theme-picker {
   display: flex;

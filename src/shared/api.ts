@@ -76,6 +76,7 @@ import type {
   UiAgentCommand,
   UiAgentResponse,
   UiSnapshot,
+  UpdateCheckResult,
 } from "./models";
 
 const fallbackError: AppError = {
@@ -682,6 +683,22 @@ export async function listCliLog(): Promise<CliLogEntry[]> {
 
 export async function clearCliLog(): Promise<void> {
   return invoke("clear_cli_log");
+}
+
+export async function checkForUpdate(): Promise<UpdateCheckResult> {
+  return invoke<UpdateCheckResult>("check_for_update");
+}
+
+export async function installUpdate(expectedVersion: string): Promise<void> {
+  return invoke("install_update", { expectedVersion });
+}
+
+export async function cancelUpdate(): Promise<void> {
+  return invoke("cancel_update");
+}
+
+export async function takeUpdateDiagnostic(): Promise<string | null> {
+  return invoke<string | null>("take_update_diagnostic");
 }
 
 export async function uiSnapshotEnabled(): Promise<boolean> {

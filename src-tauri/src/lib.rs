@@ -5,6 +5,7 @@ mod models;
 mod operations;
 mod p4;
 mod settings;
+pub mod updates;
 mod workspace_scan_cache;
 
 use tauri::Manager;
@@ -19,6 +20,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
+            if let Ok(executable) = std::env::current_exe()
+                && let Some(target) = executable.parent()
+                && let Err(error) = updates::recover_interrupted_update(target)
+            {
+                updates::record_recovery_error(target, &error);
+            }
             let cache_path = app
                 .path()
                 .app_config_dir()
@@ -32,6 +39,7 @@ pub fn run() {
             Ok(())
         })
         .manage(operations)
+        .manage(updates::UpdateCoordinator::default())
         .manage(commands::WorkspaceRootRegistry::default())
         .manage(scans)
         .invoke_handler(tauri::generate_handler![
@@ -165,7 +173,11 @@ pub fn run() {
             commands::write_ui_snapshot,
             commands::read_ui_agent_command,
             commands::write_ui_agent_response,
-            commands::reveal_path
+            commands::reveal_path,
+            updates::check_for_update,
+            updates::install_update,
+            updates::cancel_update,
+            updates::take_update_diagnostic
         ])
         .run(tauri::generate_context!())
         .expect("failed to run P4FNV");

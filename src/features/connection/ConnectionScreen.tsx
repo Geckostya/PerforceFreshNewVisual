@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type FormEvent } from "react";
-import { CircleAlert, CircleCheck, LoaderCircle } from "lucide-react";
+import { CircleAlert, CircleCheck, Download, LoaderCircle } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   detectP4,
@@ -48,7 +48,7 @@ export interface ConnectedSession {
   info: P4Info;
 }
 
-export function ConnectionScreen({ initialError, onConnected }: { initialError?: AppError; onConnected: (session: ConnectedSession) => void }) {
+export function ConnectionScreen({ initialError, onConnected, onCheckForUpdates }: { initialError?: AppError; onConnected: (session: ConnectedSession) => void; onCheckForUpdates: () => void }) {
   const { setLocales, t } = useLocale();
   const [detection, setDetection] = useState<DetectionState>({ phase: "loading" });
   const [testState, setTestState] = useState<TestState>(initialError ? { phase: "error", error: initialError } : { phase: "idle" });
@@ -399,6 +399,7 @@ export function ConnectionScreen({ initialError, onConnected }: { initialError?:
         </div>
         <div className="header-actions">
           <span className="header-meta">{t("headerSubtitle")}</span>
+          <button className="icon-button" data-agent-id="connection-check-for-updates" type="button" title={t("applicationUpdates")} aria-label={t("applicationUpdates")} onClick={onCheckForUpdates}><Download className="ui-icon" aria-hidden="true" /></button>
           <ThemePicker onSaveError={() => setSettingsWarning(true)} />
           <LanguagePicker onSaveError={() => setSettingsWarning(true)} />
         </div>

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Archive, CircleHelp, ClipboardList, EyeOff, FolderTree, GitBranch, History as HistoryIcon, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, Settings, type LucideIcon } from "lucide-react";
+import { Archive, CircleHelp, ClipboardList, Download, EyeOff, FolderTree, GitBranch, History as HistoryIcon, ListChecks, LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, Settings, type LucideIcon } from "lucide-react";
 import { ConnectionScreen, type ConnectedSession } from "../features/connection/ConnectionScreen";
 import { clearCliLog, listWorkspaces, loadLocales, loadSettings, logout, normalizeAppError, openWorkspace } from "../shared/api";
 import { CliLogCenter } from "../shared/CliLogCenter";
@@ -16,6 +16,7 @@ import { CommandPalette } from "./CommandPalette";
 import { ActionDialog, Modal } from "../shared/View";
 import { connectionForServer } from "../shared/connection";
 import { focusCurrentViewHeading, focusNextPane } from "../shared/focus";
+import { UpdateProvider, useUpdates } from "../features/updates/UpdateCenter";
 
 const ChangesView = lazy(() => import("../features/changes/ChangesView").then((module) => ({ default: module.ChangesView })));
 const WorkspaceView = lazy(() => import("../features/workspace/WorkspaceView").then((module) => ({ default: module.WorkspaceView })));
@@ -27,12 +28,13 @@ const ShelvesView = lazy(() => import("../features/shelves/ShelvesView").then((m
 const StreamsView = lazy(() => import("../features/streams/StreamsView").then((module) => ({ default: module.StreamsView })));
 
 export function App() {
-  return <ThemeProvider><LocaleProvider><AppContent /></LocaleProvider></ThemeProvider>;
+  return <ThemeProvider><LocaleProvider><UpdateProvider><AppContent /></UpdateProvider></LocaleProvider></ThemeProvider>;
 }
 
 function AppContent() {
   const { setLocales, t } = useLocale();
   const { setTheme } = useTheme();
+  const updates = useUpdates();
   const [session, setSession] = useState<ConnectedSession>();
   const [startup, setStartup] = useState<"loading" | "ready">("loading");
   const [autoOpenError, setAutoOpenError] = useState<AppError>();
@@ -115,7 +117,7 @@ function AppContent() {
   }, [session]);
 
   if (startup === "loading") return <StartupScreen />;
-  if (!session) return <ConnectionScreen initialError={autoOpenError} onConnected={(next) => {
+  if (!session) return <ConnectionScreen initialError={autoOpenError} onCheckForUpdates={updates.openDetails} onConnected={(next) => {
     setAutoOpenError(undefined);
     void clearCliLog().catch(() => undefined).finally(() => setSession(next));
   }} />;
@@ -217,6 +219,7 @@ function AppContent() {
                 {settingsOpen && <div className="settings-menu-popover" role="menu" aria-label={t("settings")}>
                   <div className="settings-menu-section"><span className="settings-menu-label">{t("appearance")}</span><ThemePicker /><LanguagePicker /></div>
                   <div className="settings-menu-divider" role="separator" />
+                  <button data-agent-id="check-for-updates" className="settings-menu-item" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); updates.openDetails(); }}><Download className="ui-icon" aria-hidden="true" />{t("applicationUpdates")}</button>
                   <button data-agent-id="shortcut-help" className="settings-menu-item" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setShortcutHelpOpen(true); }}><CircleHelp className="ui-icon" aria-hidden="true" />{t("shortcuts")}</button>
                   <button className="settings-menu-item" type="button" role="menuitem" title={t("exitWorkspaceHint")} onClick={() => { setSettingsOpen(false); exitWorkspace(); }}><EyeOff className="ui-icon" aria-hidden="true" />{t("exitWorkspace")}</button>
                   <button className="settings-menu-item danger" type="button" role="menuitem" title={t("logoutHint")} onClick={() => { setSettingsOpen(false); setLogoutConfirmOpen(true); }} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>

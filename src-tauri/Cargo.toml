@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A focused desktop client for Helix Core"
 edition = "2024"
 rust-version = "1.97"
+default-run = "p4fnv"
 
 [lib]
 name = "p4fnv_lib"
@@ -13,15 +14,31 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22.1"
+ed25519-dalek = "2.2.0"
+getrandom = "0.4.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 flate2 = "1.1.9"
+reqwest = { version = "0.13.4", features = ["stream"] }
+semver = "1.0.28"
+sha2 = "0.10.9"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-opener = "2.5.4"
+tempfile = "3.27.0"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[[bin]]
+name = "p4fnv-update-helper"
+path = "src/bin/p4fnv-update-helper.rs"
+
+[[bin]]
+name = "p4fnv-release-crypto"
+path = "src/bin/p4fnv-release-crypto.rs"
 
 [profile.dev]
 debug = "line-tables-only"

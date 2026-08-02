@@ -22,6 +22,26 @@ export interface AppError {
   diagnostics?: string;
 }
 
+export interface UpdateRelease {
+  version: string;
+  notes: string;
+  publishedAt: string;
+  archiveUrl: string;
+  archiveSha256: string;
+  archiveSignature: string;
+}
+
+export interface UpdateCheckResult {
+  status: "current" | "available";
+  currentVersion: string;
+  release: UpdateRelease;
+}
+
+export interface UpdateDownloadProgress {
+  downloadedBytes: number;
+  totalBytes?: number;
+}
+
 export interface CliLogEntry {
   id: number;
   level: "warning" | "error";
