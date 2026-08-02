@@ -15,6 +15,11 @@ Set-Location -LiteralPath $projectRoot
 $tag = "v$Version"
 $expectedRepository = 'Geckostya/PerforceFreshNewVisual'
 
+function Normalize-ReleaseText {
+    param([AllowEmptyString()][string]$Text)
+    return (($Text -replace "`r`n?", "`n").Trim())
+}
+
 & (Join-Path $PSScriptRoot 'verify-version.ps1') -ExpectedVersion $Version -ExpectedTag $tag
 foreach ($command in @('git', 'gh', 'cargo', 'slsa-verifier')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
@@ -30,9 +35,12 @@ if (-not $verifierVersionMatch.Success -or [version]$verifierVersionMatch.Groups
 if (-not (Test-Path -LiteralPath $NotesFile -PathType Leaf)) {
     throw "Release notes file not found: $NotesFile"
 }
-if (-not (Get-Content -LiteralPath $NotesFile -Raw).Trim()) {
+$releaseNotes = Normalize-ReleaseText (Get-Content -LiteralPath $NotesFile -Raw)
+if (-not $releaseNotes) {
     throw 'Release notes must not be empty.'
 }
+$legacyTagNotes = Normalize-ReleaseText (($releaseNotes | git stripspace --strip-comments | Out-String))
+if ($LASTEXITCODE -ne 0) { throw 'Could not normalize release notes for tag verification.' }
 git diff --quiet
 if ($LASTEXITCODE -ne 0) { throw 'Tracked files contain uncommitted changes.' }
 git diff --cached --quiet
@@ -60,8 +68,8 @@ if ($ResumeDraft) {
     if ($remoteTagCommit -ne $localTagCommit) { throw "Local and remote tag commits differ for $tag." }
     git merge-base --is-ancestor $localTagCommit HEAD
     if ($LASTEXITCODE -ne 0) { throw "The release tag $tag is not an ancestor of HEAD." }
-    $tagNotes = (git tag -l $tag --format='%(contents)' | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $tagNotes -ne (Get-Content -LiteralPath $NotesFile -Raw).Trim()) {
+    $tagNotes = Normalize-ReleaseText (git tag -l $tag --format='%(contents)' | Out-String)
+    if ($LASTEXITCODE -ne 0 -or ($tagNotes -ne $releaseNotes -and $tagNotes -ne $legacyTagNotes)) {
         throw "Release notes do not match the annotated tag $tag."
     }
     $releaseJson = gh release view $tag --json body,isDraft,tagName 2>$null
@@ -70,7 +78,7 @@ if ($ResumeDraft) {
     if (-not $release.isDraft -or [string]$release.tagName -ne $tag) {
         throw "GitHub Release $tag is not the expected draft."
     }
-    if (([string]$release.body).Trim() -ne (Get-Content -LiteralPath $NotesFile -Raw).Trim()) {
+    if ((Normalize-ReleaseText ([string]$release.body)) -ne $releaseNotes) {
         throw "GitHub Release notes do not match ${NotesFile}."
     }
     $runs = gh run list --workflow release.yml --event push --limit 50 --json databaseId,headBranch | ConvertFrom-Json
@@ -85,7 +93,7 @@ if ($ResumeDraft) {
     gh release view $tag | Out-Null
     if ($LASTEXITCODE -eq 0) { throw "GitHub Release already exists: $tag" }
 
-    git tag --annotate $tag --file $NotesFile
+    git tag --cleanup=verbatim --annotate $tag --file $NotesFile
     if ($LASTEXITCODE -ne 0) { throw "Could not create tag $tag" }
     git push origin $tag
     if ($LASTEXITCODE -ne 0) { throw "Could not push tag $tag" }
