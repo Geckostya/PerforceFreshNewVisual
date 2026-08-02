@@ -25,6 +25,12 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Prepare project toolchain layout
+        shell: pwsh
+        run: |
+          $nodeDirectory = Join-Path $PWD '.toolchain/node'
+          New-Item -ItemType Directory -Path $nodeDirectory -Force | Out-Null
+          Copy-Item -LiteralPath (Get-Command node).Source -Destination (Join-Path $nodeDirectory 'node.exe')
       - name: Install pinned Rust toolchain
         shell: pwsh
         run: |
