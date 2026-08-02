@@ -20,7 +20,7 @@ A feature is complete only when its narrow Rust/Tauri path validates inputs, ris
 | Changes, shelves, submit, and resolve | Core submit, recovery, three-way resolve, shelf preservation, and stream handoff are available; compound-result polish remains. | [`checklists/CHANGES_AND_SUBMIT.md`](checklists/CHANGES_AND_SUBMIT.md) |
 | Streams and collaboration | Browse, switch, integration, jobs, labels, and lock workflows are available; only topology evidence remains. | [`checklists/STREAMS_AND_COLLABORATION.md`](checklists/STREAMS_AND_COLLABORATION.md) |
 | Operations, errors, settings, and accessibility | Shared operations and bounded discovery are available; stale coverage, compound-result consistency, and targeted native QA remain. | [`checklists/OPERATIONS_AND_UX.md`](checklists/OPERATIONS_AND_UX.md) |
-| Distribution and application updates | Portable build, signed updater, rollback helper, hosted draft/SLSA, and hosted-asset update are verified; clean-profile evidence and first publication remain. | [`checklists/MAIN_FEATURES.md`](checklists/MAIN_FEATURES.md) |
+| Distribution and application updates | Portable build, signed updater, rollback helper, SLSA provenance, clean-profile launch, first public release, and public in-app update are verified. | [`checklists/MAIN_FEATURES.md`](checklists/MAIN_FEATURES.md) |
 
 ## Development order
 

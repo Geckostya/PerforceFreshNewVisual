@@ -5,7 +5,7 @@ The release and portable-update contract is [`../RELEASES_AND_UPDATES.md`](../RE
 ## Portable release and publishing
 
 - [x] `build-release.bat` creates a versioned Windows x64 portable ZIP with a managed-file manifest, locales, notices, and SHA-256.
-- [~] `publish-release.ps1` uses GitHub Actions as the canonical build agent, creates or resumes a draft, verifies signed assets and SLSA, and publishes only after success. Draft `v0.1.3` passed; clean-profile verification and first publication remain.
+- [x] `publish-release.ps1` uses GitHub Actions as the canonical build agent, creates or resumes a draft, verifies signed assets and SLSA, and publishes only after success. Public `v0.1.3`, its clean-profile launch, and the public `0.1.2` → `0.1.3` update passed.
 
 ## Versioning and updates
 
