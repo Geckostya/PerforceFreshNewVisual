@@ -55,6 +55,7 @@ if ($LASTEXITCODE -ne 0 -or $repository.Trim() -ne $expectedRepository) {
     throw "Release publishing requires the GitHub repository $expectedRepository."
 }
 $runId = $null
+$draftNeedsNotes = $false
 if ($ResumeDraft) {
     $tagType = git cat-file -t "refs/tags/$tag" 2>$null
     if ($LASTEXITCODE -ne 0 -or $tagType.Trim() -ne 'tag') {
@@ -78,9 +79,11 @@ if ($ResumeDraft) {
     if (-not $release.isDraft -or [string]$release.tagName -ne $tag) {
         throw "GitHub Release $tag is not the expected draft."
     }
-    if ((Normalize-ReleaseText ([string]$release.body)) -ne $releaseNotes) {
+    $draftNotes = Normalize-ReleaseText ([string]$release.body)
+    if ($draftNotes -and $draftNotes -ne $releaseNotes) {
         throw "GitHub Release notes do not match ${NotesFile}."
     }
+    $draftNeedsNotes = -not $draftNotes
     $runs = gh run list --workflow release.yml --event push --limit 50 --json databaseId,headBranch | ConvertFrom-Json
     $run = $runs | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
     if ($run) { $runId = [string]$run.databaseId }
@@ -109,7 +112,7 @@ if (-not $runId) { throw "The GitHub release workflow for $tag was not found." }
 gh run watch $runId --exit-status
 if ($LASTEXITCODE -ne 0) { throw "Release workflow $runId failed; the release remains a draft." }
 
-if (-not $ResumeDraft) {
+if (-not $ResumeDraft -or $draftNeedsNotes) {
     gh release edit $tag --notes-file $NotesFile
     if ($LASTEXITCODE -ne 0) { throw 'Could not apply release notes; the release remains a draft.' }
 }

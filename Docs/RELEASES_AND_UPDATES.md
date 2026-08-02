@@ -45,7 +45,7 @@ Use Semantic Versioning and a matching immutable Git tag:
 5. verify the archive, manifest, hashes, signatures, and `latest.json`; and
 6. publish the draft release, or leave it as a draft on any failure.
 
-Use `-VerifyDraftOnly` to stop safely after verification. Use `-ResumeDraft` to continue an existing draft only when its annotated local/remote tag, notes, successful workflow, and draft identity still match; combine both switches for a repeatable draft audit.
+Use `-VerifyDraftOnly` to stop safely after verification. Use `-ResumeDraft` to continue an existing draft only when its annotated local/remote tag, notes, successful workflow, and draft identity still match; an empty draft body is restored from those committed notes. Combine both switches for a repeatable draft audit.
 
 GitHub Actions is the canonical build agent. After the full test, fmt, Clippy, and production-build gate, it builds the tagged commit, signs metadata and archive with the GitHub Secrets key, and uploads every asset to a draft Release. Local builds validate but are not upload sources.
 
