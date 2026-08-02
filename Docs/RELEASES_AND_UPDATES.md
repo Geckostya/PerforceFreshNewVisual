@@ -77,9 +77,9 @@ The typed update coordinator and IPC commands live in `src-tauri/src/updates.rs`
 
 1. **Release foundation — implemented locally.** The version synchronizer and verifier keep package, Cargo, lockfile, Tauri, tag, and metadata versions aligned. `build-release.bat` creates the versioned portable archive with the app, native helper, resources, notices, and generated manifest, then validates the archive round trip.
 
-2. **Reproducible GitHub publishing — implemented, awaiting its first hosted run.** The tagged GitHub Actions workflow runs the full gate, creates the archive and SLSA provenance for the tagged commit, and creates a draft GitHub Release. `publish-release.ps1` refuses publication until the exact asset set, signatures, manifest, hashes, and provenance repository/tag identity pass verification.
+2. **Reproducible GitHub publishing — hosted-run verified.** The `v0.1.3` workflow passed the full gate, signed the archive, created a six-asset draft, and attached SLSA provenance for commit `202377211b86756761e8d365d356a866a510fbf6`. The downloaded draft passed `verify-release-assets.ps1` asset-set, signature, manifest, hash, repository, and tag checks.
 
-3. **Release trust chain — production key configured.** Two protected backups exist outside the repository and the private/public GitHub Secrets are configured. Confirm the embedded public key in a hosted production build and exercise a deliberately failed draft verification before allowing the first public release.
+3. **Release trust chain — configured and draft-verified.** Two protected backups and the private/public GitHub Secrets exist. The hosted `p4fnv.exe` contains the public key; a deliberately incorrect key rejected the draft, while the configured key accepted its Ed25519 signatures, SHA-256 hash, manifest, and SLSA provenance. `v0.1.3` remains a draft pending the clean-profile and end-to-end checks below.
 
 4. **Read-only in-app discovery — implemented and locally verified.** Typed commands, startup and Settings checks, English/Russian UI, release notes, and explicit download consent are present. Unit fixtures cover version and trust failures. Native-agent checks proved both the signed available-update state and a safe invalid-release failure; the signed download flow also proved cancellation before application exit and a retry-safe return to the available-update state.
 
