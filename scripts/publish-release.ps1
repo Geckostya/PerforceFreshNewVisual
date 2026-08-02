@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
     [Parameter(Mandatory = $true)]
-    [string]$NotesFile
+    [string]$NotesFile,
+    [switch]$ResumeDraft,
+    [switch]$VerifyDraftOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,32 +46,65 @@ $repository = gh repo view --json nameWithOwner --jq '.nameWithOwner'
 if ($LASTEXITCODE -ne 0 -or $repository.Trim() -ne $expectedRepository) {
     throw "Release publishing requires the GitHub repository $expectedRepository."
 }
-git rev-parse --verify --quiet "refs/tags/$tag" | Out-Null
-if ($LASTEXITCODE -eq 0) { throw "Tag already exists: $tag" }
-git ls-remote --exit-code --tags origin "refs/tags/$tag" | Out-Null
-if ($LASTEXITCODE -eq 0) { throw "Remote tag already exists: $tag" }
-if ($LASTEXITCODE -ne 2) { throw "Could not verify that remote tag $tag is unused." }
-gh release view $tag | Out-Null
-if ($LASTEXITCODE -eq 0) { throw "GitHub Release already exists: $tag" }
-
-git tag --annotate $tag --file $NotesFile
-if ($LASTEXITCODE -ne 0) { throw "Could not create tag $tag" }
-git push origin $tag
-if ($LASTEXITCODE -ne 0) { throw "Could not push tag $tag" }
-
 $runId = $null
-for ($attempt = 0; $attempt -lt 20 -and -not $runId; $attempt++) {
-    $runs = gh run list --workflow release.yml --event push --limit 20 --json databaseId,headBranch | ConvertFrom-Json
+if ($ResumeDraft) {
+    $tagType = git cat-file -t "refs/tags/$tag" 2>$null
+    if ($LASTEXITCODE -ne 0 -or $tagType.Trim() -ne 'tag') {
+        throw "The local release tag is missing or is not annotated: $tag"
+    }
+    $localTagCommit = (git rev-parse "$tag^{commit}").Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Could not resolve local tag $tag." }
+    $remoteTag = git ls-remote origin "refs/tags/$tag^{}"
+    if ($LASTEXITCODE -ne 0 -or -not $remoteTag) { throw "Remote annotated tag is missing: $tag" }
+    $remoteTagCommit = ([string]($remoteTag | Select-Object -First 1)).Split("`t")[0].Trim()
+    if ($remoteTagCommit -ne $localTagCommit) { throw "Local and remote tag commits differ for $tag." }
+    git merge-base --is-ancestor $localTagCommit HEAD
+    if ($LASTEXITCODE -ne 0) { throw "The release tag $tag is not an ancestor of HEAD." }
+    $tagNotes = (git tag -l $tag --format='%(contents)' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $tagNotes -ne (Get-Content -LiteralPath $NotesFile -Raw).Trim()) {
+        throw "Release notes do not match the annotated tag $tag."
+    }
+    $releaseJson = gh release view $tag --json body,isDraft,tagName 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "Draft GitHub Release not found: $tag" }
+    $release = $releaseJson | ConvertFrom-Json
+    if (-not $release.isDraft -or [string]$release.tagName -ne $tag) {
+        throw "GitHub Release $tag is not the expected draft."
+    }
+    if (([string]$release.body).Trim() -ne (Get-Content -LiteralPath $NotesFile -Raw).Trim()) {
+        throw "GitHub Release notes do not match ${NotesFile}."
+    }
+    $runs = gh run list --workflow release.yml --event push --limit 50 --json databaseId,headBranch | ConvertFrom-Json
     $run = $runs | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
     if ($run) { $runId = [string]$run.databaseId }
-    if (-not $runId) { Start-Sleep -Seconds 3 }
+} else {
+    git rev-parse --verify --quiet "refs/tags/$tag" | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw "Tag already exists: $tag" }
+    git ls-remote --exit-code --tags origin "refs/tags/$tag" | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw "Remote tag already exists: $tag" }
+    if ($LASTEXITCODE -ne 2) { throw "Could not verify that remote tag $tag is unused." }
+    gh release view $tag | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw "GitHub Release already exists: $tag" }
+
+    git tag --annotate $tag --file $NotesFile
+    if ($LASTEXITCODE -ne 0) { throw "Could not create tag $tag" }
+    git push origin $tag
+    if ($LASTEXITCODE -ne 0) { throw "Could not push tag $tag" }
+
+    for ($attempt = 0; $attempt -lt 20 -and -not $runId; $attempt++) {
+        $runs = gh run list --workflow release.yml --event push --limit 20 --json databaseId,headBranch | ConvertFrom-Json
+        $run = $runs | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
+        if ($run) { $runId = [string]$run.databaseId }
+        if (-not $runId) { Start-Sleep -Seconds 3 }
+    }
 }
-if (-not $runId) { throw 'The GitHub release workflow did not start.' }
+if (-not $runId) { throw "The GitHub release workflow for $tag was not found." }
 gh run watch $runId --exit-status
 if ($LASTEXITCODE -ne 0) { throw "Release workflow $runId failed; the release remains a draft." }
 
-gh release edit $tag --notes-file $NotesFile
-if ($LASTEXITCODE -ne 0) { throw 'Could not apply release notes; the release remains a draft.' }
+if (-not $ResumeDraft) {
+    gh release edit $tag --notes-file $NotesFile
+    if ($LASTEXITCODE -ne 0) { throw 'Could not apply release notes; the release remains a draft.' }
+}
 
 $download = Join-Path ([System.IO.Path]::GetTempPath()) ("p4fnv-release-verify-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $download | Out-Null
@@ -88,6 +123,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Draft release verification failed.' }
 } finally {
     Remove-Item -LiteralPath $download -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($VerifyDraftOnly) {
+    Write-Host "Verified draft P4FNV $Version"
+    return
 }
 
 $isPrerelease = $Version.Contains('-')

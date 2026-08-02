@@ -45,6 +45,8 @@ Use Semantic Versioning and a matching immutable Git tag:
 5. verify the archive, manifest, hashes, signatures, and `latest.json`; and
 6. publish the draft release, or leave it as a draft on any failure.
 
+Use `-VerifyDraftOnly` to stop safely after verification. Use `-ResumeDraft` to continue an existing draft only when its annotated local/remote tag, notes, successful workflow, and draft identity still match; combine both switches for a repeatable draft audit.
+
 GitHub Actions is the canonical build agent. After the full test, fmt, Clippy, and production-build gate, it builds the tagged commit, signs metadata and archive with the GitHub Secrets key, and uploads every asset to a draft Release. Local builds validate but are not upload sources.
 
 The workflow passes the archive SHA-256 to the SLSA Generic Generator in a separate job. Pin a reviewed generator tag, grant only `actions: read`, `id-token: write`, and release-upload permissions, and publish its signed in-toto provenance beside the archive. Before publication, `publish-release.ps1` verifies it with `slsa-verifier` against the expected repository and exact tag.
@@ -83,7 +85,7 @@ The typed update coordinator and IPC commands live in `src-tauri/src/updates.rs`
 
 4. **Read-only in-app discovery — implemented and locally verified.** Typed commands, startup and Settings checks, English/Russian UI, release notes, and explicit download consent are present. Unit fixtures cover version and trust failures. Native-agent checks proved both the signed available-update state and a safe invalid-release failure; the signed download flow also proved cancellation before application exit and a retry-safe return to the available-update state.
 
-5. **Portable replacement — implemented and locally verified end to end.** The native temporary helper performs manifest-scoped replacement, backup/rollback, exact-process waiting, and restart handoff without touching settings or caches. A native-agent smoke installed a signed `0.0.9` portable build, offered and downloaded signed `0.1.0`, exited cleanly, replaced only manifest-owned files, relaunched `0.1.0`, preserved an unmanaged file beside the application, and left the app-config settings and workspace scan cache byte-for-byte unchanged. Automated updater tests also cover a locked managed file, an unwritable/non-directory target, cancellation before helper launch, invalid signatures and hashes, and rollback decisions. Repeat this proof with the hosted GitHub assets before publishing the first public release.
+5. **Portable replacement — hosted-asset end-to-end verified.** A native-agent smoke upgraded portable `0.1.2` with the exact hosted `0.1.3` ZIP and production signatures, relaunched `0.1.3`, matched every managed-file hash, left no transaction state, preserved an unmanaged file, and kept app-config settings and workspace cache byte-for-byte unchanged. Automated tests cover locked and unwritable targets, cancellation, invalid signatures/hashes, rollback, and interrupted recovery.
 
 6. **First public release.** Build and publish a new stable version through `publish-release.ps1`, manually verify the downloaded ZIP on a clean Windows profile, then verify the full in-app path from the immediately previous version. Mark each checklist item complete only with this evidence.
 
