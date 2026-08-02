@@ -5513,7 +5513,12 @@ mod tests {
             ignore_sources: Vec::new(),
         };
         let input = ConnectionInput {
-            p4_path: None,
+            p4_path: Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             port: "perforce:1666".to_owned(),
             user: "alex".to_owned(),
             client: Some("alex-main".to_owned()),

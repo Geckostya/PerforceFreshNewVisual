@@ -9381,9 +9381,10 @@ mod tests {
         assert_eq!(workspace_ignore_file(&root), Some(ignore_file.clone()));
         let root_batch = read_local_workspace_directory(&root, "alex-main", "//alex-main").unwrap();
         assert_eq!(root_batch.files.len(), 1);
+        let canonical_ignore_file = fs::canonicalize(&ignore_file).unwrap();
         assert_eq!(
             workspace_path_key(root_batch.files[0].local_path.as_deref().unwrap()),
-            workspace_path_key(&ignore_file.to_string_lossy())
+            workspace_path_key(&canonical_ignore_file.to_string_lossy())
         );
         assert_eq!(
             root_batch.directories,
@@ -9602,7 +9603,11 @@ mod tests {
                     .unwrap()
                     .to_string_lossy()
             ),
-            workspace_path_key(&missing_path.to_string_lossy())
+            workspace_path_key(
+                &root
+                    .join(missing_path.file_name().unwrap())
+                    .to_string_lossy()
+            )
         );
         fs::write(&missing_source, b"new depot content").unwrap();
         replace_recovery_file(&missing_source, &missing_path).unwrap();
