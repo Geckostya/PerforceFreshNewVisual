@@ -1,0 +1,111 @@
+name: Portable release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions: read-all
+
+jobs:
+  build:
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    outputs:
+      subjects: ${{ steps.subject.outputs.subjects }}
+      provenance_name: ${{ steps.names.outputs.provenance }}
+    env:
+      P4FNV_UPDATE_PUBLIC_KEY: ${{ secrets.P4FNV_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.97.1
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify release tag and versions
+        shell: pwsh
+        run: ./scripts/verify-version.ps1 -ExpectedTag '${{ github.ref_name }}'
+      - name: Run frontend tests
+        run: npm test -- --run
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Run Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Build application and helper
+        shell: pwsh
+        run: |
+          npm run build
+          cargo build --manifest-path src-tauri/Cargo.toml --release --bin p4fnv-update-helper
+          cargo build --manifest-path src-tauri/Cargo.toml --release --bin p4fnv-release-crypto
+          ./scripts/build-portable.ps1 -SkipBuild
+      - name: Read release notes from annotated tag
+        shell: pwsh
+        run: |
+          $notes = git tag -l '${{ github.ref_name }}' --format='%(contents)'
+          if (-not $notes.Trim()) { throw 'The release tag must be annotated with release notes.' }
+          [System.IO.File]::WriteAllText("$env:RUNNER_TEMP/release-notes.md", "$notes`n", [System.Text.UTF8Encoding]::new($false))
+      - name: Prepare release signing key
+        shell: pwsh
+        env:
+          P4FNV_RELEASE_PRIVATE_KEY: ${{ secrets.P4FNV_RELEASE_PRIVATE_KEY }}
+        run: |
+          if (-not $env:P4FNV_RELEASE_PRIVATE_KEY) { throw 'P4FNV_RELEASE_PRIVATE_KEY is not configured.' }
+          if (-not $env:P4FNV_UPDATE_PUBLIC_KEY) { throw 'P4FNV_UPDATE_PUBLIC_KEY is not configured.' }
+          [System.IO.File]::WriteAllText("$env:RUNNER_TEMP/release-key", $env:P4FNV_RELEASE_PRIVATE_KEY.Trim(), [System.Text.UTF8Encoding]::new($false))
+          ./scripts/sign-release.ps1 -Version ('${{ github.ref_name }}'.Substring(1)) -NotesFile "$env:RUNNER_TEMP/release-notes.md" -PrivateKeyFile "$env:RUNNER_TEMP/release-key"
+      - name: Resolve asset names
+        id: names
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.Substring(1)
+          $archive = "P4FNV_${version}_windows_x64_portable.zip"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+          "provenance=$archive.intoto.jsonl" >> $env:GITHUB_OUTPUT
+      - name: Create draft release and upload signed assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ steps.names.outputs.version }}'
+          $directory = "artifacts/releases/$version"
+          gh release create '${{ github.ref_name }}' --draft --verify-tag --title "P4FNV $version"
+          gh release upload '${{ github.ref_name }}' "$directory/${{ steps.names.outputs.archive }}" "$directory/${{ steps.names.outputs.archive }}.sig" "$directory/latest.json" "$directory/latest.json.sig" "$directory/SHA256SUMS.txt"
+      - name: Produce SLSA subject
+        id: subject
+        shell: pwsh
+        run: |
+          $version = '${{ steps.names.outputs.version }}'
+          $archive = '${{ steps.names.outputs.archive }}'
+          $hash = (Get-FileHash -LiteralPath "artifacts/releases/$version/$archive" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $subject = "$hash  $archive"
+          "subjects=$([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($subject)))" >> $env:GITHUB_OUTPUT
+      - name: Remove private key
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath "$env:RUNNER_TEMP/release-key" -Force -ErrorAction SilentlyContinue
+
+  provenance:
+    needs: build
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.subjects }}
+      upload-assets: true
+      draft-release: true
+      provenance-name: ${{ needs.build.outputs.provenance_name }}

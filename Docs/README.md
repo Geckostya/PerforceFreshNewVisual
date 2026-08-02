@@ -8,6 +8,7 @@ The root of `Docs` contains the application's living contracts. This file is the
 |---|---|
 | [`DOCUMENTATION_POLICY.md`](DOCUMENTATION_POLICY.md) | any documentation/skill change or feature closeout that changes a contract or status |
 | [`TOOLCHAIN.md`](TOOLCHAIN.md) | running, testing, and producing release builds |
+| [`RELEASES_AND_UPDATES.md`](RELEASES_AND_UPDATES.md) | portable distribution, application versions, GitHub Releases, and in-app updates |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | IPC, the P4 process boundary, state, and security |
 | [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md) | Files, Local Files cache/history, sync, and overwrite recovery |
 | [`PORTABILITY.md`](PORTABILITY.md) | Windows-first development and mandatory boundaries for future macOS/Linux ports |

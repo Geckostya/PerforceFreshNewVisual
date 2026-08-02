@@ -27,7 +27,10 @@ $env:PATH = @(
     (Join-Path $toolchainRoot "node")
     $rustToolchainBin
     (Join-Path $env:CARGO_HOME "bin")
+    (Join-Path $toolchainRoot "release-tools")
     $env:PATH
 ) -join ";"
+$env:RUSTC = Join-Path $rustToolchainBin "rustc.exe"
+$env:RUSTDOC = Join-Path $rustToolchainBin "rustdoc.exe"
 
 Write-Host "P4FNV toolchain is active: Node $(node --version), Rust $(rustc --version)"

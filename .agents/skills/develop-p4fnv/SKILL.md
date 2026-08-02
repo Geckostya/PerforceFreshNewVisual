@@ -21,6 +21,7 @@ Communicate with the user in the language of their latest request unless they as
 ## Select contracts by task
 
 - Build, tests, versions, dependencies, release artifact: `Docs/TOOLCHAIN.md`.
+- Portable distribution, application versions, GitHub Releases, or in-app updates: `Docs/RELEASES_AND_UPDATES.md` and `Docs/TOOLCHAIN.md`.
 - Cross-feature architecture, IPC, P4 process boundary, errors, operations, security: `Docs/ARCHITECTURE.md`.
 - Files, local tree/cache, history in Files, sync and overwrite recovery: `Docs/WORKSPACE_FILES.md`.
 - New modules, ownership, dependency direction, structural refactors: `Docs/PROJECT_STRUCTURE.md`.

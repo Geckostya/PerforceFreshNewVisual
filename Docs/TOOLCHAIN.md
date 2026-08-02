@@ -38,6 +38,8 @@ p4 -V
 
 ## Development
 
+`assets/app-icon.svg` is the source of truth for the application icon. The native development and build commands regenerate the platform-specific files in `src-tauri/icons` before compiling; run `npm run icons` to refresh them explicitly.
+
 ```powershell
 npm run dev       # Tauri application
 npm run dev:web   # Vite UI only; Tauri IPC is unavailable
@@ -103,10 +105,11 @@ Agent command timeout: allow at least 240 seconds for `npm run build`; do not us
 
 ## Shipping artifact
 
-On Windows, `build-release.bat` runs the standard shipping build from any working directory, activates the pinned project toolchain, verifies the executable, and prints its SHA-256 hash. The underlying command remains `npm run build` for terminals and automation.
+On Windows, `build-release.bat` runs the standard shipping build from any working directory, activates the pinned project toolchain, builds the native update helper, and creates a verified portable ZIP. The underlying application command remains `npm run build` for terminals and automation.
 
 ```text
 src-tauri\target\release\p4fnv.exe
+src-tauri\target\release\p4fnv-update-helper.exe
 src-tauri\target\release\locales\en.json
 src-tauri\target\release\locales\ru.json
 src-tauri\target\release\THIRD_PARTY_NOTICES.md
@@ -119,6 +122,12 @@ Get-FileHash .\src-tauri\target\release\p4fnv.exe -Algorithm SHA256
 ```
 
 If the `.exe` is locked, first verify the process path and terminate only the `p4fnv.exe` instance from this repository. Do not terminate `p4`, `p4d`, or other Perforce processes.
+
+## Portable distribution and application updates
+
+`build-release.bat` activates the pinned toolchain and creates a locally verified portable ZIP under `artifacts/releases/<version>/`. Use `scripts/set-version.ps1` and `scripts/verify-version.ps1` for application versions. The GitHub Release workflow, signed update feed, SLSA provenance, publication procedure, and safe replacement contract are owned by [`RELEASES_AND_UPDATES.md`](RELEASES_AND_UPDATES.md); none of them weakens the full gate above.
+
+Before publishing a release from a new checkout, run `npm run setup:release-tools`. It installs the pinned Windows x64 `slsa-verifier` into the ignored project toolchain only after its published SHA-256 matches; activating `scripts/toolchain.ps1` then makes it available to `publish-release.ps1`.
 
 ## Version updates
 
