@@ -28,6 +28,7 @@ jobs:
       - name: Prepare project toolchain layout
         shell: pwsh
         run: |
+          git branch --force main $env:GITHUB_SHA
           $nodeDirectory = Join-Path $PWD '.toolchain/node'
           New-Item -ItemType Directory -Path $nodeDirectory -Force | Out-Null
           Copy-Item -LiteralPath (Get-Command node).Source -Destination (Join-Path $nodeDirectory 'node.exe')
