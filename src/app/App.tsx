@@ -185,7 +185,7 @@ function AppContent() {
   return (
     <div className={`app workspace-app${cliLogOpen ? " cli-log-open" : ""}`} data-agent-screen={view}>
       <header className="app-header" data-focus-pane>
-        <div className="brand-area"><button className="sidebar-header-toggle" type="button" title={t(sidebar === "hidden" ? "showSidebar" : sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} aria-label={t(sidebar === "hidden" ? "showSidebar" : sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} onClick={() => setSidebar((state) => state === "hidden" ? "compact" : state === "compact" ? "expanded" : "compact")}><NavIcon name="menu" /></button><div className="brand" aria-label="P4FNV"><span className="brand-mark" aria-hidden="true">P4</span>P4FNV</div></div>
+        <div className="brand-area"><button className="sidebar-header-toggle" type="button" title={t(sidebar === "hidden" ? "showSidebar" : "hideSidebar")} aria-label={t(sidebar === "hidden" ? "showSidebar" : "hideSidebar")} onClick={() => setSidebar((state) => state === "hidden" ? "compact" : "hidden")}><NavIcon name="menu" /></button><div className="brand" aria-label="P4FNV"><span className="brand-mark" aria-hidden="true">P4</span>P4FNV</div></div>
         <div className="session-context" title={session.info.serverAddress}>
           <span>{session.connection.user}</span><span aria-hidden="true">/</span><label className="session-workspace-picker"><span className="sr-only">{t("switchWorkspace")}</span><select value={session.connection.client} onChange={(event) => void switchWorkspace(event.target.value)} disabled={workspaceBusy}><option value={session.connection.client}>{session.connection.client}</option>{workspaceOptions.filter((item) => item.name !== session.connection.client).map((item) => <option value={item.name} key={item.name}>{item.name}</option>)}</select></label>
         </div>
@@ -195,18 +195,6 @@ function AppContent() {
           <span className="sr-only" id="global-go-to-hint">{t("globalGoToHint")}</span>
           <button className="link-button" type="submit">{t("goTo")}</button>
         </form>
-        <div className="header-actions">
-          <div className="settings-menu">
-            <button data-agent-id="settings-menu" data-focus-fallback className="settings-menu-trigger" type="button" title={t("settingsHint")} aria-label={t("settings")} aria-expanded={settingsOpen} aria-haspopup="true" onClick={() => setSettingsOpen((open) => !open)}><Settings className="ui-icon" aria-hidden="true" />{t("settings")}</button>
-            {settingsOpen && <div className="settings-menu-popover" role="menu" aria-label={t("settings")}>
-              <div className="settings-menu-section"><span className="settings-menu-label">{t("appearance")}</span><ThemePicker /><LanguagePicker /></div>
-              <div className="settings-menu-divider" role="separator" />
-              <button data-agent-id="shortcut-help" className="settings-menu-item" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setShortcutHelpOpen(true); }}><CircleHelp className="ui-icon" aria-hidden="true" />{t("shortcuts")}</button>
-              <button className="settings-menu-item" type="button" role="menuitem" title={t("exitWorkspaceHint")} onClick={() => { setSettingsOpen(false); exitWorkspace(); }}><EyeOff className="ui-icon" aria-hidden="true" />{t("exitWorkspace")}</button>
-              <button className="settings-menu-item danger" type="button" role="menuitem" title={t("logoutHint")} onClick={() => { setSettingsOpen(false); setLogoutConfirmOpen(true); }} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>
-            </div>}
-          </div>
-        </div>
       </header>
       {goToError && <div className="top-error" role="alert">{goToError}</div>}
       {logoutError && <div className="top-error" role="alert"><strong>{logoutError.message}</strong><span>{logoutError.hints[0]}</span></div>}
@@ -222,7 +210,22 @@ function AppContent() {
             <button data-agent-id="nav-shelves" className={`nav-item${view === "shelves" ? " active" : ""}`} type="button" title={t("shelvesTitle")} aria-label={t("shelvesTitle")} onClick={() => setView("shelves")}><NavIcon name="shelves" /><span className="nav-label">{t("shelvesTitle")}</span></button>
             <button className={`nav-item${view === "jobs" ? " active" : ""}`} type="button" title={t("jobsTitle")} aria-label={t("jobsTitle")} onClick={() => setView("jobs")}><NavIcon name="jobs" /><span className="nav-label">{t("jobsTitle")}</span></button>
           </nav>
-          <div><div className="sidebar-controls"><button type="button" title={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} aria-label={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} onClick={() => setSidebar((state) => state === "compact" ? "expanded" : "compact")}><NavIcon name={sidebar === "compact" ? "expand" : "collapse"} /></button><button type="button" title={t("hideSidebar")} aria-label={t("hideSidebar")} onClick={() => setSidebar("hidden")}><NavIcon name="hide" /></button></div><div className="workspace-identity"><span>{t("workspaceLabel")}</span><strong>{session.connection.client}</strong><small>{session.info.clientStream || session.info.clientRoot}</small></div></div>
+          <div>
+            <div className="sidebar-controls">
+              <div className="settings-menu sidebar-settings">
+                <button data-agent-id="settings-menu" data-focus-fallback className="settings-menu-trigger" type="button" title={t("settingsHint")} aria-label={t("settings")} aria-expanded={settingsOpen} aria-haspopup="true" onClick={() => setSettingsOpen((open) => !open)}><Settings className="ui-icon" aria-hidden="true" /><span>{t("settings")}</span></button>
+                {settingsOpen && <div className="settings-menu-popover" role="menu" aria-label={t("settings")}>
+                  <div className="settings-menu-section"><span className="settings-menu-label">{t("appearance")}</span><ThemePicker /><LanguagePicker /></div>
+                  <div className="settings-menu-divider" role="separator" />
+                  <button data-agent-id="shortcut-help" className="settings-menu-item" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setShortcutHelpOpen(true); }}><CircleHelp className="ui-icon" aria-hidden="true" />{t("shortcuts")}</button>
+                  <button className="settings-menu-item" type="button" role="menuitem" title={t("exitWorkspaceHint")} onClick={() => { setSettingsOpen(false); exitWorkspace(); }}><EyeOff className="ui-icon" aria-hidden="true" />{t("exitWorkspace")}</button>
+                  <button className="settings-menu-item danger" type="button" role="menuitem" title={t("logoutHint")} onClick={() => { setSettingsOpen(false); setLogoutConfirmOpen(true); }} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>
+                </div>}
+              </div>
+              <button type="button" title={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} aria-label={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} onClick={() => setSidebar((state) => state === "compact" ? "expanded" : "compact")}><NavIcon name={sidebar === "compact" ? "expand" : "collapse"} /></button>
+            </div>
+            <div className="workspace-identity"><span>{t("workspaceLabel")}</span><strong>{session.connection.client}</strong><small>{session.info.clientStream || session.info.clientRoot}</small></div>
+          </div>
         </aside>}
         <main className="workspace-main" data-focus-pane tabIndex={-1}>
           <Suspense fallback={<div className="compact-empty" role="status">{t("loadingFiles")}</div>}>
@@ -265,7 +268,7 @@ function FilesSourceControl({ source, setSource }: { source: "local" | "depot"; 
   return <div className="segmented-control files-source-control" role="tablist" aria-label={t("filesSource")}><button data-agent-id="files-source-local" type="button" role="tab" aria-selected={source === "local"} className={source === "local" ? "active" : ""} onClick={() => setSource("local")}>{t("localFiles")}</button><button data-agent-id="files-source-depot" type="button" role="tab" aria-selected={source === "depot"} className={source === "depot" ? "active" : ""} onClick={() => setSource("depot")}>{t("depotFiles")}</button></div>;
 }
 
-function NavIcon({ name }: { name: "menu" | "files" | "changes" | "history" | "streams" | "shelves" | "jobs" | "expand" | "collapse" | "hide" }) {
+function NavIcon({ name }: { name: "menu" | "files" | "changes" | "history" | "streams" | "shelves" | "jobs" | "expand" | "collapse" }) {
   const icons: Record<typeof name, LucideIcon> = {
     menu: Menu,
     files: FolderTree,
@@ -276,7 +279,6 @@ function NavIcon({ name }: { name: "menu" | "files" | "changes" | "history" | "s
     jobs: ClipboardList,
     expand: PanelLeftOpen,
     collapse: PanelLeftClose,
-    hide: EyeOff,
   };
   const Icon = icons[name];
   return <Icon className="nav-icon" aria-hidden="true" />;

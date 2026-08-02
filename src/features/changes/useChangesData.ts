@@ -96,6 +96,10 @@ export function useChangesData(
     () => visibleShelfFiles(currentGroup.isShelved, shelfFiles[currentGroup.id] ?? []),
     [currentGroup.id, currentGroup.isShelved, shelfFiles],
   );
+  const shelfFileCounts = useMemo(
+    () => Object.fromEntries(Object.entries(shelfFiles).map(([change, items]) => [change, items.length])),
+    [shelfFiles],
+  );
 
   useEffect(() => {
     if (!currentGroup.isShelved) {
@@ -151,6 +155,7 @@ export function useChangesData(
     groups,
     currentGroup,
     currentShelfFiles,
+    shelfFileCounts,
     workspaceScan,
     state,
     shelfLoading,

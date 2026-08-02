@@ -673,7 +673,6 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
         icon={<FolderIcon className="ui-icon" aria-hidden="true" />}
         primary={folder.name}
         secondary={folder.path}
-        trailing={<span className="folder-summary-meta"><small>{folder.loaded ? folderFileCount(folder) : "…"}</small></span>}
         selectProps={{ "aria-label": ignored ? `${folder.name} · ${t("workspaceStatus_ignored")}` : folder.name, onClick: (event) => selectFolder(folder, event), onDoubleClick: () => setFolderOpen(folder, !open), onContextMenu: (event) => openFolderMenu(event, folder), onKeyDown: (event) => { if (isContextMenuShortcut(event.key, event.shiftKey)) openFolderMenu(event, folder); } }}
       />
       {open && <div role="group">{renderTree(folder.folders, depth + 1)}{folder.files.map((file) => renderFile(file, depth + 1))}</div>}
@@ -769,12 +768,14 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
       </div>
     </details>
     <div className="resource-workbench workspace-workbench">
-      <div ref={searchResults} className="resource-list workspace-resource-list" role="list">
-        <div className="column-heading"><strong>{t("workspaceFiles")}</strong><span>{selected.length > 0 ? `${selected.length} / ` : ""}{visibleFiles.length}</span></div>
-        {searchResult && <p className="workspace-search-summary" role="status">{t("workspaceSearchResults")} {searchResult.result.files.length} · “{searchResult.query}”</p>}
-        {searchResult?.result.partial && <BoundedListNotice count={searchResult.result.files.length} />}
-        {searchResult?.result.diagnostics.length ? <p className="workspace-search-diagnostics">{searchResult.result.diagnostics.join(" · ")}</p> : null}
-        {searching ? <CompactEmpty text={t("workspaceSearching")} /> : effectiveViewMode === "tree" && tree.length > 0 ? <div className="workspace-file-tree" role="tree">{renderTree(tree)}</div> : busy && activeFiles.length === 0 ? <CompactEmpty text={t("loadingFiles")} /> : searchResult && activeFiles.length === 0 ? <CompactEmpty text={t("workspaceSearchNoMatches")} /> : activeFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFiles")} /> : visibleFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFilterMatches")} /> : visibleFiles.map((file) => renderFile(file))}
+      <div className="resource-list workspace-resource-pane">
+        <div className="column-heading"><strong>{t("workspaceFiles")}</strong></div>
+        <div ref={searchResults} className="workspace-resource-list" role="list">
+          {searchResult && <p className="workspace-search-summary" role="status">{t("workspaceSearchResults")} {searchResult.result.files.length} · “{searchResult.query}”</p>}
+          {searchResult?.result.partial && <BoundedListNotice count={searchResult.result.files.length} />}
+          {searchResult?.result.diagnostics.length ? <p className="workspace-search-diagnostics">{searchResult.result.diagnostics.join(" · ")}</p> : null}
+          {searching ? <CompactEmpty text={t("workspaceSearching")} /> : effectiveViewMode === "tree" && tree.length > 0 ? <div className="workspace-file-tree" role="tree">{renderTree(tree)}</div> : busy && activeFiles.length === 0 ? <CompactEmpty text={t("loadingFiles")} /> : searchResult && activeFiles.length === 0 ? <CompactEmpty text={t("workspaceSearchNoMatches")} /> : activeFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFiles")} /> : visibleFiles.length === 0 ? <CompactEmpty text={t("workspaceNoFilterMatches")} /> : visibleFiles.map((file) => renderFile(file))}
+        </div>
       </div>
       <aside className="resource-inspector workspace-inspector">
         {!selectedCount ? <EmptyState title={t("selectWorkspaceFile")} body={t("selectWorkspaceFileBody")} /> : <div className="workspace-inspector-content">
@@ -800,7 +801,7 @@ export function WorkspaceView({ connection, info, initialScope, initialResolveRe
             agentId={(changeItem) => `workspace-history:${changeItem.id}`}
             onSelect={(changeItem) => setHistorySelection({ change: changeItem.id })}
             onOpen={(changeItem) => setHistoryChange(changeItem.id)}
-          /> : <><section className="selection-history"><h3>{t("selectedHistory")}</h3>{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <SelectableSurface selected={historySelection?.revision === revision.revision} data-agent-id={`workspace-history:${revision.change}:${revision.revision}`} className="history-compact-row" key={revision.revision} onClick={() => setHistorySelection({ change: revision.change, revision: revision.revision })} onDoubleClick={() => revision.change && setHistoryChange(revision.change)} onKeyDown={(event) => { if (event.key === "Enter" && revision.change) { event.preventDefault(); setHistoryChange(revision.change); } }}><ChangelistDescription value={revision.description} fallback={t("noDescription")} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span>{[revision.user, revision.client, formatWorkspaceHistoryTime(revision.time, language)].filter(Boolean).map((value) => ` · ${value}`)}</span><small>#{revision.revision} · {revision.action || "—"}</small></SelectableSurface>) : <CompactEmpty text={t("depotNoHistory")} />}</section><RevisionGraph revisions={revisionHistory} historyMayBePartial={revisionHistory.length >= 50} /></>}
+          /> : <><section className="changelist-history fill file-revision-history" aria-busy={historyBusy}><div className="changelist-history-heading"><div><History aria-hidden="true" /><strong>{t("selectedHistory")}</strong></div></div><div className="changelist-history-list" role="list">{historyBusy ? <CompactEmpty text={t("loadingHistory")} /> : revisionHistory.length ? revisionHistory.map((revision) => <SelectableSurface selected={historySelection?.revision === revision.revision} data-agent-id={`workspace-history:${revision.change}:${revision.revision}`} className="history-compact-row" key={revision.revision} onClick={() => setHistorySelection({ change: revision.change, revision: revision.revision })} onDoubleClick={() => revision.change && setHistoryChange(revision.change)} onKeyDown={(event) => { if (event.key === "Enter" && revision.change) { event.preventDefault(); setHistoryChange(revision.change); } }}><ChangelistDescription value={revision.description} fallback={t("noDescription")} compact /><span><span className="changelist-number">CL {revision.change || "—"}</span>{[revision.user, revision.client, formatWorkspaceHistoryTime(revision.time, language)].filter(Boolean).map((value) => ` · ${value}`)}</span><small>#{revision.revision} · {revision.action || "—"}</small></SelectableSurface>) : <CompactEmpty text={t("depotNoHistory")} />}</div></section><RevisionGraph revisions={revisionHistory} historyMayBePartial={revisionHistory.length >= 50} /></>}
         </div>}
       </aside>
     </div>

@@ -17,7 +17,7 @@ Do not invent a staging area, false Git commit graph, or universal Undo. Get Rev
 
 ## Shell and resource screens
 
-The persistent shell exposes server/user/workspace context, Go To, language, theme, Sign out, Close workspace, the main navigation, shortcut help, and non-overlapping Operations/CLI diagnostics. Theme defaults to the operating-system preference; explicit Light or Dark selection persists across launches. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation, Go To focus, and shortcut help, not a hidden catalog of feature actions.
+The persistent shell exposes server/user/workspace context, Go To, language, theme, Sign out, Close workspace, the main navigation, shortcut help, and non-overlapping Operations/CLI diagnostics. Settings is anchored at the bottom of the sidebar. The header menu button shows or hides the sidebar; the sole sidebar layout control switches between compact and expanded modes. Theme defaults to the operating-system preference; explicit Light or Dark selection persists across launches. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation, Go To focus, and shortcut help, not a hidden catalog of feature actions.
 
 Resource screens share this structure:
 
@@ -30,9 +30,9 @@ list or tree | persistent inspector
 - Do not repeat the screen name in an eyebrow.
 - Selection updates the inspector without pseudo-navigation or layout jumps.
 - Put metadata, preview, and selected-object actions in the inspector; keep one main location for the primary action.
-- Context menus accelerate visible workflows and never become their only access path.
+- Context menus accelerate visible workflows and never become their only access path. Shared menu rows support optional icons, and separators divide command, visibility, and presentation groups.
 - Loading, empty, error, permission, stale, and partial states keep the same layout.
-- Long panes scroll internally. At minimum window size, stack panes or use a drawer without hiding the full path or primary action.
+- Long panes scroll internally. Collection headings and their filters stay outside the collection scroller so labels, counts, warnings, and search remain visible. At minimum window size, stack panes or use a drawer without hiding the full path or primary action.
 
 File history is contextual to a selected file in Files; it is not a standalone screen with manual depot-path entry. Labels remains reachable through Go To/command palette without a main-sidebar entry. Submitted changes has a main-sidebar entry and opens on the current user's changes across all streams.
 

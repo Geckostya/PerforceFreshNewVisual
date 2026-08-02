@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CalendarClock, GitBranch, Monitor, Search, UserRound, UsersRound } from "lucide-react";
+import { CalendarClock, CircleAlert, GitBranch, Monitor, Search, UserRound, UsersRound } from "lucide-react";
 import { listPendingChanges, listShelvedChanges, listShelvedFiles, normalizeAppError, previewUnshelve, reshelveFiles, saveShelvedFile, saveShelvedFiles, unshelveFiles } from "../../shared/api";
 import { ChangelistDescription, markdownToPlainText } from "../../shared/ChangelistDescription";
 import { useLocale } from "../../shared/i18n";
@@ -7,7 +7,7 @@ import { ItemRowCopy, SelectableRow } from "../../shared/ItemList";
 import type { AppError, ConnectionInput, P4Info, PendingChange, ShelvedFile, UnshelvePreview } from "../../shared/models";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { useMultiSelection } from "../../shared/useMultiSelection";
-import { ActionDialog, BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
+import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
 import { canApplyUnshelve, filterShelves, groupShelvesByUser, nextShelfSelection, shelfTimestamp, splitUnshelvePaths, type ShelfAgeFilter } from "./shelves";
 
@@ -65,6 +65,7 @@ export function ShelvesView({ connection, info }: { connection: ConnectionInput;
   const reshelveCapability = info.capabilities?.commands.reshelve;
   const reshelveUnsupported = reshelveCapability?.state === "unsupported";
   const topologyUnavailable = !info.capabilities || info.capabilities.facts.topology?.state === "unknown";
+  const shelfLimitWarning = `${t("boundedListNotice")} ${SERVER_LIST_LIMIT}. ${t("boundedListHint")}`;
 
   function clearSelectedShelf() {
     shelfRequest.current += 1;
@@ -193,11 +194,9 @@ export function ShelvesView({ connection, info }: { connection: ConnectionInput;
       <label className="shelves-filter-control"><GitBranch aria-hidden="true" /><select data-agent-id="shelves-stream-filter" value={streamFilter} aria-label={t("factStream")} onChange={(event) => setStreamFilter(event.target.value)}><option value="all">{t("allStreams")}</option>{shelfStreams.map((stream) => <option key={stream} value={stream}>{stream}</option>)}</select></label>
       <label className="shelves-filter-control shelves-age-control"><CalendarClock aria-hidden="true" /><select data-agent-id="shelves-age-filter" value={ageFilter} aria-label={t("shelfAgeFilter")} onChange={(event) => setAgeFilter(event.target.value as ShelfAgeFilter)}><option value="all">{t("shelfAgeAny")}</option><option value="day">{t("shelfAgeDay")}</option><option value="week">{t("shelfAgeWeek")}</option><option value="month">{t("shelfAgeMonth")}</option></select></label>
     </div>
-    {shelves.length >= SERVER_LIST_LIMIT && <BoundedListNotice count={SERVER_LIST_LIMIT} />}
-
     <div className="resource-workbench shelves-people-workbench">
       <div className="shelves-people-board">
-        <div className="column-heading"><strong>{t("shelfPeopleHeading")}</strong><span>{visibleShelves.length} / {shelves.length}</span></div>
+        <div className="column-heading"><strong>{t("shelfPeopleHeading")}</strong><span className="shelf-list-summary">{visibleShelves.length} / {shelves.length}{shelves.length >= SERVER_LIST_LIMIT && <span className="shelf-limit-warning" role="img" title={shelfLimitWarning} aria-label={shelfLimitWarning}><CircleAlert aria-hidden="true" /></span>}</span></div>
         {busy && shelves.length === 0
           ? <CompactEmpty text={t("loadingShelves")} />
           : shelfGroups.length === 0

@@ -210,6 +210,10 @@ export function ContextMenu({ x, y, onSelect, children }: { x: number; y: number
   return <div ref={menu} className="context-menu" role="menu" style={{ left: Math.max(8, Math.min(x, window.innerWidth - 280)), top: Math.max(8, Math.min(y, window.innerHeight - 300)) }} onKeyDown={navigate} onPointerDown={(event) => event.stopPropagation()} onClick={onSelect}>{children}</div>;
 }
 
-export function MenuButton({ danger, disabled, onClick, children }: { danger?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
-  return <button type="button" role="menuitem" className={danger ? "danger" : ""} disabled={disabled} onClick={onClick}>{children}</button>;
+export function MenuButton({ danger, disabled, icon, onClick, children }: { danger?: boolean; disabled?: boolean; icon?: ReactNode; onClick: () => void; children: ReactNode }) {
+  return <button type="button" role="menuitem" className={danger ? "danger" : ""} disabled={disabled} onClick={onClick}>{icon && <span className="context-menu-icon" aria-hidden="true">{icon}</span>}<span className="context-menu-label">{children}</span></button>;
+}
+
+export function MenuSeparator() {
+  return <div className="context-menu-separator" role="separator" />;
 }

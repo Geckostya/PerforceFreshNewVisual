@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Eye, EyeOff, Info, Plus, Replace } from "lucide-react";
 import { inspectStream, listStreams, normalizeAppError, openWorkspace, previewSync, switchStream } from "../../shared/api";
 import { useLocale } from "../../shared/i18n";
 import { partitionArchived } from "../../shared/localArchive";
@@ -12,7 +12,7 @@ import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/Ite
 import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
 import { isContextMenuShortcut, selectionMode, updateSelection } from "../../shared/selection";
-import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, MenuButton, Modal, View } from "../../shared/View";
+import { ActionDialog, BoundedListNotice, CompactEmpty, ContextMenu, MenuButton, MenuSeparator, Modal, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
 import { useContextMenu } from "../../shared/useContextMenu";
 import { buildStreamForest, flattenStreamForest, layoutStreamGraph, streamDescendantPaths, streamIntegrationAllowed, streamIntegrationCandidates, streamIntegrationCandidatesForSelection, streamSubtreePaths, streamTypeClass, updateArchivedStreamPaths, updateStreamVisibility, type StreamTreeNode } from "./streams";
@@ -292,12 +292,10 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
         <div className="column-heading">
           <strong>{t("streamsTree")}</strong>
           <div className="column-heading-actions">
-            {selectedPaths.length > 0 && <><button type="button" onClick={() => setPathsVisible(selectedPaths, true)}>{t("showSelectedStreams")}</button><button type="button" onClick={() => setPathsVisible(selectedPaths, false)}>{t("hideSelectedStreams")}</button></>}
-            <button type="button" onClick={() => showAllStreams(true)}>{t("showAllStreams")}</button>
-            <button type="button" onClick={() => showAllStreams(false)}>{t("hideAllStreams")}</button>
             <span>{selectedPaths.length > 0 ? `${selectedPaths.length} / ` : ""}{partition.current.length}</span>
           </div>
         </div>
+        <div className="streams-tree-scroll">
         <div
           className={`streams-tree archive-drop-zone${archiveDragDrop.dropTarget === "current" ? " drag-over" : ""}`}
           role="tree"
@@ -313,6 +311,7 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
           <button className="unactual-heading" type="button" aria-expanded={archivedOpen} onClick={() => setArchivedExpanded(!archivedOpen)}>{archivedOpen ? <ChevronDown className="ui-icon" aria-hidden="true" /> : <ChevronRight className="ui-icon" aria-hidden="true" />}<strong>{t("unactual")}</strong><small>{partition.archived.length}</small></button>
           {archivedOpen && <div className="streams-tree archived" role="tree" aria-multiselectable="true">{archivedForest.length ? renderTree(archivedForest, true) : <CompactEmpty text={t("unactualStreamsEmpty")} />}</div>}
         </section>
+        </div>
       </aside>
       <section className="stream-graph-pane" aria-label={t("streamGraph")}>
         <div className="column-heading"><strong>{t("streamGraph")}</strong><span>{graph.nodes.length}</span></div>
@@ -327,19 +326,23 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
     </div>
 
     {menu && streamMenu.menu && <ContextMenu x={streamMenu.menu.x} y={streamMenu.menu.y} onSelect={streamMenu.close}>
-      <MenuButton onClick={() => openStreamDetails(menu)}>{t("streamDetails")}</MenuButton>
-      <MenuButton disabled={freshness !== "fresh"} onClick={() => setCreateParent(menu.path)}>{t("createChildStream")}</MenuButton>
-      <MenuButton disabled={freshness !== "fresh" || selectedPaths.length !== 1 || menu.path === currentStream} onClick={() => beginSwitch(menu)}>{t("switchToStream")}</MenuButton>
-      <MenuButton onClick={() => {
+      <MenuButton icon={<Info />} onClick={() => openStreamDetails(menu)}>{t("streamDetails")}</MenuButton>
+      <MenuButton icon={<Plus />} disabled={freshness !== "fresh"} onClick={() => setCreateParent(menu.path)}>{t("createChildStream")}</MenuButton>
+      <MenuButton icon={<Replace />} disabled={freshness !== "fresh" || selectedPaths.length !== 1 || menu.path === currentStream} onClick={() => beginSwitch(menu)}>{t("switchToStream")}</MenuButton>
+      <MenuSeparator />
+      <MenuButton icon={visible.has(menu.path) ? <EyeOff /> : <Eye />} onClick={() => {
         const paths = selectedPaths.includes(menu.path) ? selectedPaths : [menu.path];
         const show = paths.some((path) => !visible.has(path));
         setPathsVisible(paths, show);
       }}>{(selectedPaths.includes(menu.path) ? selectedPaths : [menu.path]).every((path) => visible.has(path)) ? t("hideFromGraph") : t("showOnGraph")}</MenuButton>
-      <MenuButton disabled={menuDescendants.length === 0} onClick={() => setPathsVisible(menuDescendants, true)}>{t("showChildStreams")}</MenuButton>
-      <MenuButton disabled={menuDescendants.length === 0} onClick={() => setPathsVisible(menuDescendants, false)}>{t("hideChildStreams")}</MenuButton>
-      <MenuButton onClick={() => setUnactual(menuSelection, !archivedIds.includes(menu.path))}>{archivedIds.includes(menu.path) ? t("restoreFromUnactual") : t("moveToUnactual")}</MenuButton>
-      <MenuButton disabled={menuDescendants.length === 0} onClick={() => setUnactual(menuDescendants, true)}>{t("moveChildStreamsToUnactual")}</MenuButton>
-      <MenuButton disabled={menuDescendants.length === 0} onClick={() => setUnactual(menuDescendants, false)}>{t("restoreChildStreamsFromUnactual")}</MenuButton>
+      <MenuButton icon={<Eye />} disabled={menuDescendants.length === 0} onClick={() => setPathsVisible(menuDescendants, true)}>{t("showChildStreams")}</MenuButton>
+      <MenuButton icon={<EyeOff />} disabled={menuDescendants.length === 0} onClick={() => setPathsVisible(menuDescendants, false)}>{t("hideChildStreams")}</MenuButton>
+      <MenuButton icon={<Eye />} onClick={() => showAllStreams(true)}>{t("showAllStreams")}</MenuButton>
+      <MenuButton icon={<EyeOff />} onClick={() => showAllStreams(false)}>{t("hideAllStreams")}</MenuButton>
+      <MenuSeparator />
+      <MenuButton icon={archivedIds.includes(menu.path) ? <ArchiveRestore /> : <Archive />} onClick={() => setUnactual(menuSelection, !archivedIds.includes(menu.path))}>{archivedIds.includes(menu.path) ? t("restoreFromUnactual") : t("moveToUnactual")}</MenuButton>
+      <MenuButton icon={<Archive />} disabled={menuDescendants.length === 0} onClick={() => setUnactual(menuDescendants, true)}>{t("moveChildStreamsToUnactual")}</MenuButton>
+      <MenuButton icon={<ArchiveRestore />} disabled={menuDescendants.length === 0} onClick={() => setUnactual(menuDescendants, false)}>{t("restoreChildStreamsFromUnactual")}</MenuButton>
     </ContextMenu>}
 
     {streamDetailsOpen && selectedStream && <Modal title={<>{t("streamDetailsTitle")} · <span className="changelist-number">{selectedStream.path}</span></>} busy={false} wide onClose={() => setStreamDetailsOpen(false)}>

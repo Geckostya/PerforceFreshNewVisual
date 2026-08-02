@@ -129,6 +129,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     groups,
     currentGroup,
     currentShelfFiles,
+    shelfFileCounts,
     workspaceScan,
     state,
     shelfLoading,
@@ -613,10 +614,15 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
     >
       <span className="change-title-row">
         {group.isDefault ? <span className="change-title">{t("defaultChangelist")}</span> : <ChangelistDescription className="change-title" value={group.description} fallback={t("noDescription")} compact />}
-        {group.isShelved && <span className="shelf-badge">{t("shelvedBadge")}</span>}
       </span>
       {!group.isDefault && <span className="change-description changelist-number">CL {group.id}</span>}
-      <span className="change-meta">{group.files.length} {t("localFilesCount")}{group.isShelved ? ` · ${t("hasShelf")}` : ""}{group.time ? ` · ${formatTime(group.time, language)}` : ""}</span>
+      <span className="change-meta">
+        {group.time && <time dateTime={group.time}>{formatTime(group.time, language)}</time>}
+        <span className="change-file-counts">
+          <span className="change-count local" title={t("localFilesCount")}>{group.files.length}</span>
+          {group.isShelved && <span className="change-count shelf" title={t("shelvedFilesCount")}>{shelfFileCounts[group.id] ?? "…"}</span>}
+        </span>
+      </span>
     </SelectableSurface>
   );
 
@@ -701,6 +707,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
         <aside className="change-column" aria-label={t("changeGroupsLabel")}>
           <div className="column-heading"><strong>{t("changeGroupsLabel")}</strong><span>{partitionedGroups.current.length + (showUnopenedGroup ? 1 : 0)} / {groups.length + (unopenedGroup ? 1 : 0)}</span></div>
           <label className="field change-filter"><span className="sr-only">{t("pendingChangesFilter")}</span><input value={changeQuery} placeholder={t("pendingChangesFilterPlaceholder")} onChange={(event) => setChangeQuery(event.target.value)} /></label>
+          <div className="change-list-scroll">
           <div
             className={`actual-list archive-drop-zone${archiveDragDrop.dropTarget === "current" ? " drag-over" : ""}`}
             onDragOver={(event) => archiveDragDrop.allowDrop(event, "current")}
@@ -726,6 +733,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
             <button className="unactual-heading" type="button" aria-expanded={unactualOpen} onClick={() => setUnactualOpen((value) => !value)}>{unactualOpen ? <ChevronDown className="ui-icon" aria-hidden="true" /> : <ChevronRight className="ui-icon" aria-hidden="true" />}<strong>{t("unactual")}</strong><small>{partitionedGroups.archived.length}</small></button>
             {unactualOpen && <div className="unactual-list">{partitionedGroups.archived.length ? partitionedGroups.archived.map(renderChange) : <CompactEmpty text={t("unactualChangesEmpty")} />}</div>}
           </section>
+          </div>
         </aside>
 
         <section className="file-column" aria-label={isUnopenedSelected ? t("unopenedChanges") : t("changeContentsLabel")}>
