@@ -1743,6 +1743,20 @@
   width: min(760px, 100%);
 }
 
+.action-dialog.reconcile-preview-dialog {
+  height: min(720px, calc(100vh - 48px));
+}
+
+.reconcile-preview-dialog .dialog-content {
+  flex: 1 1 auto;
+}
+
+.reconcile-preview-list {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .dialog-heading {
   min-height: 52px;
   padding: 0 16px;

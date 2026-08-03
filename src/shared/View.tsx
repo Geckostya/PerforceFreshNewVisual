@@ -103,7 +103,7 @@ export function BoundedListNotice({ count }: { count: number }) {
   return <p className="bounded-list-notice" role="status">{t("boundedListNotice")} {count}. {t("boundedListHint")}</p>;
 }
 
-export function Modal({ title, busy, wide, onClose, children }: { title: ReactNode; busy: boolean; wide?: boolean; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, busy, wide, className = "", onClose, children }: { title: ReactNode; busy: boolean; wide?: boolean; className?: string; onClose: () => void; children: ReactNode }) {
   const { t } = useLocale();
   const titleId = useId();
   const dialog = useRef<HTMLElement>(null);
@@ -150,25 +150,26 @@ export function Modal({ title, busy, wide, onClose, children }: { title: ReactNo
     };
   }, []);
 
-  return <div className="dialog-layer"><section ref={dialog} className={`action-dialog${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+  return <div className="dialog-layer"><section ref={dialog} className={`action-dialog${wide ? " wide" : ""}${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
     <div className="dialog-heading"><h2 id={titleId}>{title}</h2><button type="button" onClick={onClose} disabled={busy} aria-label={t("close")}><X className="ui-icon" aria-hidden="true" /></button></div>
     <div className="dialog-content">{children}</div>
   </section></div>;
 }
 
-export function ActionDialog({ title, confirmLabel, busy, confirmDisabled, danger, wide, onClose, onConfirm, children }: {
+export function ActionDialog({ title, confirmLabel, busy, confirmDisabled, danger, wide, className, onClose, onConfirm, children }: {
   title: string;
   confirmLabel: string;
   busy: boolean;
   confirmDisabled?: boolean;
   danger?: boolean;
   wide?: boolean;
+  className?: string;
   onClose: () => void;
   onConfirm: () => void;
   children: ReactNode;
 }) {
   const { t } = useLocale();
-  return <Modal title={title} busy={busy} wide={wide} onClose={onClose}><div className="dialog-body">{children}</div><div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button><button className={danger ? "danger-button" : "primary-button"} type="button" onClick={onConfirm} disabled={busy || confirmDisabled}>{confirmLabel}</button></div></Modal>;
+  return <Modal title={title} busy={busy} wide={wide} className={className} onClose={onClose}><div className="dialog-body">{children}</div><div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button><button className={danger ? "danger-button" : "primary-button"} type="button" onClick={onConfirm} disabled={busy || confirmDisabled}>{confirmLabel}</button></div></Modal>;
 }
 
 export function ContextMenu({ x, y, onSelect, children }: { x: number; y: number; onSelect: () => void; children: ReactNode }) {
