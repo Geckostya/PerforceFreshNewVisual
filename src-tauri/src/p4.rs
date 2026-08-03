@@ -5823,7 +5823,7 @@ pub fn workspace_scan_command(
         input,
         workspace_root,
         root,
-        std::slice::from_ref(&root.depot_scope),
+        std::slice::from_ref(&root.client_scope),
     )
 }
 
@@ -8946,7 +8946,7 @@ mod tests {
                 "-e",
                 "-d",
                 "-m",
-                "//Acme/main/Source/..."
+                "//alex-main/Source/..."
             ]
         );
         assert!(!arguments.iter().any(|argument| argument == "-A"));
@@ -8956,8 +8956,8 @@ mod tests {
                 && value.is_some_and(|value| Path::new(value) == ignore_file.as_path())
         }));
         let scopes = vec![
-            "//Acme/main/Source/src/...".to_owned(),
-            "//Acme/main/Source/tests/...".to_owned(),
+            "//alex-main/Source/src/...".to_owned(),
+            "//alex-main/Source/tests/...".to_owned(),
         ];
         let (_, batched_command) =
             workspace_scan_scopes_command(&input, &fixture, &root, &scopes).unwrap();

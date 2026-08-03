@@ -25,8 +25,28 @@ pub(crate) struct WorkspaceScanCacheEntry {
     pub roots: Vec<WorkspaceScanRootCache>,
     pub candidates: Vec<WorkspaceScanCandidate>,
     #[serde(default)]
+    pub resume: Option<WorkspaceScanResume>,
+    #[serde(default)]
     pub validated_at_ms: u64,
     pub last_full_scan_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct WorkspaceScanResume {
+    pub targets: Vec<WorkspaceScanResumeTarget>,
+    pub next_target: usize,
+    pub root_targets_remaining: Vec<usize>,
+    pub completed_roots: usize,
+    pub completed_directories: usize,
+    pub total_directories: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct WorkspaceScanResumeTarget {
+    pub root_index: usize,
+    pub scopes: Vec<String>,
+    pub local_directories: Vec<String>,
+    pub add: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -386,6 +406,7 @@ mod tests {
                 scope_id: "scope".to_owned(),
                 roots: Vec::new(),
                 candidates: Vec::new(),
+                resume: None,
                 validated_at_ms: 42,
                 last_full_scan_ms: 42,
             },
