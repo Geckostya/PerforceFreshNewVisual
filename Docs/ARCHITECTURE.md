@@ -54,6 +54,7 @@ Rust backend:
 
 - The process starts directly through `Command`; no shell is used.
 - Arguments are passed as separate values.
+- On Windows, executable discovery checks both the running process `PATH` and the persisted user/machine `PATH` values. This lets a user install the CLI and use `Find again` immediately, even when P4FNV inherited an older environment; the discovered full path is still launched directly.
 - Stable structured output uses `-ztag -Mj`; stdout is read as JSON Lines, not one array.
 - Safe sync remains a narrow validated domain operation with shared frontend orchestration for every retrieval entry point; recovery, overwrite, and cache invariants belong to [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
 - Form workflows (`change/client/stream/label -o/-i`) are handled as text forms and need not return JSON.

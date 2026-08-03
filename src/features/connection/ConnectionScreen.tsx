@@ -41,7 +41,7 @@ type TestState =
 
 type Translate = (key: TranslationKey) => string;
 
-export const P4_CLI_DOWNLOAD_URL = "https://www.perforce.com/downloads/helix-core-apps/command-line-client";
+export const P4_CLI_DOWNLOAD_URL = "https://portal.perforce.com/s/downloads?product=Helix%20Command-Line%20Client%20%28P4%29";
 
 export interface ConnectedSession {
   connection: ConnectionInput;
@@ -426,7 +426,7 @@ export function ConnectionScreen({ initialError, onConnected, onCheckForUpdates 
 
           {settingsWarning && <p className="settings-warning" role="status">{t("settingsWarning")}</p>}
           {localeWarning && <p className="settings-warning" role="status">{t("localeWarning")}</p>}
-          <DetectionStatus detection={detection} onRetry={() => void runDetection(p4Path)} t={t} />
+          <DetectionStatus detection={detection} onRetry={() => void runDetection(p4Path)} onDownload={() => void openUrl(P4_CLI_DOWNLOAD_URL)} t={t} />
 
           <form className="connection-form" onSubmit={openWorkspace} noValidate>
             {(recentConnections.length > 0 || favoriteConnections.length > 0) && (
@@ -595,14 +595,15 @@ function Step({ number, title, body }: { number: string; title: string; body: st
   return <li className="step"><span className="step-number">{number}</span><span><strong>{title}</strong>{body}</span></li>;
 }
 
-function DetectionStatus({ detection, onRetry, t }: { detection: DetectionState; onRetry: () => void; t: Translate }) {
+function DetectionStatus({ detection, onRetry, onDownload, t }: { detection: DetectionState; onRetry: () => void; onDownload: () => void; t: Translate }) {
   if (detection.phase === "loading") {
     return <div className="tool-status" role="status"><LoaderCircle className="status-symbol icon-spin" aria-hidden="true" /><div className="tool-status-copy"><strong>{t("toolSearching")}</strong><span>{t("toolSearchingBody")}</span></div></div>;
   }
   if (detection.phase === "error") {
-    return <div className="tool-status error" role="alert"><CircleAlert className="status-symbol" aria-hidden="true" /><div className="tool-status-copy"><strong>{errorText(detection.error.kind, t).message}</strong><span>{errorText(detection.error.kind, t).hint}</span></div><button className="link-button" type="button" onClick={onRetry}>{t("findAgain")}</button></div>;
+    const executableMissing = detection.error.kind === "executable_not_found";
+    return <div className="tool-status error" role="alert"><CircleAlert className="status-symbol" aria-hidden="true" /><div className="tool-status-copy"><strong>{errorText(detection.error.kind, t).message}</strong><span>{executableMissing ? t("p4InstallAndRetry") : errorText(detection.error.kind, t).hint}</span></div>{executableMissing && <button className="link-button" data-agent-id="connection-download-p4" type="button" onClick={onDownload}>{t("downloadP4Cli")}</button>}<button className="link-button" data-agent-id="connection-find-p4" type="button" onClick={onRetry}>{t("findAgain")}</button></div>;
   }
-  return <div className="tool-status success" role="status"><CircleCheck className="status-symbol" aria-hidden="true" /><div className="tool-status-copy"><strong>{t("toolReady")}</strong><span title={`${detection.value.path} · ${detection.value.version}`}>{detection.value.path} · {detection.value.version}</span></div><button className="link-button" type="button" onClick={onRetry}>{t("findAgain")}</button></div>;
+  return <div className="tool-status success" role="status"><CircleCheck className="status-symbol" aria-hidden="true" /><div className="tool-status-copy"><strong>{t("toolReady")}</strong><span title={`${detection.value.path} · ${detection.value.version}`}>{detection.value.path} · {detection.value.version}</span></div><button className="link-button" data-agent-id="connection-find-p4" type="button" onClick={onRetry}>{t("findAgain")}</button></div>;
 }
 
 function ConnectionResult({ state, t, password, setPassword, onLogin, onBeginAuth, onInspectTrust, onRetry, loginBusy, authBusy, trustBusy, ticketStatus, onTicketStatus, onRenew, renewBusy }: { state: TestState; t: Translate; password: string; setPassword: (value: string) => void; onLogin: () => void; onBeginAuth: () => void; onInspectTrust: () => void; onRetry: () => void; loginBusy: boolean; authBusy: boolean; trustBusy: boolean; ticketStatus: { phase: "idle" | "loading" | "success" | "error"; value?: LoginStatus; error?: AppError }; onTicketStatus: () => void; onRenew: () => void; renewBusy: boolean }) {

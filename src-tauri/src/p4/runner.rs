@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -335,9 +336,8 @@ pub(super) fn resolve_executable(explicit_path: Option<&str>) -> Result<PathBuf,
     }
 
     let executable = if cfg!(windows) { "p4.exe" } else { "p4" };
-    let found = env::var_os("PATH")
+    let found = executable_search_paths()
         .into_iter()
-        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
         .map(|directory| directory.join(executable))
         .find(|candidate| candidate.is_file());
 
@@ -345,6 +345,110 @@ pub(super) fn resolve_executable(explicit_path: Option<&str>) -> Result<PathBuf,
         AppError::new(ErrorKind::ExecutableNotFound, "p4 CLI не найден в PATH.")
             .with_hint("Установите Helix Core Command-Line Client или укажите путь вручную.")
     })
+}
+
+/// Finds executables from the current process PATH and, on Windows, from the
+/// persisted user and machine PATH values. Windows does not update a running
+/// process environment after an installer changes PATH, so the latter keeps
+/// the in-app "Find again" action useful without a sign-out or reboot.
+fn executable_search_paths() -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    let mut add = |value: std::ffi::OsString| {
+        for path in env::split_paths(&value) {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    };
+
+    if let Some(path) = env::var_os("PATH") {
+        add(path);
+    }
+    #[cfg(windows)]
+    for path in windows_persisted_path_values() {
+        add(path);
+    }
+    paths
+}
+
+#[cfg(windows)]
+fn windows_persisted_path_values() -> Vec<std::ffi::OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Environment::ExpandEnvironmentStringsW;
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW,
+        RegQueryValueExW,
+    };
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(Some(0)).collect()
+    }
+
+    fn read_path(root: HKEY, subkey: &str) -> Option<std::ffi::OsString> {
+        unsafe {
+            let mut key: HKEY = std::ptr::null_mut();
+            if RegOpenKeyExW(root, wide(subkey).as_ptr(), 0, KEY_READ, &mut key) != 0 {
+                return None;
+            }
+            let mut bytes = 0;
+            let result = RegQueryValueExW(
+                key,
+                wide("Path").as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut bytes,
+            );
+            if result != 0 || bytes == 0 {
+                RegCloseKey(key);
+                return None;
+            }
+            let mut data = vec![0_u16; bytes as usize / 2];
+            let result = RegQueryValueExW(
+                key,
+                wide("Path").as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                data.as_mut_ptr().cast(),
+                &mut bytes,
+            );
+            RegCloseKey(key);
+            if result != 0 {
+                return None;
+            }
+            while data.last() == Some(&0) {
+                data.pop();
+            }
+            if data.is_empty() {
+                return None;
+            }
+            let source = data.into_iter().chain(Some(0)).collect::<Vec<_>>();
+            let required = ExpandEnvironmentStringsW(source.as_ptr(), std::ptr::null_mut(), 0);
+            if required == 0 {
+                return None;
+            }
+            let mut expanded = vec![0_u16; required as usize];
+            if ExpandEnvironmentStringsW(source.as_ptr(), expanded.as_mut_ptr(), required) == 0 {
+                return None;
+            }
+            while expanded.last() == Some(&0) {
+                expanded.pop();
+            }
+            Some(std::ffi::OsString::from_wide(&expanded))
+        }
+    }
+
+    [
+        read_path(HKEY_CURRENT_USER, "Environment"),
+        read_path(
+            HKEY_LOCAL_MACHINE,
+            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 pub(super) fn p4_command(path: &Path) -> Command {

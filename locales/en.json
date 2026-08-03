@@ -80,6 +80,7 @@
     "errorExecutable": "p4 CLI was not found.",
     "hintExecutable": "Install p4 CLI or specify its path manually.",
     "downloadP4Cli": "Download p4 CLI",
+    "p4InstallAndRetry": "Install it, then select Find again. You do not need to restart Windows or P4FNV.",
     "retryConnection": "Try again",
     "errorAuth": "The server requires sign-in.",
     "hintAuth": "Sign in to Helix Core and try again.",
