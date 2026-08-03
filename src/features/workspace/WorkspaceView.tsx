@@ -6,6 +6,7 @@ import type { AppError, ConnectionInput, FileRevision, OperationEvent, P4Info, P
 import { isOperationTerminal, startObservedOperation } from "../../shared/operations";
 import { DateSyncDialog, SafeSyncConflictDialog, useSafeSync } from "../../shared/SafeSync";
 import { RefreshButton } from "../../shared/RefreshButton";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 import { ChangelistHistory } from "../../shared/ChangelistHistory";
 import { ChangelistDescription } from "../../shared/ChangelistDescription";
 import { RevisionGraph } from "../../shared/RevisionGraph";
@@ -23,6 +24,7 @@ type WorkspaceMenuTarget =
   | { kind: "folder"; folder: WorkspaceTreeFolder; paths: string[]; scope: string; label: string };
 
 export function WorkspaceView({ connection, info, initialScope, initialResolveRequest, sourceControl, onNavigateDepot }: { connection: ConnectionInput; info: P4Info; initialScope?: string; initialResolveRequest?: { id: number; change: string; paths: string[] }; sourceControl?: ReactNode; onNavigateDepot?: (scope: string) => void }) {
+  const cacheVersion = usePerforceResourceVersion();
   const { t, language } = useLocale();
   const initialWorkspaceScope = initialScope?.trim() || "//...";
   const initialLazyRoot = workspaceLazyRoot(connection, initialWorkspaceScope);

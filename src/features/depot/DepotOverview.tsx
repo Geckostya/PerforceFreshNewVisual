@@ -12,6 +12,7 @@ import { PathActions } from "../../shared/PathActions";
 import { isContextMenuShortcut } from "../../shared/selection";
 import { contextMenuPoint } from "../../shared/useContextMenu";
 import { CompactEmpty, EmptyState, ErrorBanner } from "../../shared/View";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 import { directoryPattern, directoryScope, scopeBase } from "./depot";
 
 export type DepotOverviewFilter = "all" | "stream" | "classic";
@@ -91,6 +92,7 @@ export function DepotOverview({ connection, refreshKey, initialScope, onDownload
   onBusyChange?: (busy: boolean) => void;
   onNavigateLocal?: (scope: string) => void;
 }) {
+  const cacheVersion = usePerforceResourceVersion();
   const { language, t } = useLocale();
   const [depots, setDepots] = useState<DepotSummary[]>([]);
   const [children, setChildren] = useState<Record<string, DepotTreeChildren>>({});
@@ -133,7 +135,7 @@ export function DepotOverview({ connection, refreshKey, initialScope, onDownload
       if (active) setBusy(false);
     });
     return () => { active = false; };
-  }, [connection.port, connection.user, connection.client, includeDeleted, initialScope, refreshKey]);
+  }, [connection.port, connection.user, connection.client, includeDeleted, initialScope, refreshKey, cacheVersion]);
 
   async function readChildren(path: string, isActive = () => true): Promise<DepotTreeChildren> {
     setLoadingPaths((current) => new Set(current).add(path));

@@ -6,10 +6,12 @@ import type { AppError, ConnectionInput, Fix, Job, JobForm } from "../../shared/
 import { RefreshButton } from "../../shared/RefreshButton";
 import { ActionDialog, BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 
 type JobDialog = { kind: "attach"; change: string } | { kind: "detach"; change: string } | { kind: "form"; form: JobForm };
 
 export function JobsView({ connection, initialSearch }: { connection: ConnectionInput; initialSearch?: string }) {
+  const cacheVersion = usePerforceResourceVersion();
   const { t } = useLocale();
   const [query, setQuery] = useState(initialSearch || "");
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -29,7 +31,7 @@ export function JobsView({ connection, initialSearch }: { connection: Connection
     finally { setBusy(false); }
   }
 
-  useEffect(() => { void load(initialSearch || ""); }, [connection, initialSearch]);
+  useEffect(() => { void load(initialSearch || ""); }, [connection, initialSearch, cacheVersion]);
 
   const visibleJobs = useMemo(() => {
     const needle = query.trim().toLowerCase();

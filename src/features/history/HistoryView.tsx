@@ -6,6 +6,7 @@ import { DiffViewer } from "../../shared/DiffViewer";
 import { useLocale } from "../../shared/i18n";
 import type { AppError, ConnectionInput, FileDiff, P4Info, PendingChange, StreamSummary, SubmittedChangeDetail, SubmittedFilterOptions, SyncPreview } from "../../shared/models";
 import { RefreshButton } from "../../shared/RefreshButton";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
 import { ActionDialog, EmptyState, View } from "../../shared/View";
 import { filterSubmittedChanges, isLargeSubmittedChange, nextSubmittedFileRenderLimit, previousRevision, SUBMITTED_DETAIL_PREVIEW_LIMIT, submittedChangeStream, submittedRevisionScopes, submittedScope } from "./history";
@@ -13,6 +14,7 @@ import { CherryPickDialog } from "./CherryPickDialog";
 import { UndoDialog } from "./UndoDialog";
 
 export function HistoryView({ connection, info }: { connection: ConnectionInput; info: P4Info }) {
+  const cacheVersion = usePerforceResourceVersion();
   const { t } = useLocale();
   const [submitted, setSubmitted] = useState<PendingChange[]>([]);
   const [selectedChange, setSelectedChange] = useState<string>();
@@ -55,11 +57,11 @@ export function HistoryView({ connection, info }: { connection: ConnectionInput;
         if (streamCatalog.status === "fulfilled") setStreams(streamCatalog.value);
       });
     return () => { active = false; };
-  }, [connection.client, connection.port, connection.user]);
+  }, [connection.client, connection.port, connection.user, cacheVersion]);
 
   useEffect(() => {
     void loadSubmitted(undefined, 0, true);
-  }, [streamFilter, historyUser, historyClient, connection.client, connection.port, connection.user, info.clientStream]);
+  }, [streamFilter, historyUser, historyClient, connection.client, connection.port, connection.user, info.clientStream, cacheVersion]);
 
   async function loadSubmitted(cursor: string | undefined = undefined, page = 0, reset = true, filters = {
     stream: streamFilter,

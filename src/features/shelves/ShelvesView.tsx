@@ -9,6 +9,7 @@ import { RefreshButton } from "../../shared/RefreshButton";
 import { useMultiSelection } from "../../shared/useMultiSelection";
 import { ActionDialog, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 import { canApplyUnshelve, filterShelves, groupShelvesByUser, nextShelfSelection, shelfTimestamp, splitUnshelvePaths, type ShelfAgeFilter } from "./shelves";
 
 type ShelfDialog = { kind: "export"; outputPath: string; batch: boolean } | { kind: "reshelve" };
@@ -32,6 +33,7 @@ function formatShelfTime(value: string | undefined, language: string) {
 }
 
 export function ShelvesView({ connection, info }: { connection: ConnectionInput; info: P4Info }) {
+  const cacheVersion = usePerforceResourceVersion();
   const { t, language } = useLocale();
   const [shelves, setShelves] = useState<PendingChange[]>([]);
   const [targets, setTargets] = useState<PendingChange[]>([]);
@@ -109,7 +111,7 @@ export function ShelvesView({ connection, info }: { connection: ConnectionInput;
     finally { setBusy(false); }
   }
 
-  useEffect(() => { void load(); }, [connection.port, connection.user, connection.client]);
+  useEffect(() => { void load(); }, [connection.port, connection.user, connection.client, cacheVersion]);
 
   useEffect(() => { setVisibleLimit(INITIAL_SHELF_LIMIT); }, [ageFilter, clientFilter, query, streamFilter, userFilter]);
 

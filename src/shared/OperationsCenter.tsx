@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Activity, X } from "lucide-react";
 import { cancelOperation, startSync } from "./api";
+import { invalidatePerforceResources } from "./perforceResourceCache";
 import { useLocale, type TranslationKey } from "./i18n";
 import type { ConnectionInput, OperationCompensationStatus, OperationEvent, OperationItemStatus } from "./models";
 import { formatEta, isOperationActive, operationAnnouncementPriority, operationConnectionKey, operationProgress, reduceOperationSnapshots, type OperationSnapshot } from "./operations";
@@ -32,6 +33,8 @@ export function OperationsCenter({ connection, onRecover }: {
   const connectionKey = operationConnectionKey(connection);
   const connectionKeyRef = useRef(connectionKey);
   connectionKeyRef.current = connectionKey;
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
   const activeCount = items.filter((item) => isOperationActive(item.status)).length;
 
   useEffect(() => {
@@ -49,6 +52,7 @@ export function OperationsCenter({ connection, onRecover }: {
           setCancelling((current) => [...new Set([...current, event.payload.operationId])]);
         }
         if (!isOperationActive(event.payload.kind)) setCancelling((current) => current.filter((id) => id !== event.payload.operationId));
+        if (!isOperationActive(event.payload.kind)) invalidatePerforceResources(connectionRef.current);
         const priority = operationAnnouncementPriority(event.payload.kind);
         if (priority !== "none") {
           const outcome = event.payload.kind === "started"

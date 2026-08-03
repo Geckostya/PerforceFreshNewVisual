@@ -10,6 +10,7 @@ import {
 } from "../../shared/api";
 import type { AppError, ConnectionInput, OpenedFile, PendingChange, ShelvedFile, WorkspaceScanSnapshot } from "../../shared/models";
 import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 import { changesForUser, groupChanges, shouldRefreshOnFocus, visibleShelfFiles } from "./changes";
 
 export type ChangesLoadState = "loading" | "fresh" | "stale" | "offline" | "permission" | "partial" | "error";
@@ -20,6 +21,7 @@ export function useChangesData(
   selectedChange: string,
   onFileCountChange: (count: number) => void,
 ) {
+  const cacheVersion = usePerforceResourceVersion();
   const [changes, setChanges] = useState<PendingChange[]>([]);
   const [shelvedChanges, setShelvedChanges] = useState<PendingChange[]>([]);
   const [files, setFiles] = useState<OpenedFile[]>([]);
@@ -85,7 +87,7 @@ export function useChangesData(
         setState(resourceFailureFreshness(hasSuccessfulSnapshot.current, nextError));
       });
     return () => { active = false; };
-  }, [connection, onFileCountChange, refreshVersion]);
+  }, [connection, onFileCountChange, refreshVersion, cacheVersion]);
 
   const groups = useMemo(
     () => groupChanges(changes, files, shelvedChanges),
@@ -128,7 +130,7 @@ export function useChangesData(
       })
       .finally(() => { if (active) setShelfLoading(false); });
     return () => { active = false; };
-  }, [connection, currentGroup.id, currentGroup.isShelved, refreshVersion]);
+  }, [connection, currentGroup.id, currentGroup.isShelved, refreshVersion, cacheVersion]);
 
   useEffect(() => {
     let disposed = false;

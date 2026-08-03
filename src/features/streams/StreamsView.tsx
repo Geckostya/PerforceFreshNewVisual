@@ -8,6 +8,7 @@ import { useLocalArchive } from "../../shared/useLocalArchive";
 import type { AppError, CapabilitySnapshot, ConnectionInput, P4Info, StreamDetail, StreamLocalStrategy, StreamSummary, SyncPreview } from "../../shared/models";
 import type { ResourceFreshness } from "../../shared/models";
 import { resourceFailureFreshness } from "../../shared/resourceSnapshot";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 import { ItemRowCopy, SelectableSurface, TreeDisclosure } from "../../shared/ItemList";
 import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDialog, useSafeSync } from "../../shared/SafeSync";
@@ -21,6 +22,7 @@ import { CreateStreamDialog } from "./CreateStreamDialog";
 import { StreamIntegrationDialog } from "./StreamIntegrationDialog";
 
 export function StreamsView({ connection, currentStream, capabilities, onSwitched, onResolveIntegration, onReviewIntegration }: { connection: ConnectionInput; currentStream?: string; capabilities?: CapabilitySnapshot; onSwitched: (info: P4Info) => void; onResolveIntegration: (change: string, paths: string[]) => void; onReviewIntegration: (change: string, openSubmit: boolean) => void }) {
+  const cacheVersion = usePerforceResourceVersion();
   const { t } = useLocale();
   const preferencesKey = streamPreferencesStorageKey(connection.port, connection.user, connection.client);
   const initialPreferences = loadStreamPreferences(preferencesKey);
@@ -90,7 +92,7 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
     setVisible(new Set(preferences?.visiblePaths));
     setCollapsedPaths(new Set(preferences?.collapsedPaths));
     void load(preferences, true);
-  }, [connection.port, connection.user, connection.client]);
+  }, [connection.port, connection.user, connection.client, cacheVersion]);
 
   const partition = partitionArchived(streams, archivedIds, (stream) => stream.path);
   const currentForest = useMemo(() => buildStreamForest(partition.current), [partition.current]);
@@ -132,7 +134,7 @@ export function StreamsView({ connection, currentStream, capabilities, onSwitche
       .then((detail) => { if (active) setStreamDetail(detail); })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [connection.port, connection.user, connection.client, selectedStream?.path]);
+  }, [connection.port, connection.user, connection.client, selectedStream?.path, cacheVersion]);
 
   function setUnactual(paths: string[], archived: boolean) {
     updateArchivedIds((current) => updateArchivedStreamPaths(streams, current, paths, archived));

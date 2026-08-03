@@ -32,7 +32,7 @@ Frontend:
 - stores only the current screen's state;
 - rereads affected data after a mutation and when focus returns;
 - does not build `p4` arguments, store the password, or interpret raw stderr;
-- may store cosmetic Unactual lists in `localStorage` and large read-only data in memory/IndexedDB; the detailed Files cache contract is in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
+- keeps read-only Perforce resources in a connection-scoped memory snapshot that serves the last successful result immediately, coalesces concurrent reads, revalidates in the background, and is invalidated after a completed operation or direct mutation; the detailed Files persistent-cache contract is in [`WORKSPACE_FILES.md`](WORKSPACE_FILES.md).
 
 Rust backend:
 

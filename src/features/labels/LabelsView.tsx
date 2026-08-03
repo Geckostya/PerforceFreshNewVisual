@@ -7,6 +7,7 @@ import { RefreshButton } from "../../shared/RefreshButton";
 import { SafeSyncConflictDialog, SyncPreviewDetails, useSafeSync } from "../../shared/SafeSync";
 import { ActionDialog, BoundedListNotice, CompactEmpty, EmptyState, View } from "../../shared/View";
 import { SERVER_LIST_LIMIT } from "../../shared/scale";
+import { usePerforceResourceVersion } from "../../shared/perforceResourceCache";
 
 const LABEL_DETAIL_LIMIT = 100;
 type LabelDialog = { kind: "create" | "edit"; draft: LabelInput } | { kind: "delete" } | { kind: "tag" | "untag"; paths: string; preview?: LabelTagPreview };
@@ -16,6 +17,7 @@ function tagPaths(value: string): string[] {
 }
 
 export function LabelsView({ connection, initialSearch }: { connection: ConnectionInput; initialSearch?: string }) {
+  const cacheVersion = usePerforceResourceVersion();
   const { t } = useLocale();
   const [query, setQuery] = useState(initialSearch || "");
   const [labels, setLabels] = useState<Label[]>([]);
@@ -44,7 +46,7 @@ export function LabelsView({ connection, initialSearch }: { connection: Connecti
     finally { setBusy(false); }
   }
 
-  useEffect(() => { void load(initialSearch || ""); }, [connection, initialSearch]);
+  useEffect(() => { void load(initialSearch || ""); }, [connection, initialSearch, cacheVersion]);
 
   const visibleLabels = useMemo(() => {
     const needle = query.trim().toLowerCase();
