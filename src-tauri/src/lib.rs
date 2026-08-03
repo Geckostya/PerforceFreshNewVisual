@@ -8,7 +8,85 @@ mod settings;
 pub mod updates;
 mod workspace_scan_cache;
 
-use tauri::Manager;
+use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window, WindowEvent};
+
+const MIN_WINDOW_WIDTH: u32 = 860;
+const MIN_WINDOW_HEIGHT: u32 = 620;
+
+fn settings_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|directory| directory.join("settings.json"))
+}
+
+fn saved_window_state_is_valid(state: &models::WindowState) -> bool {
+    state.width >= MIN_WINDOW_WIDTH
+        && state.height >= MIN_WINDOW_HEIGHT
+        && state.width <= 10_000
+        && state.height <= 10_000
+}
+
+fn saved_window_position_is_visible(window: &WebviewWindow, state: &models::WindowState) -> bool {
+    let right = state
+        .x
+        .saturating_add(state.width.min(i32::MAX as u32) as i32);
+    let bottom = state
+        .y
+        .saturating_add(state.height.min(i32::MAX as u32) as i32);
+    window.available_monitors().is_ok_and(|monitors| {
+        monitors.iter().any(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            let monitor_right = position
+                .x
+                .saturating_add(size.width.min(i32::MAX as u32) as i32);
+            let monitor_bottom = position
+                .y
+                .saturating_add(size.height.min(i32::MAX as u32) as i32);
+            right > position.x + 64
+                && bottom > position.y + 64
+                && state.x < monitor_right - 64
+                && state.y < monitor_bottom - 64
+        })
+    })
+}
+
+fn restore_main_window(window: &WebviewWindow, state: &models::WindowState) {
+    if !saved_window_state_is_valid(state) {
+        return;
+    }
+    let _ = window.set_size(PhysicalSize::new(state.width, state.height));
+    if saved_window_position_is_visible(window, state) {
+        let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+    }
+    if state.maximized {
+        let _ = window.maximize();
+    }
+}
+
+fn save_main_window_state(window: &Window) {
+    let Some(path) = settings_path(window.app_handle()) else {
+        return;
+    };
+    let (Ok(position), Ok(size), Ok(maximized)) = (
+        window.outer_position(),
+        window.inner_size(),
+        window.is_maximized(),
+    ) else {
+        return;
+    };
+    let _ = settings::save_window_state(
+        &path,
+        models::WindowState {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+            maximized,
+        },
+    );
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,7 +114,26 @@ pub fn run() {
                 scheduler_operations.clone(),
                 workspace_scan_cache::WorkspaceScanCacheStore::new(cache_path),
             ));
+            if let (Some(window), Some(path)) =
+                (app.get_webview_window("main"), settings_path(app.handle()))
+                && let Ok(settings) = settings::load(&path)
+                && let Some(state) = settings.window_state.as_ref()
+            {
+                restore_main_window(&window, state);
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && matches!(
+                    event,
+                    WindowEvent::CloseRequested { .. }
+                        | WindowEvent::Moved(_)
+                        | WindowEvent::Resized(_)
+                )
+            {
+                save_main_window_state(window);
+            }
         })
         .manage(operations)
         .manage(updates::UpdateCoordinator::default())

@@ -276,6 +276,7 @@ pub struct AppSettings {
     pub favorite_connections: Vec<ConnectionInput>,
     pub delete_added_files_on_revert: bool,
     pub workspace_scan_configurations: Vec<WorkspaceScanConfiguration>,
+    pub window_state: Option<WindowState>,
 }
 
 impl Default for AppSettings {
@@ -287,8 +288,19 @@ impl Default for AppSettings {
             favorite_connections: Vec::new(),
             delete_added_files_on_revert: false,
             workspace_scan_configurations: Vec::new(),
+            window_state: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowState {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub maximized: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

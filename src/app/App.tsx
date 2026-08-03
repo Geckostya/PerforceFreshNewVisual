@@ -225,9 +225,12 @@ function AppContent() {
                   <button className="settings-menu-item danger" type="button" role="menuitem" title={t("logoutHint")} onClick={() => { setSettingsOpen(false); setLogoutConfirmOpen(true); }} disabled={logoutBusy}>{logoutBusy ? t("loggingOut") : t("logout")}</button>
                 </div>}
               </div>
-              <button type="button" title={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} aria-label={t(sidebar === "compact" ? "expandSidebar" : "collapseSidebar")} onClick={() => setSidebar((state) => state === "compact" ? "expanded" : "compact")}><NavIcon name={sidebar === "compact" ? "expand" : "collapse"} /></button>
+              {sidebar === "compact" && <button className="sidebar-compact-toggle" type="button" title={t("expandSidebar")} aria-label={t("expandSidebar")} onClick={() => setSidebar("expanded")}><NavIcon name="expand" /></button>}
             </div>
-            <div className="workspace-identity"><span>{t("workspaceLabel")}</span><strong>{session.connection.client}</strong><small>{session.info.clientStream || session.info.clientRoot}</small></div>
+            <div className="workspace-identity">
+              <div className="workspace-identity-header"><span>{t("workspaceLabel")}</span><button className="workspace-collapse-toggle" type="button" title={t("collapseSidebar")} aria-label={t("collapseSidebar")} onClick={() => setSidebar("compact")}><NavIcon name="collapse" /></button></div>
+              <strong>{session.connection.client}</strong><small>{session.info.clientStream || session.info.clientRoot}</small>
+            </div>
           </div>
         </aside>}
         <main className="workspace-main" data-focus-pane tabIndex={-1}>

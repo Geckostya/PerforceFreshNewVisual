@@ -670,6 +670,32 @@
   border-top: 1px solid var(--sidebar-border);
 }
 
+.workspace-identity-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.workspace-identity-header > span { min-width: 0; }
+
+.workspace-collapse-toggle {
+  width: var(--control-compact);
+  height: var(--control-compact);
+  padding: 0;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--sidebar-text);
+  cursor: pointer;
+}
+
+.workspace-collapse-toggle:hover { border-color: var(--sidebar-border); background: var(--sidebar-hover); color: var(--sidebar-text-strong); }
+
 .workspace-identity span,
 .workspace-identity small {
   overflow: hidden;
@@ -2356,9 +2382,9 @@
 
 .brand-area { display: flex; align-items: center; gap: 10px; }
 .sidebar-header-toggle,
-.sidebar-controls button { width: var(--control-compact); height: var(--control-compact); padding: 0; display: grid; place-items: center; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.sidebar-controls > button { width: var(--control-compact); height: var(--control-compact); padding: 0; display: grid; place-items: center; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; }
 .sidebar-header-toggle:hover,
-.sidebar-controls button:hover { border-color: var(--border); background: var(--surface-muted); color: var(--text); }
+.sidebar-controls > button:hover { border-color: var(--border); background: var(--surface-muted); color: var(--text); }
 .nav-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .workspace-shell.sidebar-compact { grid-template-columns: 58px minmax(0, 1fr); }
 .workspace-shell.sidebar-expanded { grid-template-columns: 212px minmax(0, 1fr); }
@@ -2374,12 +2400,15 @@
 .sidebar-controls { padding: 8px 2px; display: flex; align-items: center; justify-content: space-between; gap: 4px; border-top: 1px solid var(--sidebar-border); }
 .sidebar-controls button { color: var(--sidebar-text); }
 .sidebar-controls button:hover { border-color: var(--sidebar-border); background: var(--sidebar-hover); color: var(--sidebar-text-strong); }
+.sidebar-compact-toggle { display: none; }
 .sidebar-settings { min-width: 0; flex: 1 1 auto; }
 .sidebar-settings .settings-menu-trigger { width: 100%; justify-content: flex-start; border-color: transparent; background: transparent; color: var(--sidebar-text); box-shadow: none; }
 .sidebar-settings .settings-menu-trigger:hover,
 .sidebar-settings .settings-menu-trigger[aria-expanded="true"] { border-color: var(--sidebar-border); background: var(--sidebar-hover); color: var(--sidebar-text-strong); }
 .sidebar-settings .settings-menu-popover { top: auto; right: auto; bottom: calc(100% + 8px); left: 0; }
 .sidebar-compact .sidebar-settings { flex: 0 0 auto; }
+.sidebar-compact .sidebar-controls { flex-direction: column; }
+.sidebar-compact .sidebar-compact-toggle { display: grid; }
 .sidebar-compact .sidebar-settings .settings-menu-trigger { width: var(--control-compact); padding: 0; justify-content: center; }
 .sidebar-compact .sidebar-settings .settings-menu-trigger > span { display: none; }
 .segmented-control { padding: 2px; display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
@@ -2729,6 +2758,10 @@
   .sidebar-expanded .nav-label,
   .sidebar-expanded .nav-item small,
   .sidebar-expanded .workspace-identity { display: none; }
+  .sidebar-expanded .sidebar-controls { flex-direction: column; }
+  .sidebar-expanded .sidebar-settings { flex: 0 0 auto; }
+  .sidebar-expanded .sidebar-settings .settings-menu-trigger { width: var(--control-compact); padding: 0; justify-content: center; }
+  .sidebar-expanded .sidebar-settings .settings-menu-trigger > span { display: none; }
   .streams-workbench { grid-template-columns: minmax(0, .65fr) minmax(0, 1.35fr); }
   .depot-overview-workbench { grid-template-columns: minmax(300px, .85fr) minmax(380px, 1.15fr); }
 }

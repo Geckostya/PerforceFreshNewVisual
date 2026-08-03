@@ -17,7 +17,7 @@ Do not invent a staging area, false Git commit graph, or universal Undo. Get Rev
 
 ## Shell and resource screens
 
-The persistent shell exposes server/user/workspace context, Go To, language, theme, Sign out, Close workspace, the main navigation, shortcut help, and non-overlapping Operations/CLI diagnostics. Settings is anchored at the bottom of the sidebar. The header menu button shows or hides the sidebar; the sole sidebar layout control switches between compact and expanded modes. Theme defaults to the operating-system preference; explicit Light or Dark selection persists across launches. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation, Go To focus, and shortcut help, not a hidden catalog of feature actions.
+The persistent shell exposes server/user/workspace context, Go To, language, theme, Sign out, Close workspace, the main navigation, shortcut help, and non-overlapping Operations/CLI diagnostics. Settings is anchored at the bottom of the sidebar. The header menu button shows or hides the sidebar; the sole sidebar layout control switches between compact and expanded modes. Theme defaults to the operating-system preference; explicit Light or Dark selection persists across launches. On a normal exit, the main window restores its size, position, and maximized state; a saved position that is no longer visible on an available monitor is ignored. Close workspace returns to connection selection without revoking the ticket; Sign out does revoke it. The command palette provides navigation, Go To focus, and shortcut help, not a hidden catalog of feature actions.
 
 Resource screens share this structure:
 

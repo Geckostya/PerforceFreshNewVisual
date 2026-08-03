@@ -5,7 +5,8 @@ use std::{
 };
 
 use crate::models::{
-    AppError, AppSettings, ConnectionInput, ErrorKind, ThemeMode, WorkspaceScanConfiguration,
+    AppError, AppSettings, ConnectionInput, ErrorKind, ThemeMode, WindowState,
+    WorkspaceScanConfiguration,
 };
 
 const MAX_RECENT_CONNECTIONS: usize = 10;
@@ -42,6 +43,13 @@ pub fn save_revert_preference(path: &Path, delete_added_files: bool) -> Result<(
     let _guard = SETTINGS_LOCK.lock().map_err(lock_error)?;
     let mut settings = load_unlocked(path)?;
     settings.delete_added_files_on_revert = delete_added_files;
+    save_unlocked(path, &settings)
+}
+
+pub fn save_window_state(path: &Path, window_state: WindowState) -> Result<(), AppError> {
+    let _guard = SETTINGS_LOCK.lock().map_err(lock_error)?;
+    let mut settings = load_unlocked(path)?;
+    settings.window_state = Some(window_state);
     save_unlocked(path, &settings)
 }
 
@@ -357,6 +365,45 @@ mod tests {
         save_theme(&path, ThemeMode::Light).unwrap();
         expected.theme = ThemeMode::Light;
         assert_eq!(load_unlocked(&path).unwrap(), expected);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn window_state_is_saved_without_overwriting_other_settings() {
+        let directory = std::env::temp_dir().join(format!(
+            "p4fnv-window-settings-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join("settings.json");
+        save_theme(&path, ThemeMode::Dark).unwrap();
+        save_window_state(
+            &path,
+            WindowState {
+                x: -480,
+                y: 36,
+                width: 1440,
+                height: 900,
+                maximized: true,
+            },
+        )
+        .unwrap();
+
+        let settings = load_unlocked(&path).unwrap();
+        assert_eq!(settings.theme, ThemeMode::Dark);
+        assert_eq!(
+            settings.window_state,
+            Some(WindowState {
+                x: -480,
+                y: 36,
+                width: 1440,
+                height: 900,
+                maximized: true,
+            })
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
