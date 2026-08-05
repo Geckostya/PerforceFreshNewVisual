@@ -7,31 +7,8 @@ export function resourceFailureFreshness(hasSnapshot: boolean, error: AppError):
   return hasSnapshot ? "stale" : "error";
 }
 
-export function beginResourceRefresh<T>(snapshot: ResourceSnapshot<T>): ResourceSnapshot<T> {
-  return { ...snapshot, freshness: "loading", error: undefined };
-}
-
-export function acceptResourceSnapshot<T>(data: T, now = Date.now()): ResourceSnapshot<T> {
-  return { freshness: "fresh", data, lastSuccessfulAt: now };
-}
-
-export function rejectResourceRefresh<T>(
-  snapshot: ResourceSnapshot<T>,
-  error: AppError,
-): ResourceSnapshot<T> {
-  return {
-    ...snapshot,
-    freshness: resourceFailureFreshness(snapshot.data !== undefined, error),
-    error,
-  };
-}
-
 export function mutationBlockReason<T>(snapshot: ResourceSnapshot<T>): string | undefined {
   if (snapshot.freshness === "fresh") return undefined;
   if (snapshot.freshness === "loading" && snapshot.data === undefined) return "loading";
   return snapshot.error?.kind ?? snapshot.freshness;
-}
-
-export function canMutateResource<T>(snapshot: ResourceSnapshot<T>): boolean {
-  return mutationBlockReason(snapshot) === undefined;
 }

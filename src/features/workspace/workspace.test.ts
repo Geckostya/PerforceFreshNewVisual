@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OpenedFile, PendingChange, ReconcileItem, WorkspaceFile } from "../../shared/models";
-import { buildWorkspaceTree, cancelWorkspaceSearchRequest, canDiffSubmittedFile, canDownloadSubmittedFile, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, groupWorkspaceFiles, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, toggleReconcileSelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSearchCompletionFocus, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
+import { buildWorkspaceTree, cancelWorkspaceSearchRequest, canDiffSubmittedFile, canDownloadSubmittedFile, defaultReconcileSelection, filterWorkspaceFiles, formatWorkspaceHistoryTime, groupReconcileItems, loadWorkspaceDirectoryCache, mergeWorkspaceFileStatuses, saveWorkspaceDirectoryCache, toggleReconcileSelection, workspaceDirectoryCacheKey, workspaceDirectoryPaths, workspaceDirectoryStatusScope, workspaceFileHistoryPath, workspaceFolderPaths, workspaceHistorySyncScopes, workspaceLazyRoot, workspaceSearchCompletionFocus, workspaceSelectionOrder, workspaceStatus, workspaceStatusVersion } from "./workspace";
 
 const file = (overrides: Partial<WorkspaceFile>): WorkspaceFile => ({
   depotPath: "//Acme/main/a.txt",
@@ -54,16 +54,6 @@ describe("workspace status filters", () => {
     const untracked = file({ depotPath: "//Acme/main/new.txt", untracked: true, action: "add" });
     expect(filterWorkspaceFiles([untracked], "untracked", "")).toEqual([untracked]);
     expect(workspaceStatus(untracked)).toContain("untracked");
-  });
-
-  it("groups visible files by depot folder for tree mode", () => {
-    const groups = groupWorkspaceFiles([
-      file({ depotPath: "//Acme/z/z.txt" }),
-      file({ depotPath: "//Acme/a/a.txt" }),
-      file({ depotPath: "//Acme/z/other.txt" }),
-    ]);
-    expect(groups.map((group) => group.path)).toEqual(["//Acme/a", "//Acme/z"]);
-    expect(groups[1].files).toHaveLength(2);
   });
 
   it("builds a real nested tree and marks ignored files", () => {

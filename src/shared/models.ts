@@ -319,9 +319,6 @@ export interface CreateStreamPreview {
 
 export type StreamLocalStrategy = "shelve" | "keep";
 
-export interface WorkspaceUpdateInput { name: string; root: string; stream?: string; description: string; }
-export interface WorkspaceCreateInput { name: string; root: string; stream?: string; description: string; }
-
 export interface DepotDirectory { path: string; }
 export interface DepotSummary {
   name: string;
@@ -844,8 +841,6 @@ export interface FileDiff {
   binary: boolean;
   invalidEncoding: boolean;
 }
-
-export interface AnnotationLine { change: string; user?: string; date?: string; text: string; }
 
 export type DiffMode = "default" | "ignoreWhitespaceChanges" | "ignoreWhitespace" | "ignoreLineEndings";
 

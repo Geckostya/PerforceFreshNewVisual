@@ -324,20 +324,6 @@ export function cancelWorkspaceSearchRequest(activeRequest: number): { request: 
   return { request: activeRequest + 1, focus: "input" };
 }
 
-export function groupWorkspaceFiles(files: WorkspaceFile[]): WorkspaceTreeGroup[] {
-  const groups = new Map<string, WorkspaceFile[]>();
-  for (const file of files) {
-    const parts = file.depotPath.split("/");
-    const path = parts.length > 3 ? parts.slice(0, -1).join("/") : "//";
-    const current = groups.get(path) || [];
-    current.push(file);
-    groups.set(path, current);
-  }
-  return [...groups.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([path, groupedFiles]) => ({ path, files: groupedFiles }));
-}
-
 function workspaceTreePath(file: WorkspaceFile): string {
   return file.clientPath || file.depotPath;
 }

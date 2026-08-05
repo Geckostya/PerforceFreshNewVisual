@@ -3,6 +3,7 @@ mod diagnostics;
 mod locales;
 mod models;
 mod operations;
+#[allow(dead_code)]
 mod p4;
 mod settings;
 pub mod updates;
@@ -161,13 +162,6 @@ pub fn run() {
             commands::toggle_favorite_connection,
             commands::list_workspaces,
             commands::inspect_workspace,
-            commands::update_workspace,
-            commands::inspect_workspace_mapping_editor,
-            commands::preview_workspace_mappings,
-            commands::apply_workspace_mappings,
-            commands::create_workspace,
-            commands::delete_workspace,
-            commands::rename_workspace,
             commands::list_streams,
             commands::inspect_stream,
             commands::preview_stream_integration,
@@ -210,7 +204,6 @@ pub fn run() {
             commands::configure_workspace_scan,
             commands::get_workspace_scan_snapshot,
             commands::refresh_workspace_scan,
-            commands::cancel_workspace_scan,
             commands::list_local_workspace_directory,
             commands::ignore_local_file,
             commands::delete_local_file,
@@ -231,7 +224,6 @@ pub fn run() {
             commands::load_resolve_content,
             commands::save_resolve_result,
             commands::move_file,
-            commands::reconcile_scope_from_local_directory,
             commands::start_reconcile,
             commands::start_reconcile_preview,
             commands::list_shelved_files,
@@ -245,8 +237,6 @@ pub fn run() {
             commands::save_shelved_file,
             commands::save_shelved_files,
             commands::diff_revisions,
-            commands::diff_revision_workspace,
-            commands::annotate_file,
             commands::diff_shelved_file,
             commands::submit_preflight,
             commands::shelve_file,

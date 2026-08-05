@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { authReducer, authShouldPoll, capabilityGate, initialAuthState, trustDialogModel, validateConnection } from "./connection";
+import { capabilityGate } from "../../shared/capabilities";
+import { authReducer, authShouldPoll, initialAuthState, trustDialogModel, validateConnection } from "./connection";
 
 describe("validateConnection", () => {
   it("accepts plain and SSL Helix server addresses", () => {

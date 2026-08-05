@@ -1,32 +1,29 @@
 use crate::{
     diagnostics, locales,
     models::{
-        AnnotationLine, AppError, AppSettings, AuthStage, ChangeExportResult,
-        ChangeIdentityPreflight, ChangeIdentityPreflightInput, ChangeIdentityState,
-        ChangeIdentityUpdateInput, CherryPickPreviewItem, CliLogEntry, ConnectionInput,
-        CreateChangeInput, CreateStreamInput, CreateStreamPreview, DateSyncPreview,
-        DeleteChangeInput, DeleteShelfInput, DepotDirectory, DepotFile, DepotStateComparison,
-        DepotSummary, DiffInput, EditChangeInput, ErrorKind, FileDiff, FileOperationInput,
-        FileRevision, Fix, HistoryPage, Job, JobForm, JobFormInput, Label, LabelInput, LabelSpec,
-        LabelTagInput, LabelTagPreview, LabelTagResult, LocaleCatalog, MoveInput, OpenedFile,
-        OperationCompensationStatus, OperationDiagnostic, OperationEvent, OperationEventKind,
-        OperationItemResult, OperationItemStatus, OperationReadBack, OperationReadBackStatus,
-        P4Detection, P4Info, PendingChange, PreviewUnshelveInput, ReconcileItem, ReopenInput,
-        ReshelveInput, ResolveApplyResult, ResolveContent, ResolveInput, ResolveResultInput,
-        RevertInput, RevertPreviewItem, SaveChangeFilesInput, SaveJobInput, SaveRevisionInput,
-        SaveShelvedFilesInput, SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput,
-        ShelvedFile, SpecializedResolveInput, StreamDetail, StreamIntegrationInput,
-        StreamIntegrationPreview, StreamSummary, SubmitInput, SubmitMode, SubmitOutcome,
-        SubmitPreflightSummary, SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome,
-        SubmittedChangeDetail, SubmittedFilterOptions, SubmittedHistoryPageInput,
-        SwitchStreamInput, SyncPreview, ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem,
-        UnshelveInput, UnshelvePreview, WorkspaceCreateInput, WorkspaceFile, WorkspaceLocalBatch,
-        WorkspaceMappingApplyInput, WorkspaceMappingBatch, WorkspaceMappingEditor,
-        WorkspaceMappingPreview, WorkspaceMappingPreviewInput, WorkspaceScanCandidate,
+        AppError, AppSettings, AuthStage, ChangeExportResult, ChangeIdentityPreflight,
+        ChangeIdentityPreflightInput, ChangeIdentityState, ChangeIdentityUpdateInput,
+        CherryPickPreviewItem, CliLogEntry, ConnectionInput, CreateChangeInput, CreateStreamInput,
+        CreateStreamPreview, DateSyncPreview, DeleteChangeInput, DeleteShelfInput, DepotDirectory,
+        DepotFile, DepotStateComparison, DepotSummary, DiffInput, EditChangeInput, ErrorKind,
+        FileDiff, FileOperationInput, FileRevision, Fix, HistoryPage, Job, JobForm, JobFormInput,
+        Label, LabelInput, LabelSpec, LabelTagInput, LabelTagPreview, LabelTagResult,
+        LocaleCatalog, MoveInput, OpenedFile, OperationCompensationStatus, OperationDiagnostic,
+        OperationEvent, OperationEventKind, OperationItemResult, OperationItemStatus,
+        OperationReadBack, OperationReadBackStatus, P4Detection, P4Info, PendingChange,
+        PreviewUnshelveInput, ReconcileItem, ReopenInput, ReshelveInput, ResolveApplyResult,
+        ResolveContent, ResolveInput, ResolveResultInput, RevertInput, RevertPreviewItem,
+        SaveChangeFilesInput, SaveJobInput, SaveRevisionInput, SaveShelvedFilesInput,
+        SaveShelvedInput, ShelfDiffInput, ShelfFilesInput, ShelveInput, ShelvedFile,
+        SpecializedResolveInput, StreamDetail, StreamIntegrationInput, StreamIntegrationPreview,
+        StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
+        SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail,
+        SubmittedFilterOptions, SubmittedHistoryPageInput, SwitchStreamInput, SyncPreview,
+        ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
+        WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch, WorkspaceScanCandidate,
         WorkspaceScanConfiguration, WorkspaceScanCoverage, WorkspaceScanCoverageState,
         WorkspaceScanIdentity, WorkspaceScanPartialReason, WorkspaceScanRoot,
         WorkspaceScanSnapshot, WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
-        WorkspaceUpdateInput,
     },
     operations::{
         OperationHandle, OperationRegistry, wait_for_process, wait_for_process_with_cancellation,
@@ -1884,93 +1881,6 @@ pub async fn inspect_workspace(input: ConnectionInput) -> Result<WorkspaceSpec, 
 }
 
 #[tauri::command]
-pub async fn update_workspace(input: WorkspaceUpdateInput) -> Result<WorkspaceSpec, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::update_workspace(
-            &input.connection,
-            &input.name,
-            &input.root,
-            input.stream.as_deref(),
-            &input.description,
-        )
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn inspect_workspace_mapping_editor(
-    input: ConnectionInput,
-    workspace: String,
-) -> Result<WorkspaceMappingEditor, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::inspect_workspace_mapping_editor(&input, &workspace)
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn preview_workspace_mappings(
-    input: WorkspaceMappingPreviewInput,
-) -> Result<WorkspaceMappingPreview, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::preview_workspace_mappings(&input.connection, &input.workspace, &input.entries)
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn apply_workspace_mappings(
-    input: WorkspaceMappingApplyInput,
-) -> Result<WorkspaceSpec, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::apply_workspace_mappings(
-            &input.connection,
-            &input.workspace,
-            &input.entries,
-            &input.preview_token,
-        )
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn create_workspace(input: WorkspaceCreateInput) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::create_workspace(
-            &input.connection,
-            &input.name,
-            &input.root,
-            input.stream.as_deref(),
-            &input.description,
-        )
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn delete_workspace(input: ConnectionInput, name: String) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || p4::delete_workspace(&input, &name))
-        .await
-        .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn rename_workspace(
-    input: ConnectionInput,
-    from: String,
-    to: String,
-) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || p4::rename_workspace(&input, &from, &to))
-        .await
-        .map_err(task_error)?
-}
-
-#[tauri::command]
 pub async fn list_streams(input: ConnectionInput) -> Result<Vec<StreamSummary>, AppError> {
     tauri::async_runtime::spawn_blocking(move || p4::list_streams(&input))
         .await
@@ -2527,11 +2437,6 @@ pub fn refresh_workspace_scan(
         workspace_root,
         &snapshot,
     ))
-}
-
-#[tauri::command]
-pub fn cancel_workspace_scan(scheduler: State<'_, WorkspaceScanScheduler>) -> Result<(), AppError> {
-    scheduler.cancel_and_wait()
 }
 
 #[tauri::command]
@@ -4164,18 +4069,6 @@ pub async fn start_reconcile_preview(
 }
 
 #[tauri::command]
-pub async fn reconcile_scope_from_local_directory(
-    input: ConnectionInput,
-    directory: String,
-) -> Result<String, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::reconcile_scope_from_local_directory(&input, &directory)
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
 pub async fn start_reconcile(
     app: tauri::AppHandle,
     registry: State<'_, OperationRegistry>,
@@ -4583,28 +4476,6 @@ pub async fn diff_revisions(
     })
     .await
     .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn diff_revision_workspace(
-    input: DiffInput,
-    revision: String,
-) -> Result<FileDiff, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        p4::diff_revision_workspace(&input.connection, &input.depot_path, &revision, &input.mode)
-    })
-    .await
-    .map_err(task_error)?
-}
-
-#[tauri::command]
-pub async fn annotate_file(
-    input: crate::models::ConnectionInput,
-    depot_path: String,
-) -> Result<Vec<AnnotationLine>, AppError> {
-    tauri::async_runtime::spawn_blocking(move || p4::annotate_file(&input, &depot_path))
-        .await
-        .map_err(task_error)?
 }
 
 #[tauri::command]

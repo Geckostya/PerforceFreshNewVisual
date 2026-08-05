@@ -10,8 +10,6 @@ export type ConnectionErrors = Partial<Record<keyof ConnectionFields, Connection
 import type { AppError, AuthStage, TrustChallenge } from "../../shared/models";
 import type { TranslationKey } from "../../shared/i18n";
 
-export { capabilityGate } from "../../shared/capabilities";
-
 export interface AuthUiState {
   open: boolean;
   busy: boolean;

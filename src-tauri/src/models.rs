@@ -403,6 +403,7 @@ pub struct WorkspaceSpec {
     pub mappings: Vec<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceMappingKind {
@@ -412,6 +413,7 @@ pub enum WorkspaceMappingKind {
     Ditto,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMappingEditorEntry {
@@ -420,6 +422,7 @@ pub struct WorkspaceMappingEditorEntry {
     pub preserved_only: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMappingEditor {
@@ -427,6 +430,7 @@ pub struct WorkspaceMappingEditor {
     pub entries: Vec<WorkspaceMappingEditorEntry>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "source",
@@ -444,6 +448,7 @@ pub enum WorkspaceMappingEdit {
     },
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMappingPreviewInput {
@@ -452,6 +457,7 @@ pub struct WorkspaceMappingPreviewInput {
     pub entries: Vec<WorkspaceMappingEdit>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMappingApplyInput {
@@ -461,6 +467,7 @@ pub struct WorkspaceMappingApplyInput {
     pub preview_token: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMappingPreview {
@@ -635,26 +642,6 @@ pub struct SwitchStreamInput {
     pub connection: ConnectionInput,
     pub stream: String,
     pub local_strategy: StreamLocalStrategy,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceUpdateInput {
-    pub connection: ConnectionInput,
-    pub name: String,
-    pub root: String,
-    pub stream: Option<String>,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceCreateInput {
-    pub connection: ConnectionInput,
-    pub name: String,
-    pub root: String,
-    pub stream: Option<String>,
-    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1392,6 +1379,7 @@ pub struct FileDiff {
     pub invalid_encoding: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AnnotationLine {

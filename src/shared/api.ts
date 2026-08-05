@@ -5,7 +5,6 @@ import type {
   CliLogEntry,
   ConnectionInput,
   FileDiff,
-  AnnotationLine,
   DiffMode,
   DateSyncPreview,
   FileRevision,
@@ -40,12 +39,6 @@ import type {
   UnshelvePreview,
   WorkspaceSummary,
   WorkspaceSpec,
-  WorkspaceMappingApplyInput,
-  WorkspaceMappingEditor,
-  WorkspaceMappingPreview,
-  WorkspaceMappingPreviewInput,
-  WorkspaceCreateInput,
-  WorkspaceUpdateInput,
   DepotDirectory,
   DepotFile,
   DepotStateComparison,
@@ -178,34 +171,6 @@ export async function listWorkspaces(input: ConnectionInput): Promise<WorkspaceS
 
 export async function inspectWorkspace(input: ConnectionInput): Promise<WorkspaceSpec> {
   return invoke<WorkspaceSpec>("inspect_workspace", { input });
-}
-
-export async function updateWorkspace(connection: ConnectionInput, update: WorkspaceUpdateInput): Promise<WorkspaceSpec> {
-  return invoke<WorkspaceSpec>("update_workspace", { input: { connection, ...update } });
-}
-
-export async function inspectWorkspaceMappingEditor(connection: ConnectionInput, workspace: string): Promise<WorkspaceMappingEditor> {
-  return invoke<WorkspaceMappingEditor>("inspect_workspace_mapping_editor", { input: connection, workspace });
-}
-
-export async function previewWorkspaceMappings(connection: ConnectionInput, input: WorkspaceMappingPreviewInput): Promise<WorkspaceMappingPreview> {
-  return invoke<WorkspaceMappingPreview>("preview_workspace_mappings", { input: { connection, ...input } });
-}
-
-export async function applyWorkspaceMappings(connection: ConnectionInput, input: WorkspaceMappingApplyInput): Promise<WorkspaceSpec> {
-  return invoke<WorkspaceSpec>("apply_workspace_mappings", { input: { connection, ...input } });
-}
-
-export async function createWorkspace(connection: ConnectionInput, create: WorkspaceCreateInput): Promise<void> {
-  return invoke("create_workspace", { input: { connection, ...create } });
-}
-
-export async function deleteWorkspace(connection: ConnectionInput, name: string): Promise<void> {
-  return invoke("delete_workspace", { input: connection, name });
-}
-
-export async function renameWorkspace(connection: ConnectionInput, from: string, to: string): Promise<void> {
-  return invoke("rename_workspace", { input: connection, from, to });
 }
 
 export async function listStreams(input: ConnectionInput): Promise<StreamSummary[]> {
@@ -369,10 +334,6 @@ export async function refreshWorkspaceScan(input: ConnectionInput): Promise<void
   return invoke("refresh_workspace_scan", { input });
 }
 
-export async function cancelWorkspaceScan(): Promise<void> {
-  return invoke("cancel_workspace_scan");
-}
-
 export async function listLocalWorkspaceDirectory(input: ConnectionInput, directory: string): Promise<WorkspaceLocalBatch> {
   return readPerforceResource(perforceResourceKey(input, "workspace-directory", directory), () => invoke<WorkspaceLocalBatch>("list_local_workspace_directory", { input, directory }));
 }
@@ -465,10 +426,6 @@ export async function startReconcilePreview(input: ConnectionInput, scope?: stri
   return invoke<string>("start_reconcile_preview", { input, scope });
 }
 
-export async function reconcileScopeFromLocalDirectory(input: ConnectionInput, directory: string): Promise<string> {
-  return invoke<string>("reconcile_scope_from_local_directory", { input, directory });
-}
-
 export async function listShelvedFiles(
   connection: ConnectionInput,
   change: string,
@@ -529,14 +486,6 @@ export async function saveShelvedFiles(
 
 export async function diffRevisions(connection: ConnectionInput, depotPath: string, left: string, right: string, mode: DiffMode = "default"): Promise<FileDiff> {
   return invoke<FileDiff>("diff_revisions", { input: { connection, depotPath, mode }, left, right });
-}
-
-export async function diffRevisionWorkspace(connection: ConnectionInput, depotPath: string, revision: string, mode: DiffMode = "default"): Promise<FileDiff> {
-  return invoke<FileDiff>("diff_revision_workspace", { input: { connection, depotPath, mode }, revision });
-}
-
-export async function annotateFile(connection: ConnectionInput, depotPath: string): Promise<AnnotationLine[]> {
-  return invoke<AnnotationLine[]>("annotate_file", { input: connection, depotPath });
 }
 
 export async function diffShelvedFile(
