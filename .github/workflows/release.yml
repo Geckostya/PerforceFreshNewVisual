@@ -144,4 +144,5 @@ jobs:
       - name: Upload provenance to draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release upload '${{ inputs.tag }}' '${{ needs.provenance.outputs.provenance-name }}' --clobber
