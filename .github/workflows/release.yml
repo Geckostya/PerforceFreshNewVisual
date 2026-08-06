@@ -99,8 +99,11 @@ jobs:
         run: |
           $version = '${{ steps.names.outputs.version }}'
           $directory = "artifacts/releases/$version"
-          gh release create $env:RELEASE_TAG --draft --verify-tag --title "P4FNV $version"
-          gh release upload $env:RELEASE_TAG "$directory/${{ steps.names.outputs.archive }}" "$directory/${{ steps.names.outputs.archive }}.sig" "$directory/latest.json" "$directory/latest.json.sig" "$directory/SHA256SUMS.txt"
+          gh release view $env:RELEASE_TAG 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --draft --verify-tag --title "P4FNV $version"
+          }
+          gh release upload $env:RELEASE_TAG "$directory/${{ steps.names.outputs.archive }}" "$directory/${{ steps.names.outputs.archive }}.sig" "$directory/latest.json" "$directory/latest.json.sig" "$directory/SHA256SUMS.txt" --clobber
       - name: Produce SLSA subject
         id: subject
         shell: pwsh
