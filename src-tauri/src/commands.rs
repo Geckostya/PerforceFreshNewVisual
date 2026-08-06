@@ -18,9 +18,10 @@ use crate::{
         SpecializedResolveInput, StreamDetail, StreamIntegrationInput, StreamIntegrationPreview,
         StreamSummary, SubmitInput, SubmitMode, SubmitOutcome, SubmitPreflightSummary,
         SubmitReadBack, SubmitStepResult, SubmitTerminalOutcome, SubmittedChangeDetail,
-        SubmittedFilterOptions, SubmittedHistoryPageInput, SwitchStreamInput, SyncPreview,
-        ThemeMode, TrustChallenge, TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview,
-        WorkspaceFile, WorkspaceLocalBatch, WorkspaceMappingBatch, WorkspaceScanCandidate,
+        SubmittedFilterOptions, SubmittedHistoryPageInput, SwitchStreamInput,
+        SyncMergeContentInput, SyncMergeResultInput, SyncPreview, ThemeMode, TrustChallenge,
+        TrustEntry, UndoPreviewItem, UnshelveInput, UnshelvePreview, WorkspaceFile,
+        WorkspaceLocalBatch, WorkspaceMappingBatch, WorkspaceScanCandidate,
         WorkspaceScanConfiguration, WorkspaceScanCoverage, WorkspaceScanCoverageState,
         WorkspaceScanIdentity, WorkspaceScanPartialReason, WorkspaceScanRoot,
         WorkspaceScanSnapshot, WorkspaceSearchResult, WorkspaceSpec, WorkspaceSummary,
@@ -3010,8 +3011,12 @@ pub async fn start_sync(
     input: ConnectionInput,
     scopes: Vec<String>,
     force: Option<bool>,
+    auto_resolve: Option<bool>,
 ) -> Result<String, AppError> {
     let force = force.unwrap_or(false);
+    if auto_resolve.unwrap_or(false) {
+        p4::verify_sync_auto_resolve_scopes(&input, &scopes)?;
+    }
     let recovery_scopes = scopes.clone();
     let force_preview = force
         .then(|| p4::preview_sync_items(&input, &recovery_scopes))
@@ -3215,6 +3220,7 @@ pub async fn start_sync(
                 .then(|| "The authoritative workspace read-back did not complete.".to_owned()),
         };
         let diagnostics = bounded_operation_diagnostics(message.as_deref());
+        registry_for_wait.remove(&id_for_wait);
         let _ = app_for_wait.emit(
             "operation-event",
             OperationEvent {
@@ -3237,7 +3243,6 @@ pub async fn start_sync(
                 ..operation_event(&id_for_wait, "sync", kind, started_at_ms)
             },
         );
-        registry_for_wait.remove(&id_for_wait);
     });
     Ok(operation_id)
 }
@@ -3733,6 +3738,40 @@ pub async fn save_resolve_result(
             &input.connection,
             &root,
             &input.depot_path,
+            &input.local_path,
+            &input.preview_token,
+            &input.result,
+        )
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn load_sync_merge_content(
+    input: SyncMergeContentInput,
+    roots: State<'_, WorkspaceRootRegistry>,
+) -> Result<ResolveContent, AppError> {
+    let root = roots.root(&input.connection)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::load_sync_merge_content(&input.connection, &root, &input.depot_path, &input.revision)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub async fn save_sync_merge_result(
+    input: SyncMergeResultInput,
+    roots: State<'_, WorkspaceRootRegistry>,
+) -> Result<(), AppError> {
+    let root = roots.root(&input.connection)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        p4::save_sync_merge_result(
+            &input.connection,
+            &root,
+            &input.depot_path,
+            &input.revision,
             &input.local_path,
             &input.preview_token,
             &input.result,

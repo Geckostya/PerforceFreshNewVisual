@@ -1803,6 +1803,25 @@ pub struct ResolveResultInput {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct SyncMergeContentInput {
+    pub connection: ConnectionInput,
+    pub depot_path: String,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncMergeResultInput {
+    pub connection: ConnectionInput,
+    pub depot_path: String,
+    pub revision: String,
+    pub local_path: String,
+    pub preview_token: String,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct MoveInput {
     pub connection: ConnectionInput,
     pub change: String,

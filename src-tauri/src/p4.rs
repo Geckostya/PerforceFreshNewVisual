@@ -2815,17 +2815,33 @@ fn modified_workspace_files(
     let (path, mut command) = configured_command(input)?;
     command.args(modified_workspace_file_arguments());
     let records = run_json_with_stdin_allowing_empty_match(&path, &mut command, stdin.as_bytes())?;
-    let mut files = parse_modified_files(&records)
+    let modified = parse_modified_files(&records)
         .into_iter()
         .collect::<BTreeSet<_>>();
     let missing_have_files = existing_not_on_client_files(preview, &records);
-    files.extend(missing_have_files.iter().cloned());
-    let files = files.into_iter().collect::<Vec<_>>();
+    let mut writable = modified.clone();
+    writable.extend(missing_have_files.iter().cloned());
     Ok(ModifiedWorkspaceFiles {
-        modified: files.clone(),
-        writable: files,
+        modified: modified.into_iter().collect(),
+        writable: writable.into_iter().collect(),
         missing_have: missing_have_files,
     })
+}
+
+pub fn verify_sync_auto_resolve_scopes(
+    input: &ConnectionInput,
+    scopes: &[String],
+) -> Result<(), AppError> {
+    let preview = preview_sync_items(input, scopes)?;
+    let modified = modified_workspace_files(input, &preview)?;
+    if modified.modified.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            ErrorKind::Conflict,
+            "Local file content changed while the update was being resolved.",
+        ))
+    }
 }
 
 fn modified_workspace_file_arguments() -> [&'static str; 7] {
@@ -3756,6 +3772,155 @@ fn resolve_unknown_item(depot_path: &str, reason: &str) -> ResolveApplyItem {
 
 const MAX_RESOLVE_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
+struct SyncMergeSnapshot {
+    depot_path: String,
+    local_path: PathBuf,
+    base_identifier: String,
+    source_identifier: String,
+    workspace_bytes: Vec<u8>,
+}
+
+pub fn load_sync_merge_content(
+    input: &ConnectionInput,
+    root: &Path,
+    depot_path: &str,
+    revision: &str,
+) -> Result<ResolveContent, AppError> {
+    let snapshot = sync_merge_snapshot(input, root, depot_path, revision)?;
+    Ok(ResolveContent {
+        depot_path: snapshot.depot_path.clone(),
+        local_path: snapshot.local_path.to_string_lossy().into_owned(),
+        preview_token: sync_merge_token(&snapshot),
+        base: load_resolve_side(input, Some(&snapshot.base_identifier), "base")?,
+        source: load_resolve_side(input, Some(&snapshot.source_identifier), "source")?,
+        workspace: resolve_content_side(
+            snapshot.local_path.to_string_lossy().into_owned(),
+            snapshot.workspace_bytes,
+        ),
+    })
+}
+
+pub fn save_sync_merge_result(
+    input: &ConnectionInput,
+    root: &Path,
+    depot_path: &str,
+    revision: &str,
+    local_path: &str,
+    preview_token: &str,
+    result: &str,
+) -> Result<(), AppError> {
+    if result.len() > MAX_RESOLVE_TEXT_BYTES || result.contains('\0') {
+        return Err(AppError::new(
+            ErrorKind::CommandFailed,
+            "The merged text exceeds the supported limit or contains binary data.",
+        ));
+    }
+    let snapshot = sync_merge_snapshot(input, root, depot_path, revision)?;
+    if snapshot.local_path.to_string_lossy() != local_path
+        || preview_token.is_empty()
+        || sync_merge_token(&snapshot) != preview_token
+    {
+        return Err(AppError::new(
+            ErrorKind::Stale,
+            "The sync conflict changed; reopen the merge editor.",
+        ));
+    }
+    let temporary = recovery_temporary_path(&snapshot.local_path)?;
+    let saved = (|| {
+        fs::write(&temporary, result.as_bytes()).map_err(|error| {
+            local_file_error("Could not write the temporary merge result.", error)
+        })?;
+        replace_recovery_file(&temporary, &snapshot.local_path)?;
+        flush_recovery_spec(input, &snapshot.source_identifier).map_err(|error| {
+            AppError::new(
+                ErrorKind::PartialResult,
+                "The merge result was saved, but the workspace revision was not updated.",
+            )
+            .with_hint("Reopen the conflict and finish it again after checking the connection.")
+            .with_diagnostics(error.message)
+        })
+    })();
+    if temporary.exists() {
+        remove_recovery_temporary(&temporary);
+    }
+    saved
+}
+
+fn sync_merge_snapshot(
+    input: &ConnectionInput,
+    root: &Path,
+    depot_path: &str,
+    revision: &str,
+) -> Result<SyncMergeSnapshot, AppError> {
+    required_client(input)?;
+    validate_depot_path(depot_path)?;
+    let revision = validate_revision(revision)?;
+    let scope = format!("{depot_path}#{revision}");
+    let item = preview_sync_items(input, &[scope])?
+        .items
+        .into_iter()
+        .find(|item| item.depot_path.eq_ignore_ascii_case(depot_path))
+        .ok_or_else(|| {
+            AppError::new(ErrorKind::Stale, "The sync conflict is no longer pending.")
+        })?;
+    let local_path = item.local_path.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::InvalidOutput,
+            "The sync preview omitted the local file path.",
+        )
+    })?;
+    let root = fs::canonicalize(root)
+        .map_err(|error| local_file_error("Could not verify the workspace root.", error))?;
+    let local_path = validated_recovery_target(&root, &local_path)?;
+    let workspace_bytes = fs::read(&local_path)
+        .map_err(|error| local_file_error("Could not read the local conflict file.", error))?;
+    let have_revision = sync_merge_have_revision(input, depot_path)?;
+    Ok(SyncMergeSnapshot {
+        depot_path: depot_path.to_owned(),
+        local_path,
+        base_identifier: format!("{depot_path}#{have_revision}"),
+        source_identifier: format!("{depot_path}#{revision}"),
+        workspace_bytes,
+    })
+}
+
+fn sync_merge_have_revision(input: &ConnectionInput, depot_path: &str) -> Result<String, AppError> {
+    let (path, mut command) = configured_command(input)?;
+    command.args(["-ztag", "-Mj", "fstat", "-T", "haveRev", depot_path]);
+    let records = run_json(&path, &mut command)?;
+    let revision = records
+        .iter()
+        .filter(|record| !is_message_record(record))
+        .find_map(|record| field(record, &["haveRev"]));
+    revision
+        .as_deref()
+        .map(validate_revision)
+        .transpose()?
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::CommandFailed,
+                "The local file has no depot base revision for merging.",
+            )
+        })
+}
+
+fn sync_merge_token(snapshot: &SyncMergeSnapshot) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in snapshot
+        .depot_path
+        .bytes()
+        .chain(snapshot.local_path.to_string_lossy().bytes())
+        .chain(snapshot.base_identifier.bytes())
+        .chain(snapshot.source_identifier.bytes())
+        .chain(snapshot.workspace_bytes.iter().copied())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("sync-merge-v1-{hash:016x}")
+}
+
 pub fn load_resolve_content(
     input: &ConnectionInput,
     root: &Path,
@@ -4416,6 +4581,7 @@ pub fn diff_file(
     command.env_remove("P4DIFF");
     command.env_remove("P4DIFFUNICODE");
     command.arg("diff");
+    command.arg("-f");
     add_diff_args(&mut command, mode);
     command.arg(depot_path);
     run_text_diff(&path, &mut command)

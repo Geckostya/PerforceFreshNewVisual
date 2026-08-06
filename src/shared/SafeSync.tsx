@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { normalizeAppError, previewSync, previewSyncAtDate, repairSyncHaveList, startSync } from "./api";
+import { loadSyncMergeContent, normalizeAppError, previewSync, previewSyncAtDate, repairSyncHaveList, saveSyncMergeResult, startSync } from "./api";
+import { ResolveDialog } from "../features/workspace/ResolveDialog";
 import { useLocale } from "./i18n";
 import type { AppError, ConnectionInput, DateSyncPreview, OperationEvent, SyncPreview, SyncPreviewItem } from "./models";
 import { isOperationTerminal, startObservedOperation, useActiveOperation } from "./operations";
@@ -17,6 +18,11 @@ export function updateOverwritePaths(current: string[], path: string, overwrite:
 
 export function overwritePathsAfterForce(kind: OperationEvent["kind"], paths: string[]): string[] {
   return kind === "completed" ? [] : paths;
+}
+
+export function autoResolvableSyncPaths(preview: SyncPreview): string[] {
+  const modified = new Set(preview.modifiedFiles.map((path) => path.toLowerCase()));
+  return preview.items.map((item) => item.depotPath).filter((path) => !modified.has(path.toLowerCase()));
 }
 
 export function exactOverwriteScopes(paths: string[], items: SyncPreviewItem[], originalScopes: string[] = []): string[] {
@@ -37,9 +43,15 @@ export interface SafeSyncController {
   phase: SyncPhase;
   conflicts: string[];
   overwritePaths: string[];
+  connection: ConnectionInput;
+  mergeItem?: SyncPreviewItem;
   start: (scopes: string[]) => Promise<void>;
   setOverwrite: (path: string, overwrite: boolean) => void;
   setAllOverwrite: (overwrite: boolean) => void;
+  openMerge: (path: string) => void;
+  canMerge: (path: string) => boolean;
+  closeMerge: () => void;
+  completeMerge: (path: string) => void;
   finish: (overwriteOverride?: string[]) => Promise<void>;
 }
 
@@ -55,6 +67,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
   const [overwritePaths, setOverwritePaths] = useState<string[]>([]);
   const [conflictItems, setConflictItems] = useState<SyncPreviewItem[]>([]);
   const [conflictScopes, setConflictScopes] = useState<string[]>([]);
+  const [mergePath, setMergePath] = useState<string>();
 
   async function refresh() {
     try {
@@ -64,7 +77,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     }
   }
 
-  async function finishSafeSync(event: OperationEvent, scopes: string[]) {
+  async function finishSafeSync(event: OperationEvent, scopes: string[], allowAutoResolve = true) {
     if (event.kind === "cancelled") {
       void refresh();
       setPhase("idle");
@@ -81,6 +94,19 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
         } catch {
           // Repair is opportunistic: unmatched files remain explicit conflicts below.
         }
+      }
+      const autoResolvablePaths = allowAutoResolve ? autoResolvableSyncPaths(remaining) : [];
+      if (autoResolvablePaths.length > 0) {
+        setPhase("forcing");
+        const autoResolvableScopes = exactOverwriteScopes(autoResolvablePaths, remaining.items, scopes);
+        try {
+          await startObservedOperation("sync", () => startSync(connection, autoResolvableScopes, true, true), (autoEvent) => {
+            if (isOperationTerminal(autoEvent.kind)) void finishSafeSync(autoEvent, scopes, false);
+          });
+        } catch {
+          await finishSafeSync(event, scopes, false);
+        }
+        return;
       }
       if (remaining.writableFiles.length > 0) {
         void refresh();
@@ -109,6 +135,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     setOverwritePaths([]);
     setConflictItems([]);
     setConflictScopes([]);
+    setMergePath(undefined);
     setPhase("syncing");
     try {
       await startObservedOperation("sync", () => startSync(connection, scopes), (event) => {
@@ -149,6 +176,7 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
       setConflicts([]);
       setConflictItems([]);
       setConflictScopes([]);
+      setMergePath(undefined);
       callbacks.setNotice(t("syncKeptWritableFiles"));
       await refresh();
       return;
@@ -171,9 +199,30 @@ export function useSafeSync(connection: ConnectionInput, callbacks: {
     phase: phase === "idle" && activeSync ? "syncing" : phase,
     conflicts,
     overwritePaths,
+    connection,
+    mergeItem: conflictItems.find((item) => item.depotPath === mergePath),
     start,
     setOverwrite: (path, overwrite) => setOverwritePaths((current) => updateOverwritePaths(current, path, overwrite)),
     setAllOverwrite: (overwrite) => setOverwritePaths(overwrite ? conflicts : []),
+    openMerge: (path) => {
+      if (conflictItems.some((item) => item.depotPath === path && item.revision)) setMergePath(path);
+    },
+    canMerge: (path) => conflictItems.some((item) => item.depotPath === path && item.revision),
+    closeMerge: () => setMergePath(undefined),
+    completeMerge: (path) => {
+      setMergePath(undefined);
+      setConflicts((current) => {
+        const next = current.filter((item) => item !== path);
+        if (next.length === 0) {
+          setConflictItems([]);
+          setConflictScopes([]);
+          void refresh();
+          callbacks.setNotice(t("syncConflictChoicesApplied"));
+        }
+        return next;
+      });
+      setOverwritePaths((current) => current.filter((item) => item !== path));
+    },
     finish,
   };
 }
@@ -268,6 +317,15 @@ export function DateSyncDialog({ connection, scopes, serverDate, onClose, onConf
 
 export function SafeSyncConflictDialog({ sync }: { sync: SafeSyncController }) {
   const { t } = useLocale();
+  if (sync.mergeItem?.revision) return <ResolveDialog
+    connection={sync.connection}
+    item={sync.mergeItem}
+    loadContent={(connection, depotPath) => loadSyncMergeContent(connection, depotPath, sync.mergeItem!.revision!)}
+    saveResult={(connection, depotPath, localPath, previewToken, result) => saveSyncMergeResult(connection, depotPath, sync.mergeItem!.revision!, localPath, previewToken, result)}
+    onClose={sync.closeMerge}
+    onResolved={() => sync.completeMerge(sync.mergeItem!.depotPath)}
+    onError={() => undefined}
+  />;
   if (!shouldShowSyncConflictDialog(sync.conflicts, sync.phase)) return null;
   const busy = sync.phase !== "idle";
   return <Modal title={t("syncWritableConflictsTitle")} busy={busy} onClose={() => void sync.finish([])}>
@@ -276,7 +334,7 @@ export function SafeSyncConflictDialog({ sync }: { sync: SafeSyncController }) {
       <div className="sync-conflict-toolbar"><button className="secondary-button" type="button" onClick={() => sync.setAllOverwrite(false)} disabled={busy}>{t("keepAllLocal")}</button><button className="secondary-button" type="button" onClick={() => sync.setAllOverwrite(true)} disabled={busy}>{t("overwriteAllFromDepot")}</button></div>
       <div className="sync-conflict-list">{sync.conflicts.map((path) => {
         const overwrite = sync.overwritePaths.includes(path);
-        return <label className="sync-conflict-row" key={path}><span><strong>{path.split("/").at(-1) || path}</strong><small title={path}>{path}</small></span><select value={overwrite ? "overwrite" : "keep"} onChange={(event) => sync.setOverwrite(path, event.target.value === "overwrite")} disabled={busy}><option value="keep">{t("keepLocalFile")}</option><option value="overwrite">{t("overwriteFromDepot")}</option></select></label>;
+        return <label className="sync-conflict-row" key={path}><span><strong>{path.split("/").at(-1) || path}</strong><small title={path}>{path}</small></span><div><select value={overwrite ? "overwrite" : "keep"} onChange={(event) => sync.setOverwrite(path, event.target.value === "overwrite")} disabled={busy}><option value="keep">{t("keepLocalFile")}</option><option value="overwrite">{t("overwriteFromDepot")}</option></select><button type="button" className="secondary-button" onClick={() => sync.openMerge(path)} disabled={busy || !sync.canMerge(path)}>{t("resolveEditor")}</button></div></label>;
       })}</div>
     </div>
     <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => void sync.finish([])} disabled={busy}>{t("keepAllLocal")}</button><button className={sync.overwritePaths.length ? "danger-button" : "primary-button"} type="button" onClick={() => void sync.finish()} disabled={busy}>{busy ? t("updatingProject") : t("finishUpdate")}</button></div>

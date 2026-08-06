@@ -223,6 +223,8 @@ pub fn run() {
             commands::preview_resolve,
             commands::load_resolve_content,
             commands::save_resolve_result,
+            commands::load_sync_merge_content,
+            commands::save_sync_merge_result,
             commands::move_file,
             commands::start_reconcile,
             commands::start_reconcile_preview,

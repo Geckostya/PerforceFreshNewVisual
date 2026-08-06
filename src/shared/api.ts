@@ -291,7 +291,7 @@ export async function previewUndo(input: ConnectionInput, sourceChange: string):
 }
 
 export async function undoChange(input: ConnectionInput, sourceChange: string, targetChange: string): Promise<void> {
-  return invoke("undo_change", { input, sourceChange, targetChange });
+  return invalidateAfter(input, () => invoke("undo_change", { input, sourceChange, targetChange }));
 }
 
 export async function previewCherryPick(input: ConnectionInput, sourceChange: string, sourceStream: string, targetStream: string, targetChange: string): Promise<CherryPickPreviewItem[]> {
@@ -299,7 +299,7 @@ export async function previewCherryPick(input: ConnectionInput, sourceChange: st
 }
 
 export async function cherryPickChange(input: ConnectionInput, sourceChange: string, sourceStream: string, targetStream: string, targetChange: string): Promise<void> {
-  return invoke("cherry_pick_change", { input, sourceChange, sourceStream, targetStream, targetChange });
+  return invalidateAfter(input, () => invoke("cherry_pick_change", { input, sourceChange, sourceStream, targetStream, targetChange }));
 }
 
 export async function listShelvedChanges(input: ConnectionInput): Promise<PendingChange[]> {
@@ -347,11 +347,11 @@ export async function previewSyncAtDate(input: ConnectionInput, scopes: string[]
 }
 
 export async function repairSyncHaveList(input: ConnectionInput, paths: string[]): Promise<void> {
-  return invoke("repair_sync_have_list", { input, paths });
+  return invalidateAfter(input, () => invoke("repair_sync_have_list", { input, paths }));
 }
 
-export async function startSync(input: ConnectionInput, scopes: string[], force = false): Promise<string> {
-  return invoke<string>("start_sync", { input, scopes, force });
+export async function startSync(input: ConnectionInput, scopes: string[], force = false, autoResolve = false): Promise<string> {
+  return invoke<string>("start_sync", { input, scopes, force, autoResolve });
 }
 
 export async function cancelOperation(operationId: string): Promise<boolean> {
@@ -359,45 +359,45 @@ export async function cancelOperation(operationId: string): Promise<boolean> {
 }
 
 export async function editFiles(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<void> {
-  return invoke("edit_files", { input: { connection, change, depotPaths } });
+  return invalidateAfter(connection, () => invoke("edit_files", { input: { connection, change, depotPaths } }));
 }
 
 export async function addFiles(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<void> {
-  return invoke("add_files", { input: { connection, change, depotPaths } });
+  return invalidateAfter(connection, () => invoke("add_files", { input: { connection, change, depotPaths } }));
 }
 
 export async function deleteFiles(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<void> {
-  return invoke("delete_files", { input: { connection, change, depotPaths } });
+  return invalidateAfter(connection, () => invoke("delete_files", { input: { connection, change, depotPaths } }));
 }
 
 export async function ignoreLocalFile(input: ConnectionInput, localPath: string): Promise<void> {
-  return invoke("ignore_local_file", { input, localPath });
+  return invalidateAfter(input, () => invoke("ignore_local_file", { input, localPath }));
 }
 
 export async function deleteLocalFile(input: ConnectionInput, localPath: string): Promise<void> {
-  return invoke("delete_local_file", { input, localPath });
+  return invalidateAfter(input, () => invoke("delete_local_file", { input, localPath }));
 }
 
 export async function lockFiles(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<void> {
-  return invoke("lock_files", { input: { connection, change, depotPaths } });
+  return invalidateAfter(connection, () => invoke("lock_files", { input: { connection, change, depotPaths } }));
 }
 
 export async function unlockFiles(connection: ConnectionInput, change: string, depotPaths: string[]): Promise<void> {
-  return invoke("unlock_files", { input: { connection, change, depotPaths } });
+  return invalidateAfter(connection, () => invoke("unlock_files", { input: { connection, change, depotPaths } }));
 }
 
 export async function resolveFiles(connection: ConnectionInput, depotPaths: string[], mode: ResolveMode): Promise<ResolveApplyResult> {
-  return invoke<ResolveApplyResult>("resolve_files", { input: { connection, depotPaths, mode } });
+  return invalidateAfter(connection, () => invoke<ResolveApplyResult>("resolve_files", { input: { connection, depotPaths, mode } }));
 }
 
 export async function resolveSpecialized(connection: ConnectionInput, items: ResolvePreviewItem[], mode: ResolveMode): Promise<ResolveApplyResult> {
-  return invoke<ResolveApplyResult>("resolve_specialized", {
+  return invalidateAfter(connection, () => invoke<ResolveApplyResult>("resolve_specialized", {
     input: {
       connection,
       items: items.map(({ depotPath, previewToken, scope }) => ({ depotPath, previewToken, scope })),
       mode,
     },
-  });
+  }));
 }
 
 export async function previewResolve(connection: ConnectionInput, depotPaths: string[]): Promise<ResolvePreviewItem[]> {
@@ -409,11 +409,19 @@ export async function loadResolveContent(connection: ConnectionInput, depotPath:
 }
 
 export async function saveResolveResult(connection: ConnectionInput, depotPath: string, localPath: string, previewToken: string, result: string): Promise<ResolveApplyResult> {
-  return invoke<ResolveApplyResult>("save_resolve_result", { input: { connection, depotPath, localPath, previewToken, result } });
+  return invalidateAfter(connection, () => invoke<ResolveApplyResult>("save_resolve_result", { input: { connection, depotPath, localPath, previewToken, result } }));
+}
+
+export async function loadSyncMergeContent(connection: ConnectionInput, depotPath: string, revision: string): Promise<ResolveContent> {
+  return invoke<ResolveContent>("load_sync_merge_content", { input: { connection, depotPath, revision } });
+}
+
+export async function saveSyncMergeResult(connection: ConnectionInput, depotPath: string, revision: string, localPath: string, previewToken: string, result: string): Promise<void> {
+  return invalidateAfter(connection, () => invoke("save_sync_merge_result", { input: { connection, depotPath, revision, localPath, previewToken, result } }));
 }
 
 export async function moveFile(connection: ConnectionInput, change: string, source: string, destination: string): Promise<void> {
-  return invoke("move_file", { input: { connection, change, source, destination } });
+  return invalidateAfter(connection, () => invoke("move_file", { input: { connection, change, source, destination } }));
 }
 
 export async function startReconcile(connection: ConnectionInput, change: string, previewScope: string, items: ReconcileItem[]): Promise<string> {
@@ -438,7 +446,7 @@ export async function reopenFiles(
   depotPaths: string[],
   targetChange: string,
 ): Promise<void> {
-  return invoke("reopen_files", { input: { connection, depotPaths, targetChange } });
+  return invalidateAfter(connection, () => invoke("reopen_files", { input: { connection, depotPaths, targetChange } }));
 }
 
 export async function diffFile(
@@ -521,9 +529,9 @@ export async function shelveFiles(
   revertAfter = false,
   deleteAddedFiles = false,
 ): Promise<void> {
-  return invoke("shelve_file", {
+  return invalidateAfter(connection, () => invoke("shelve_file", {
     input: { connection, change, depotPaths, replaceAll, revertAfter, deleteAddedFiles },
-  });
+  }));
 }
 
 export async function previewUnshelve(
@@ -543,9 +551,9 @@ export async function unshelveFiles(
   depotPaths: string[] = [],
   forcePaths: string[] = [],
 ): Promise<void> {
-  return invoke("unshelve_files", {
+  return invalidateAfter(connection, () => invoke("unshelve_files", {
     input: { connection, sourceChange, targetChange, depotPaths, forcePaths },
-  });
+  }));
 }
 
 export async function reshelveFiles(
@@ -555,7 +563,7 @@ export async function reshelveFiles(
   depotPaths: string[] = [],
   force = false,
 ): Promise<void> {
-  return invoke("reshelve_files", { input: { connection, sourceChange, targetChange, depotPaths, force } });
+  return invalidateAfter(connection, () => invoke("reshelve_files", { input: { connection, sourceChange, targetChange, depotPaths, force } }));
 }
 
 export async function deleteShelfFiles(
@@ -563,7 +571,7 @@ export async function deleteShelfFiles(
   change: string,
   depotPaths: string[] = [],
 ): Promise<void> {
-  return invoke("delete_shelf_files", { input: { connection, change, depotPaths } });
+  return invalidateAfter(connection, () => invoke("delete_shelf_files", { input: { connection, change, depotPaths } }));
 }
 
 export async function revertFiles(
@@ -572,7 +580,7 @@ export async function revertFiles(
   depotPaths: string[],
   deleteAddedFiles = false,
 ): Promise<void> {
-  return invoke("revert_files", { input: { connection, change, depotPaths, deleteAddedFiles } });
+  return invalidateAfter(connection, () => invoke("revert_files", { input: { connection, change, depotPaths, deleteAddedFiles } }));
 }
 
 export async function previewRevertUnchanged(connection: ConnectionInput, change: string): Promise<RevertPreviewItem[]> {
@@ -588,7 +596,7 @@ export async function previewRevertSelected(connection: ConnectionInput, change:
 }
 
 export async function revertUnchanged(connection: ConnectionInput, change: string): Promise<void> {
-  return invoke("revert_unchanged", { input: connection, change });
+  return invalidateAfter(connection, () => invoke("revert_unchanged", { input: connection, change }));
 }
 
 export async function editChange(
@@ -596,7 +604,7 @@ export async function editChange(
   change: string,
   description: string,
 ): Promise<void> {
-  return invoke("edit_change", { input: { connection, change, description } });
+  return invalidateAfter(connection, () => invoke("edit_change", { input: { connection, change, description } }));
 }
 
 export async function previewChangeIdentity(
@@ -619,20 +627,20 @@ export async function updateChangeIdentity(
   visibility: ChangeVisibility,
   previewToken: string,
 ): Promise<ChangeIdentityState> {
-  return invoke<ChangeIdentityState>("update_change_identity", {
+  return invalidateAfter(connection, () => invoke<ChangeIdentityState>("update_change_identity", {
     input: { connection, change, owner, client, visibility, previewToken },
-  });
+  }));
 }
 
 export async function deleteChange(connection: ConnectionInput, change: string): Promise<void> {
-  return invoke("delete_change", { input: { connection, change } });
+  return invalidateAfter(connection, () => invoke("delete_change", { input: { connection, change } }));
 }
 
 export async function createChange(
   connection: ConnectionInput,
   description: string,
 ): Promise<string> {
-  return invoke<string>("create_change", { input: { connection, description } });
+  return invalidateAfter(connection, () => invoke<string>("create_change", { input: { connection, description } }));
 }
 
 export async function listCliLog(): Promise<CliLogEntry[]> {

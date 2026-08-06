@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exactOverwriteScopes, overwritePathsAfterForce, serverDateInputValue, shouldShowSyncConflictDialog, updateOverwritePaths } from "./SafeSync";
+import { autoResolvableSyncPaths, exactOverwriteScopes, overwritePathsAfterForce, serverDateInputValue, shouldShowSyncConflictDialog, updateOverwritePaths } from "./SafeSync";
 
 describe("safe sync writable choices", () => {
   it("keeps overwrite choices unique and removable per file", () => {
@@ -32,6 +32,19 @@ describe("safe sync writable choices", () => {
     ], ["//Acme/main/...@2026/07/01:12:00:00"])).toEqual([
       "//Acme/main/deleted.txt@2026/07/01:12:00:00",
     ]);
+  });
+
+  it("auto-resolves only files unchanged from the recorded depot revision", () => {
+    expect(autoResolvableSyncPaths({
+      items: [
+        { depotPath: "//Acme/main/metadata-only.txt", action: "updated", revision: "7" },
+        { depotPath: "//Acme/main/local-edit.txt", action: "updated", revision: "8" },
+      ],
+      totalBytes: 0,
+      modifiedFiles: ["//acme/main/local-edit.txt"],
+      writableFiles: ["//Acme/main/local-edit.txt"],
+      missingHaveFiles: [],
+    })).toEqual(["//Acme/main/metadata-only.txt"]);
   });
 
   it("uses the server wall clock as the date-input default without dropping seconds", () => {

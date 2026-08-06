@@ -49,7 +49,7 @@ All retrieval entry points use one frontend controller, one array-of-scopes IPC 
 1. Start ordinary retrieval with `p4 sync -s`; it downloads safe files and skips unsafe overwrites. A folder scope is sent as `folder/...` in the same batch as other selections.
 2. Before the terminal event, find remaining incoming paths with `p4 sync -n` and compare that exact set through one validated `p4 diff -f -sa` using `p4 -x -` stdin. Here `-f` is read-only comparison, not overwrite.
 3. For a mapped local file without `haveRev`, treat the expected “not on client” result as empty diagnostics and repair knowledge through `p4 reconcile -k`. Recover mapped read-only files separately; never overwrite a writable file without a user decision.
-4. Present every remaining writable conflict together. Default to Keep local; Overwrite from depot is destructive and explicit per file.
+4. Invisibly force-sync the remaining files only when the same `p4 diff -f -sa` check proves their content is unchanged from the workspace's recorded depot revision. Repeat that check immediately before the force sync. Present every remaining content conflict together. Each text conflict can open the existing three-way editor and its local-versus-base diff; it writes an explicitly confirmed merge result atomically, then flushes the exact incoming revision. Default to Keep local; Overwrite from depot is destructive and explicit per file.
 
 Before force sync, record exact server-backed `depotFile#rev` and verified local paths. An unsuccessful sync may update the have list without replacing content, so every selected item then runs this ordered recovery:
 

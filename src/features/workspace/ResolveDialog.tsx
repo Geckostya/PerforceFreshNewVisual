@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { loadResolveContent, normalizeAppError, saveResolveResult } from "../../shared/api";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { diffFile, loadResolveContent, normalizeAppError, saveResolveResult } from "../../shared/api";
+import { DiffViewer } from "../../shared/DiffViewer";
 import { useLocale } from "../../shared/i18n";
-import type { AppError, ConnectionInput, ResolveContent, ResolvePreviewItem } from "../../shared/models";
+import type { AppError, ConnectionInput, FileDiff, ResolveContent, ResolvePreviewItem } from "../../shared/models";
 import { ActionDialog, CompactEmpty } from "../../shared/View";
 
 export interface ConflictRange {
@@ -200,12 +201,14 @@ function textSide(content: ResolveContent, side: "base" | "source" | "workspace"
   return value.binary || value.truncated ? undefined : value.text;
 }
 
-export function ResolveDialog({ connection, item, onClose, onResolved, onError }: {
+export function ResolveDialog({ connection, item, onClose, onResolved, onError, loadContent, saveResult }: {
   connection: ConnectionInput;
-  item: ResolvePreviewItem;
+  item: Pick<ResolvePreviewItem, "depotPath">;
   onClose: () => void;
   onResolved: () => void;
   onError: (error: AppError) => void;
+  loadContent?: (connection: ConnectionInput, depotPath: string) => Promise<ResolveContent>;
+  saveResult?: (connection: ConnectionInput, depotPath: string, localPath: string, previewToken: string, result: string) => Promise<void>;
 }) {
   const { t } = useLocale();
   const [content, setContent] = useState<ResolveContent>();
@@ -213,13 +216,16 @@ export function ResolveDialog({ connection, item, onClose, onResolved, onError }
   const [busy, setBusy] = useState(true);
   const [loadError, setLoadError] = useState<AppError>();
   const [activeConflict, setActiveConflict] = useState(0);
+  const [diff, setDiff] = useState<FileDiff>();
+  const [diffBusy, setDiffBusy] = useState(true);
+  const [diffError, setDiffError] = useState<AppError>();
   const editor = useRef<HTMLTextAreaElement>(null);
   const conflicts = useMemo(() => resolveConflictRanges(result), [result]);
 
   useEffect(() => {
     let active = true;
     setBusy(true);
-    void loadResolveContent(connection, item.depotPath)
+    void (loadContent || loadResolveContent)(connection, item.depotPath)
       .then((next) => {
         if (!active) return;
         setContent(next);
@@ -235,7 +241,19 @@ export function ResolveDialog({ connection, item, onClose, onResolved, onError }
       .catch((reason) => { if (active) setLoadError(normalizeAppError(reason)); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
-  }, [connection, item.depotPath, t]);
+  }, [connection, item.depotPath, loadContent, t]);
+
+  useEffect(() => {
+    let active = true;
+    setDiffBusy(true);
+    setDiff(undefined);
+    setDiffError(undefined);
+    void diffFile(connection, item.depotPath)
+      .then((next) => { if (active) setDiff(next); })
+      .catch((reason) => { if (active) setDiffError(normalizeAppError(reason)); })
+      .finally(() => { if (active) setDiffBusy(false); });
+    return () => { active = false; };
+  }, [connection, item.depotPath]);
 
   function focusConflict(index: number) {
     if (!conflicts.length) return;
@@ -258,10 +276,14 @@ export function ResolveDialog({ connection, item, onClose, onResolved, onError }
     if (!content || conflicts.length) return;
     setBusy(true);
     try {
-      const readBack = await saveResolveResult(connection, item.depotPath, content.localPath, content.previewToken, result);
-      const state = readBack.items.find((entry) => entry.depotPath === item.depotPath)?.state;
-      if (state !== "resolved") {
-        throw { kind: "partial_result", message: t("resolveStillPending"), hints: [] } satisfies AppError;
+      if (saveResult) {
+        await saveResult(connection, item.depotPath, content.localPath, content.previewToken, result);
+      } else {
+        const readBack = await saveResolveResult(connection, item.depotPath, content.localPath, content.previewToken, result);
+        const state = readBack.items.find((entry) => entry.depotPath === item.depotPath)?.state;
+        if (state !== "resolved") {
+          throw { kind: "partial_result", message: t("resolveStillPending"), hints: [] } satisfies AppError;
+        }
       }
       onResolved();
     } catch (reason) {
@@ -286,13 +308,17 @@ export function ResolveDialog({ connection, item, onClose, onResolved, onError }
     {loadError ? <div className="inline-error"><strong>{loadError.message}</strong>{loadError.diagnostics && <small>{loadError.diagnostics}</small>}</div>
       : !content ? <CompactEmpty text={t("resolveEditorLoading")} />
         : <>
-          <div className="resolve-source-grid">
-            {(["base", "source", "workspace"] as const).map((side) => <section key={side}>
-              <strong>{t(`resolveSide_${side}` as never)}</strong>
-              <small title={content[side].identifier}>{content[side].identifier}</small>
-              <pre>{content[side].text}</pre>
-            </section>)}
-          </div>
+          <dl className="dialog-facts resolve-editor-facts">
+            {(["base", "source", "workspace"] as const).map((side) => <Fragment key={side}>
+              <dt>{t(`resolveSide_${side}` as never)}</dt>
+              <dd title={content[side].identifier}>{content[side].identifier}</dd>
+            </Fragment>)}
+          </dl>
+          <section className="resolve-diff"><h2>{t("diffLocalDepot")}</h2>
+            {diff ? <DiffViewer text={diff.text || t("filesIdentical")} truncated={diff.truncated} binary={diff.binary} invalidEncoding={diff.invalidEncoding} />
+              : diffBusy ? <CompactEmpty text={t("loadingDiff")} />
+                : diffError && <div className="inline-error"><strong>{diffError.message}</strong></div>}
+          </section>
           <div className="resolve-editor-toolbar">
             <span>{conflicts.length ? `${activeConflict + 1} / ${conflicts.length} ${t("resolveConflicts")}` : t("resolveNoConflicts")}</span>
             <button type="button" className="secondary-button" disabled={!conflicts.length} onClick={() => focusConflict(activeConflict - 1)}>{t("resolvePrevious")}</button>

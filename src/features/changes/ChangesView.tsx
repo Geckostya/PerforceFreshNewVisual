@@ -302,7 +302,7 @@ export function ChangesView({ connection, info, onFileCountChange, initialChange
       () => reopenFiles(connection, paths, destination),
       t("fileMoved"),
       () => {
-        setSelectedChange(destination);
+        selectChange(destination);
         fileSelection.setOpened(paths, paths[0]);
       },
     );

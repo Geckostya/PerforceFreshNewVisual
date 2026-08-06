@@ -1133,6 +1133,7 @@
 .sync-conflict-row span, .sync-conflict-row strong, .sync-conflict-row small { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sync-conflict-row small { color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
 .sync-conflict-row select { min-height: var(--control-compact); }
+.sync-conflict-row > div { display: flex; flex-wrap: wrap; gap: 6px; justify-content: end; }
 
 .view-heading h1 {
   margin: 0;
@@ -1929,35 +1930,6 @@
   line-height: 1.45;
 }
 
-.resolve-source-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.resolve-source-grid section {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.resolve-source-grid small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.resolve-source-grid pre {
-  min-height: 110px;
-  max-height: 180px;
-  margin: 0;
-  padding: 9px;
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  white-space: pre-wrap;
-}
-
 .resolve-editor-toolbar {
   display: flex;
   align-items: center;
@@ -1966,6 +1938,8 @@
 }
 
 .resolve-editor-toolbar > span { margin-right: auto; }
+.resolve-editor-facts dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resolve-diff > h2 { margin: 16px 0 4px; font-size: var(--font-subtitle); line-height: var(--line-subtitle); }
 .resolve-result textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .specialized-resolve-options { display: grid; gap: 8px; }
 .specialized-resolve-choice { display: grid; gap: 4px; padding: 12px; text-align: left; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); cursor: pointer; }
@@ -1973,10 +1947,6 @@
 .specialized-resolve-choice span { color: var(--text-secondary); }
 .specialized-resolve-outcome { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 5px; }
 .specialized-resolve-outcome.unknown, .specialized-resolve-outcome.partial { border-color: var(--warning); }
-
-@media (max-width: 900px) {
-  .resolve-source-grid { grid-template-columns: 1fr; }
-}
 
 .dialog-description {
   padding: 10px 12px;
