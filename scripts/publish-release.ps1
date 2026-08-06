@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$NotesFile,
     [switch]$ResumeDraft,
-    [switch]$VerifyDraftOnly
+    [switch]$VerifyDraftOnly,
+    [string]$WorkflowRunId
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +57,9 @@ if ($LASTEXITCODE -ne 0 -or $repository.Trim() -ne $expectedRepository) {
 }
 $runId = $null
 $draftNeedsNotes = $false
+if ($WorkflowRunId -and -not $ResumeDraft) {
+    throw 'WorkflowRunId requires ResumeDraft.'
+}
 if ($ResumeDraft) {
     $tagType = git cat-file -t "refs/tags/$tag" 2>$null
     if ($LASTEXITCODE -ne 0 -or $tagType.Trim() -ne 'tag') {
@@ -84,9 +88,17 @@ if ($ResumeDraft) {
         throw "GitHub Release notes do not match ${NotesFile}."
     }
     $draftNeedsNotes = -not $draftNotes
-    $runs = gh run list --workflow release.yml --event push --limit 50 --json databaseId,headBranch | ConvertFrom-Json
-    $run = $runs | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
-    if ($run) { $runId = [string]$run.databaseId }
+    if ($WorkflowRunId) {
+        $run = gh run view $WorkflowRunId --json databaseId,displayTitle,name | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or [string]$run.name -ne 'Portable release' -or [string]$run.displayTitle -ne "Portable release $tag") {
+            throw "Workflow run $WorkflowRunId is not the expected release run for $tag."
+        }
+        $runId = [string]$run.databaseId
+    } else {
+        $runs = gh run list --workflow release.yml --event push --limit 50 --json databaseId,headBranch | ConvertFrom-Json
+        $run = $runs | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
+        if ($run) { $runId = [string]$run.databaseId }
+    }
 } else {
     git rev-parse --verify --quiet "refs/tags/$tag" | Out-Null
     if ($LASTEXITCODE -eq 0) { throw "Tag already exists: $tag" }
