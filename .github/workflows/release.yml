@@ -1,11 +1,20 @@
 name: Portable release
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish
+        required: true
+        type: string
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
 
 permissions: read-all
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -21,6 +30,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
@@ -41,7 +51,7 @@ jobs:
         run: npm ci
       - name: Verify release tag and versions
         shell: pwsh
-        run: ./scripts/verify-version.ps1 -ExpectedTag '${{ github.ref_name }}'
+        run: ./scripts/verify-version.ps1 -ExpectedTag $env:RELEASE_TAG
       - name: Run frontend tests
         run: npm test -- --run
       - name: Check Rust formatting
@@ -60,7 +70,7 @@ jobs:
       - name: Read release notes from annotated tag
         shell: pwsh
         run: |
-          $notes = git tag -l '${{ github.ref_name }}' --format='%(contents)'
+          $notes = git tag -l $env:RELEASE_TAG --format='%(contents)'
           if (-not $notes.Trim()) { throw 'The release tag must be annotated with release notes.' }
           [System.IO.File]::WriteAllText("$env:RUNNER_TEMP/release-notes.md", "$notes`n", [System.Text.UTF8Encoding]::new($false))
       - name: Prepare release signing key
@@ -71,12 +81,12 @@ jobs:
           if (-not $env:P4FNV_RELEASE_PRIVATE_KEY) { throw 'P4FNV_RELEASE_PRIVATE_KEY is not configured.' }
           if (-not $env:P4FNV_UPDATE_PUBLIC_KEY) { throw 'P4FNV_UPDATE_PUBLIC_KEY is not configured.' }
           [System.IO.File]::WriteAllText("$env:RUNNER_TEMP/release-key", $env:P4FNV_RELEASE_PRIVATE_KEY.Trim(), [System.Text.UTF8Encoding]::new($false))
-          ./scripts/sign-release.ps1 -Version ('${{ github.ref_name }}'.Substring(1)) -NotesFile "$env:RUNNER_TEMP/release-notes.md" -PrivateKeyFile "$env:RUNNER_TEMP/release-key"
+          ./scripts/sign-release.ps1 -Version ($env:RELEASE_TAG.Substring(1)) -NotesFile "$env:RUNNER_TEMP/release-notes.md" -PrivateKeyFile "$env:RUNNER_TEMP/release-key"
       - name: Resolve asset names
         id: names
         shell: pwsh
         run: |
-          $version = '${{ github.ref_name }}'.Substring(1)
+          $version = $env:RELEASE_TAG.Substring(1)
           $archive = "P4FNV_${version}_windows_x64_portable.zip"
           "version=$version" >> $env:GITHUB_OUTPUT
           "archive=$archive" >> $env:GITHUB_OUTPUT
@@ -88,8 +98,8 @@ jobs:
         run: |
           $version = '${{ steps.names.outputs.version }}'
           $directory = "artifacts/releases/$version"
-          gh release create '${{ github.ref_name }}' --draft --verify-tag --title "P4FNV $version"
-          gh release upload '${{ github.ref_name }}' "$directory/${{ steps.names.outputs.archive }}" "$directory/${{ steps.names.outputs.archive }}.sig" "$directory/latest.json" "$directory/latest.json.sig" "$directory/SHA256SUMS.txt"
+          gh release create $env:RELEASE_TAG --draft --verify-tag --title "P4FNV $version"
+          gh release upload $env:RELEASE_TAG "$directory/${{ steps.names.outputs.archive }}" "$directory/${{ steps.names.outputs.archive }}.sig" "$directory/latest.json" "$directory/latest.json.sig" "$directory/SHA256SUMS.txt"
       - name: Produce SLSA subject
         id: subject
         shell: pwsh
