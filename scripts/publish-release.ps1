@@ -90,7 +90,7 @@ if ($ResumeDraft) {
     $draftNeedsNotes = -not $draftNotes
     if ($WorkflowRunId) {
         $run = gh run view $WorkflowRunId --json databaseId,displayTitle,name | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or [string]$run.name -ne 'Portable release' -or [string]$run.displayTitle -ne "Portable release $tag") {
+        if ($LASTEXITCODE -ne 0 -or [string]$run.displayTitle -ne "Portable release $tag") {
             throw "Workflow run $WorkflowRunId is not the expected release run for $tag."
         }
         $runId = [string]$run.databaseId
